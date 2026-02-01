@@ -6,10 +6,10 @@ param(
     [string]$artist = "",
 
     [Parameter()]
-    [string]$Drive = "D:",
+    [string]$Drive = "E:",
 
     [Parameter()]
-    [string]$OutputDrive = "E:",
+    [string]$OutputDrive = "C:",
 
     [Parameter()]
     [string]$format = "flac"
@@ -347,10 +347,11 @@ Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
 $cyanripArgs = @(
     "-D", $finalOutputDir,
     "-o", $format,
-    "-d", $driveLetter
+    "-d", $driveLetter,
+    "-s", "0"
 )
 
-$cmdDisplay = "cyanrip -D `"$finalOutputDir`" -o $format -d $driveLetter"
+$cmdDisplay = "cyanrip -D `"$finalOutputDir`" -o $format -d $driveLetter -s 0"
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip command: $cmdDisplay"
 

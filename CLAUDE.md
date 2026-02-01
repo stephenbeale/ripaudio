@@ -52,7 +52,8 @@ cyanrip is a command-line audio CD ripper. Key options used:
 |--------|-------------|
 | `-D <dir>` | Output directory |
 | `-o <format>` | Output format (flac, mp3, opus, etc.) |
-| `-d <drive>` | CD drive device (e.g., D:) |
+| `-d <drive>` | CD drive device (e.g., E:) |
+| `-s <offset>` | Drive read offset (use 0 for most drives) |
 
 MusicBrainz lookup is automatic - cyanrip will query MusicBrainz for disc metadata including track names, artist, and album info.
 
@@ -94,6 +95,20 @@ MusicBrainz lookup is automatic - cyanrip will query MusicBrainz for disc metada
 - MusicBrainz lookup is automatic via cyanrip
 - Format validation ensures only valid formats are accepted
 - Directory structure supports both artist/album and album-only layouts
+
+---
+
+### 2026-02-01 - Bug Fixes
+
+**Work Completed:**
+
+- Added cyanrip drive offset parameter `-s 0` to fix ripping issues
+- Updated README.md to reflect correct Drive default (E:)
+- Updated CLAUDE.md cyanrip options table with offset parameter
+
+**Technical Notes:**
+- cyanrip requires a drive offset to be specified for accurate ripping
+- The `-s 0` parameter sets the drive read offset to 0 samples
 
 ---
 

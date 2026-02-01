@@ -61,7 +61,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 |-----------|----------|---------|-------------|
 | `-album` | Yes | - | Album name |
 | `-artist` | No | - | Artist name (affects output directory structure) |
-| `-Drive` | No | D: | CD drive letter |
+| `-Drive` | No | E: | CD drive letter |
 | `-OutputDrive` | No | E: | Output drive letter |
 | `-format` | No | flac | Output format (flac, mp3, opus, aac, wav, alac) |
 
