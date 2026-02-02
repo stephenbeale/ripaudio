@@ -343,17 +343,20 @@ if (!(Test-Path $finalOutputDir)) {
 
 Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
 
+# Convert Windows path to forward slashes for cyanrip (Unix-ported tool)
+$cyanripOutputDir = $finalOutputDir -replace '\\', '/'
+
 # Build the cyanrip arguments
 # -N: Continue without MusicBrainz metadata (for discs not in database)
 $cyanripArgs = @(
-    "-D", $finalOutputDir,
+    "-D", $cyanripOutputDir,
     "-o", $format,
     "-d", $driveLetter,
     "-s", "0",
     "-N"
 )
 
-$cmdDisplay = "cyanrip -D `"$finalOutputDir`" -o $format -d $driveLetter -s 0 -N"
+$cmdDisplay = "cyanrip -D `"$cyanripOutputDir`" -o $format -d $driveLetter -s 0 -N"
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip command: $cmdDisplay"
 
