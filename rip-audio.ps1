@@ -6,10 +6,10 @@ param(
     [string]$artist = "",
 
     [Parameter()]
-    [string]$Drive = "E:",
+    [string]$Drive = "D:",
 
     [Parameter()]
-    [string]$OutputDrive = "C:",
+    [string]$OutputDrive = "E:",
 
     [Parameter()]
     [string]$format = "flac"
@@ -357,8 +357,10 @@ Write-Log "cyanrip command: $cmdDisplay"
 
 # Execute cyanrip
 try {
-    & cyanrip @cyanripArgs 2>&1 | Tee-Object -Variable cyanripOutput
+    $cyanripOutput = & cyanrip @cyanripArgs 2>&1
     $cyanripExitCode = $LASTEXITCODE
+    # Display output to console
+    $cyanripOutput | ForEach-Object { Write-Host $_ }
 } catch {
     Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
 }
