@@ -344,14 +344,16 @@ if (!(Test-Path $finalOutputDir)) {
 Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
 
 # Build the cyanrip arguments
+# -N: Continue without MusicBrainz metadata (for discs not in database)
 $cyanripArgs = @(
     "-D", $finalOutputDir,
     "-o", $format,
     "-d", $driveLetter,
-    "-s", "0"
+    "-s", "0",
+    "-N"
 )
 
-$cmdDisplay = "cyanrip -D `"$finalOutputDir`" -o $format -d $driveLetter -s 0"
+$cmdDisplay = "cyanrip -D `"$finalOutputDir`" -o $format -d $driveLetter -s 0 -N"
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip command: $cmdDisplay"
 
