@@ -434,6 +434,38 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
     }
 }
 
+# Check if disc not found in MusicBrainz - offer to continue without metadata
+if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find release info") {
+    Write-Host "`nDisc not found in MusicBrainz database." -ForegroundColor Yellow
+    Write-Host "Track names will be generic (01 - Track 01, etc.)" -ForegroundColor Yellow
+    Write-Host ""
+
+    $continueChoice = Read-Host "Continue without metadata? (Y/n)"
+    if ($continueChoice -eq "" -or $continueChoice -match "^[Yy]") {
+        Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
+        Write-Log "User chose to continue without MusicBrainz metadata"
+
+        # Re-run cyanrip with -N flag to skip metadata requirement
+        $cyanripArgs += @("-N")
+        $cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0 -N"
+        Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
+        Write-Log "cyanrip command (no metadata): $cmdDisplay"
+
+        Push-Location $parentDir
+        try {
+            $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+            $cyanripExitCode = $LASTEXITCODE
+            $cyanripOutput | ForEach-Object { Write-Host $_ }
+        } catch {
+            Pop-Location
+            Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+        }
+        Pop-Location
+
+        $cyanripOutputText = $cyanripOutput -join "`n"
+    }
+}
+
 # Check if cyanrip succeeded
 if ($cyanripExitCode -ne 0) {
     $errorMessage = "cyanrip exited with code $cyanripExitCode"
