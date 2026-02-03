@@ -343,33 +343,38 @@ if (!(Test-Path $finalOutputDir)) {
 
 Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
 
-# Convert backslashes to forward slashes for cyanrip
-# cyanrip on Windows is a native build (not MSYS/Cygwin) and understands Windows paths with forward slashes
-# C:\Music\Album → C:/Music/Album
-$cyanripOutputDir = $finalOutputDir -replace '\\', '/'
+# cyanrip's -D option is a naming scheme, not an absolute path
+# We need to: 1) cd to parent directory, 2) use album folder name for -D
+$parentDir = Split-Path -Parent $finalOutputDir
+$albumFolder = Split-Path -Leaf $finalOutputDir
 
 # Build the cyanrip arguments
 # Let cyanrip query MusicBrainz for metadata (track names, album art, etc.)
 $cyanripArgs = @(
-    "-D", $cyanripOutputDir,
+    "-D", $albumFolder,
     "-o", $format,
     "-d", $driveLetter,
     "-s", "0"
 )
 
-$cmdDisplay = "cyanrip -D `"$cyanripOutputDir`" -o $format -d $driveLetter -s 0"
+$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0"
+Write-Host "Working directory: $parentDir" -ForegroundColor Gray
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
+Write-Log "cyanrip working directory: $parentDir"
 Write-Log "cyanrip command: $cmdDisplay"
 
-# Execute cyanrip
+# Execute cyanrip from the parent directory
+Push-Location $parentDir
 try {
     $cyanripOutput = & cyanrip @cyanripArgs 2>&1
     $cyanripExitCode = $LASTEXITCODE
     # Display output to console
     $cyanripOutput | ForEach-Object { Write-Host $_ }
 } catch {
+    Pop-Location
     Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
 }
+Pop-Location
 
 $cyanripOutputText = $cyanripOutput -join "`n"
 
@@ -408,19 +413,22 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
         Write-Host "`nUsing release $choice..." -ForegroundColor Green
         Write-Log "User selected release $choice"
 
-        # Re-run cyanrip with -R argument
+        # Re-run cyanrip with -R argument from parent directory
         $cyanripArgs += @("-R", $choice)
-        $cmdDisplay = "cyanrip -D `"$cyanripOutputDir`" -o $format -d $driveLetter -s 0 -R $choice"
+        $cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0 -R $choice"
         Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
         Write-Log "cyanrip command (with release): $cmdDisplay"
 
+        Push-Location $parentDir
         try {
             $cyanripOutput = & cyanrip @cyanripArgs 2>&1
             $cyanripExitCode = $LASTEXITCODE
             $cyanripOutput | ForEach-Object { Write-Host $_ }
         } catch {
+            Pop-Location
             Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
         }
+        Pop-Location
 
         $cyanripOutputText = $cyanripOutput -join "`n"
     }
