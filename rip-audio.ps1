@@ -373,6 +373,59 @@ try {
 
 $cyanripOutputText = $cyanripOutput -join "`n"
 
+# Check if multiple MusicBrainz releases were found - prompt user to select
+if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText -match "Please specify which release") {
+    Write-Host "`n" -NoNewline
+
+    # Parse the release options from the output
+    $releases = @()
+    foreach ($line in $cyanripOutput) {
+        if ($line -match '^\s*(\d+)\s+\(ID:.*?\):\s*(.+)$') {
+            $releases += @{
+                Index = $Matches[1]
+                Description = $Matches[2].Trim()
+            }
+        }
+    }
+
+    if ($releases.Count -gt 0) {
+        Write-Host "Select a release:" -ForegroundColor Cyan
+        foreach ($rel in $releases) {
+            Write-Host "  $($rel.Index): $($rel.Description)" -ForegroundColor White
+        }
+        Write-Host ""
+
+        $validChoice = $false
+        while (-not $validChoice) {
+            $choice = Read-Host "Enter release number (1-$($releases.Count))"
+            if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $releases.Count) {
+                $validChoice = $true
+            } else {
+                Write-Host "Invalid choice. Please enter a number between 1 and $($releases.Count)" -ForegroundColor Yellow
+            }
+        }
+
+        Write-Host "`nUsing release $choice..." -ForegroundColor Green
+        Write-Log "User selected release $choice"
+
+        # Re-run cyanrip with -R argument
+        $cyanripArgs += @("-R", $choice)
+        $cmdDisplay = "cyanrip -D `"$cyanripOutputDir`" -o $format -d $driveLetter -s 0 -R $choice"
+        Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
+        Write-Log "cyanrip command (with release): $cmdDisplay"
+
+        try {
+            $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+            $cyanripExitCode = $LASTEXITCODE
+            $cyanripOutput | ForEach-Object { Write-Host $_ }
+        } catch {
+            Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+        }
+
+        $cyanripOutputText = $cyanripOutput -join "`n"
+    }
+}
+
 # Check if cyanrip succeeded
 if ($cyanripExitCode -ne 0) {
     $errorMessage = "cyanrip exited with code $cyanripExitCode"
