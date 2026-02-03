@@ -343,8 +343,12 @@ if (!(Test-Path $finalOutputDir)) {
 
 Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
 
-# Convert Windows path to forward slashes for cyanrip (Unix-ported tool)
+# Convert Windows path to Unix-style path for cyanrip (Unix-ported tool)
+# C:\Music\Album → /c/Music/Album (MSYS/Cygwin style that cyanrip understands)
 $cyanripOutputDir = $finalOutputDir -replace '\\', '/'
+if ($cyanripOutputDir -match '^([A-Za-z]):(.*)$') {
+    $cyanripOutputDir = '/' + $Matches[1].ToLower() + $Matches[2]
+}
 
 # Build the cyanrip arguments
 # -N: Continue without MusicBrainz metadata (for discs not in database)
