@@ -349,16 +349,15 @@ Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
 $cyanripOutputDir = $finalOutputDir -replace '\\', '/'
 
 # Build the cyanrip arguments
-# -N: Continue without MusicBrainz metadata (for discs not in database)
+# Let cyanrip query MusicBrainz for metadata (track names, album art, etc.)
 $cyanripArgs = @(
     "-D", $cyanripOutputDir,
     "-o", $format,
     "-d", $driveLetter,
-    "-s", "0",
-    "-N"
+    "-s", "0"
 )
 
-$cmdDisplay = "cyanrip -D `"$cyanripOutputDir`" -o $format -d $driveLetter -s 0 -N"
+$cmdDisplay = "cyanrip -D `"$cyanripOutputDir`" -o $format -d $driveLetter -s 0"
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip command: $cmdDisplay"
 
