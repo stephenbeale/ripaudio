@@ -128,6 +128,23 @@ The script executes a 3-step workflow:
 
 Each step is tracked, and the system shows completion status and provides recovery guidance if errors occur.
 
+## MusicBrainz Release Selection
+
+When multiple MusicBrainz releases match a disc, the script prompts you to select the correct one:
+
+```
+Select a release:
+  1: Tracy Chapman (XE) (1988-04-08)
+  2: Tracy Chapman (US) (1988-04-05)
+  3: Tracy Chapman (US) (1988)
+  4: Tracy Chapman (US) (1988-04-05)
+  5: Tracy Chapman (ZA) (1999)
+
+Enter release number (1-5): _
+```
+
+This ensures proper track names, album art, and metadata for your specific release (region, pressing date, etc.).
+
 ## Logging
 
 Session logs are saved to `C:\Music\logs\{artist}_{album}_{timestamp}.log`
