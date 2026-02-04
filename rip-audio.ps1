@@ -341,6 +341,47 @@ if (!(Test-Path $finalOutputDir)) {
 #   -d <dev>  : CD drive device (e.g., D:)
 #   MusicBrainz lookup is automatic
 
+# Test MusicBrainz server connectivity before starting
+Write-Host "`nChecking MusicBrainz server connectivity..." -ForegroundColor Yellow
+$skipMusicBrainz = $false
+try {
+    $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org" -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+    Write-Host "MusicBrainz server: OK" -ForegroundColor Green
+} catch {
+    Write-Host "MusicBrainz server: UNREACHABLE" -ForegroundColor Red
+    Write-Host "  [R] Retry connection" -ForegroundColor White
+    Write-Host "  [C] Continue without metadata (generic track names)" -ForegroundColor White
+    Write-Host "  [Q] Quit" -ForegroundColor White
+    Write-Host ""
+
+    $resolved = $false
+    while (-not $resolved) {
+        $mbChoice = Read-Host "Choice (R/c/q)"
+        if ($mbChoice -eq "" -or $mbChoice -match "^[Rr]") {
+            Write-Host "Retrying..." -ForegroundColor Yellow
+            try {
+                $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org" -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+                Write-Host "MusicBrainz server: OK" -ForegroundColor Green
+                $resolved = $true
+            } catch {
+                Write-Host "MusicBrainz server: Still unreachable" -ForegroundColor Red
+                Write-Host "  [R] Retry | [C] Continue without metadata | [Q] Quit" -ForegroundColor White
+            }
+        } elseif ($mbChoice -match "^[Cc]") {
+            Write-Host "Will continue without MusicBrainz metadata" -ForegroundColor Yellow
+            Write-Log "MusicBrainz unreachable - user chose to continue without metadata"
+            $skipMusicBrainz = $true
+            $resolved = $true
+        } elseif ($mbChoice -match "^[Qq]") {
+            Write-Host "Aborted by user." -ForegroundColor Yellow
+            Enable-ConsoleClose
+            exit 0
+        } else {
+            Write-Host "Invalid choice. Enter R, C, or Q" -ForegroundColor Yellow
+        }
+    }
+}
+
 Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
 
 # cyanrip's -D option is a naming scheme, not an absolute path
@@ -357,7 +398,12 @@ $cyanripArgs = @(
     "-s", "0"
 )
 
-$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0"
+# Add -N flag if user chose to skip MusicBrainz
+if ($skipMusicBrainz) {
+    $cyanripArgs += @("-N")
+}
+
+$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$(if ($skipMusicBrainz) { ' -N' })"
 Write-Host "Working directory: $parentDir" -ForegroundColor Gray
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip working directory: $parentDir"
