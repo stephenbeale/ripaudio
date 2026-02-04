@@ -434,6 +434,69 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
     }
 }
 
+# Check if MusicBrainz connection failed - offer retry or continue without
+if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query failed" -or $cyanripOutputText -match "Connection failed")) {
+    Write-Host "`nMusicBrainz connection failed." -ForegroundColor Yellow
+    Write-Host "  [R] Retry connection" -ForegroundColor White
+    Write-Host "  [C] Continue without metadata (generic track names)" -ForegroundColor White
+    Write-Host "  [Q] Quit" -ForegroundColor White
+    Write-Host ""
+
+    $validChoice = $false
+    while (-not $validChoice) {
+        $retryChoice = Read-Host "Choice (R/c/q)"
+        if ($retryChoice -eq "" -or $retryChoice -match "^[Rr]") {
+            $validChoice = $true
+            Write-Host "`nRetrying MusicBrainz connection..." -ForegroundColor Green
+            Write-Log "User chose to retry MusicBrainz connection"
+
+            Push-Location $parentDir
+            try {
+                $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+                $cyanripExitCode = $LASTEXITCODE
+                $cyanripOutput | ForEach-Object { Write-Host $_ }
+            } catch {
+                Pop-Location
+                Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+            }
+            Pop-Location
+            $cyanripOutputText = $cyanripOutput -join "`n"
+
+            # If still failing with connection error, loop back
+            if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query failed" -or $cyanripOutputText -match "Connection failed")) {
+                $validChoice = $false
+                Write-Host "`nConnection still failing." -ForegroundColor Yellow
+                Write-Host "  [R] Retry connection" -ForegroundColor White
+                Write-Host "  [C] Continue without metadata" -ForegroundColor White
+                Write-Host "  [Q] Quit" -ForegroundColor White
+                Write-Host ""
+            }
+        } elseif ($retryChoice -match "^[Cc]") {
+            $validChoice = $true
+            Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
+            Write-Log "User chose to continue without MusicBrainz metadata (connection failed)"
+
+            $cyanripArgs += @("-N")
+            Push-Location $parentDir
+            try {
+                $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+                $cyanripExitCode = $LASTEXITCODE
+                $cyanripOutput | ForEach-Object { Write-Host $_ }
+            } catch {
+                Pop-Location
+                Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+            }
+            Pop-Location
+            $cyanripOutputText = $cyanripOutput -join "`n"
+        } elseif ($retryChoice -match "^[Qq]") {
+            $validChoice = $true
+            Stop-WithError -Step "STEP 1/3: cyanrip" -Message "User cancelled due to MusicBrainz connection failure"
+        } else {
+            Write-Host "Invalid choice. Enter R, C, or Q" -ForegroundColor Yellow
+        }
+    }
+}
+
 # Check if disc not found in MusicBrainz - offer to continue without metadata
 if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find release info") {
     Write-Host "`nDisc not found in MusicBrainz database." -ForegroundColor Yellow
