@@ -341,14 +341,18 @@ if (!(Test-Path $finalOutputDir)) {
 #   -d <dev>  : CD drive device (e.g., D:)
 #   MusicBrainz lookup is automatic
 
-# Test MusicBrainz server connectivity before starting
-Write-Host "`nChecking MusicBrainz server connectivity..." -ForegroundColor Yellow
+# Test MusicBrainz API connectivity before starting
+# Note: The API (musicbrainz.org/ws/2/) is different from the website and requires User-Agent
+Write-Host "`nChecking MusicBrainz API connectivity..." -ForegroundColor Yellow
 $skipMusicBrainz = $false
+$mbHeaders = @{ "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)" }
 try {
-    $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org" -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
-    Write-Host "MusicBrainz server: OK" -ForegroundColor Green
+    # Test the actual API endpoint that cyanrip uses
+    $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+    Write-Host "MusicBrainz API: OK" -ForegroundColor Green
 } catch {
-    Write-Host "MusicBrainz server: UNREACHABLE" -ForegroundColor Red
+    Write-Host "MusicBrainz API: UNREACHABLE" -ForegroundColor Red
+    Write-Host "  (API may be down, rate-limited, or blocked)" -ForegroundColor Gray
     Write-Host "  [R] Retry connection" -ForegroundColor White
     Write-Host "  [C] Continue without metadata (generic track names)" -ForegroundColor White
     Write-Host "  [Q] Quit" -ForegroundColor White
@@ -360,16 +364,16 @@ try {
         if ($mbChoice -eq "" -or $mbChoice -match "^[Rr]") {
             Write-Host "Retrying..." -ForegroundColor Yellow
             try {
-                $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org" -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
-                Write-Host "MusicBrainz server: OK" -ForegroundColor Green
+                $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+                Write-Host "MusicBrainz API: OK" -ForegroundColor Green
                 $resolved = $true
             } catch {
-                Write-Host "MusicBrainz server: Still unreachable" -ForegroundColor Red
+                Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
                 Write-Host "  [R] Retry | [C] Continue without metadata | [Q] Quit" -ForegroundColor White
             }
         } elseif ($mbChoice -match "^[Cc]") {
             Write-Host "Will continue without MusicBrainz metadata" -ForegroundColor Yellow
-            Write-Log "MusicBrainz unreachable - user chose to continue without metadata"
+            Write-Log "MusicBrainz API unreachable - user chose to continue without metadata"
             $skipMusicBrainz = $true
             $resolved = $true
         } elseif ($mbChoice -match "^[Qq]") {
