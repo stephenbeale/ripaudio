@@ -16,11 +16,12 @@ param(
 )
 
 # ========== STEP TRACKING ==========
-# Define the 3 processing steps
+# Define the 4 processing steps
 $script:AllSteps = @(
     @{ Number = 1; Name = "cyanrip rip"; Description = "Rip audio CD to audio files" }
     @{ Number = 2; Name = "Verify output"; Description = "Verify ripped files exist" }
-    @{ Number = 3; Name = "Open directory"; Description = "Open output folder" }
+    @{ Number = 3; Name = "Cover art"; Description = "Download album cover art" }
+    @{ Number = 4; Name = "Open directory"; Description = "Open output folder" }
 )
 $script:CompletedSteps = @()
 $script:CurrentStep = $null
@@ -57,7 +58,7 @@ function Show-StepsSummary {
         Write-Host "  (none)" -ForegroundColor Gray
     } else {
         foreach ($step in $script:CompletedSteps) {
-            Write-Host "  [X] Step $($step.Number)/3: $($step.Name)" -ForegroundColor Green
+            Write-Host "  [X] Step $($step.Number)/4: $($step.Name)" -ForegroundColor Green
         }
     }
 
@@ -66,7 +67,7 @@ function Show-StepsSummary {
         if ($remaining.Count -gt 0) {
             Write-Host "`n--- STEPS REMAINING ---" -ForegroundColor Yellow
             foreach ($step in $remaining) {
-                Write-Host "  [ ] Step $($step.Number)/3: $($step.Name) - $($step.Description)" -ForegroundColor Yellow
+                Write-Host "  [ ] Step $($step.Number)/4: $($step.Name) - $($step.Description)" -ForegroundColor Yellow
             }
         }
     }
@@ -95,6 +96,9 @@ function Enable-ConsoleClose {
     # SC_CLOSE = 0xF060, MF_BYCOMMAND = 0x0, MF_ENABLED = 0x0
     [Win32.ConsoleCloseProtection]::EnableMenuItem($script:ConsoleSystemMenu, 0xF060, 0x00000000) | Out-Null
 }
+
+# Load System.Web for URL encoding (used in cover art search)
+Add-Type -AssemblyName System.Web
 
 # ========== HELPER FUNCTIONS ==========
 function Test-DriveReady {
@@ -282,14 +286,14 @@ Write-Host "========================================`n" -ForegroundColor Cyan
 
 # ========== STEP 1: RIP WITH CYANRIP ==========
 Set-CurrentStep -StepNumber 1
-Write-Log "STEP 1/3: Starting cyanrip..."
-Write-Host "[STEP 1/3] Starting cyanrip..." -ForegroundColor Green
+Write-Log "STEP 1/4: Starting cyanrip..."
+Write-Host "[STEP 1/4] Starting cyanrip..." -ForegroundColor Green
 
 # Check if destination drive is ready before attempting to create directories
 Write-Host "Checking destination drive..." -ForegroundColor Yellow
 $driveCheck = Test-DriveReady -Path $finalOutputDir
 if (-not $driveCheck.Ready) {
-    Stop-WithError -Step "STEP 1/3: Drive check" -Message $driveCheck.Message
+    Stop-WithError -Step "STEP 1/4: Drive check" -Message $driveCheck.Message
 }
 Write-Host "Destination drive $($driveCheck.Drive) is ready" -ForegroundColor Green
 
@@ -422,7 +426,7 @@ try {
     $cyanripOutput | ForEach-Object { Write-Host $_ }
 } catch {
     Pop-Location
-    Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+    Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
 }
 Pop-Location
 
@@ -476,7 +480,7 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
             $cyanripOutput | ForEach-Object { Write-Host $_ }
         } catch {
             Pop-Location
-            Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+            Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
         }
         Pop-Location
 
@@ -507,7 +511,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
                 $cyanripOutput | ForEach-Object { Write-Host $_ }
             } catch {
                 Pop-Location
-                Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+                Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
             }
             Pop-Location
             $cyanripOutputText = $cyanripOutput -join "`n"
@@ -534,13 +538,13 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
                 $cyanripOutput | ForEach-Object { Write-Host $_ }
             } catch {
                 Pop-Location
-                Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+                Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
             }
             Pop-Location
             $cyanripOutputText = $cyanripOutput -join "`n"
         } elseif ($retryChoice -match "^[Qq]") {
             $validChoice = $true
-            Stop-WithError -Step "STEP 1/3: cyanrip" -Message "User cancelled due to MusicBrainz connection failure"
+            Stop-WithError -Step "STEP 1/4: cyanrip" -Message "User cancelled due to MusicBrainz connection failure"
         } else {
             Write-Host "Invalid choice. Enter R, C, or Q" -ForegroundColor Yellow
         }
@@ -571,7 +575,7 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
             $cyanripOutput | ForEach-Object { Write-Host $_ }
         } catch {
             Pop-Location
-            Stop-WithError -Step "STEP 1/3: cyanrip" -Message "Failed to execute cyanrip: $_"
+            Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
         }
         Pop-Location
 
@@ -593,11 +597,11 @@ if ($cyanripExitCode -ne 0) {
     }
 
     Write-Host "`nERROR: $errorMessage" -ForegroundColor Red
-    Stop-WithError -Step "STEP 1/3: cyanrip" -Message $errorMessage
+    Stop-WithError -Step "STEP 1/4: cyanrip" -Message $errorMessage
 }
 
 Write-Host "`ncyanrip complete!" -ForegroundColor Green
-Write-Log "STEP 1/3: cyanrip complete"
+Write-Log "STEP 1/4: cyanrip complete"
 Complete-CurrentStep
 
 # Eject disc after successful rip
@@ -614,8 +618,8 @@ try {
 
 # ========== STEP 2: VERIFY OUTPUT ==========
 Set-CurrentStep -StepNumber 2
-Write-Log "STEP 2/3: Verifying output..."
-Write-Host "`n[STEP 2/3] Verifying output..." -ForegroundColor Green
+Write-Log "STEP 2/4: Verifying output..."
+Write-Host "`n[STEP 2/4] Verifying output..." -ForegroundColor Green
 
 # Check for ripped files based on format
 $fileExtension = switch ($format) {
@@ -636,7 +640,7 @@ if ($null -eq $rippedFiles -or $rippedFiles.Count -eq 0) {
         Write-Host "Found $($anyAudioFiles.Count) audio file(s) (different format than expected)" -ForegroundColor Yellow
         $rippedFiles = $anyAudioFiles
     } else {
-        Stop-WithError -Step "STEP 2/3: Verify output" -Message "No audio files found in $finalOutputDir"
+        Stop-WithError -Step "STEP 2/4: Verify output" -Message "No audio files found in $finalOutputDir"
     }
 }
 
@@ -653,12 +657,153 @@ Write-Host "Total size: $totalSizeMB MB" -ForegroundColor White
 Write-Log "Total size: $totalSizeMB MB"
 
 Complete-CurrentStep
-Write-Log "STEP 2/3: Verification complete - $($rippedFiles.Count) file(s)"
+Write-Log "STEP 2/4: Verification complete - $($rippedFiles.Count) file(s)"
 
-# ========== STEP 3: OPEN DIRECTORY ==========
+# ========== STEP 3: COVER ART ==========
 Set-CurrentStep -StepNumber 3
-Write-Log "STEP 3/3: Opening directory..."
-Write-Host "`n[STEP 3/3] Opening output directory..." -ForegroundColor Green
+Write-Log "STEP 3/4: Downloading cover art..."
+Write-Host "`n[STEP 3/4] Downloading cover art..." -ForegroundColor Green
+
+$script:CoverArtDownloaded = $false
+
+# Check if cover art already exists (cyanrip may have downloaded it)
+$existingArt = Get-ChildItem -Path $finalOutputDir -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+if ($existingArt -and $existingArt.Count -gt 0) {
+    Write-Host "  Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Green
+    Write-Log "Cover art already exists: $($existingArt[0].Name)"
+    $script:CoverArtDownloaded = $true
+} else {
+    # Try to get release ID from cue file for Cover Art Archive lookup
+    $releaseId = $null
+    $cueFile = Get-ChildItem -Path $finalOutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cueFile) {
+        $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
+        if ($cueContent -match 'REM RELEASE_ID "([^"]+)"') {
+            $releaseId = $Matches[1]
+            Write-Host "  Found Release ID: $releaseId" -ForegroundColor Gray
+        }
+    }
+
+    $artDownloaded = $false
+
+    # Try Cover Art Archive first (if we have a release ID)
+    if ($releaseId) {
+        Write-Host "  Trying Cover Art Archive..." -ForegroundColor Gray
+        try {
+            $caaHeaders = @{ "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)" }
+            $caaUrl = "https://coverartarchive.org/release/$releaseId"
+            $caaResponse = Invoke-RestMethod -Uri $caaUrl -Headers $caaHeaders -TimeoutSec 10
+
+            if ($caaResponse.images -and $caaResponse.images.Count -gt 0) {
+                # Find front cover
+                $frontCover = $caaResponse.images | Where-Object { $_.front -eq $true } | Select-Object -First 1
+                if (-not $frontCover) {
+                    $frontCover = $caaResponse.images[0]
+                }
+
+                $imageUrl = $frontCover.image
+                $extension = if ($imageUrl -match '\.(\w+)$') { $Matches[1] } else { "jpg" }
+                $outputFile = Join-Path $finalOutputDir "Front.$extension"
+
+                Write-Host "  Downloading from Cover Art Archive..." -ForegroundColor Gray
+                Invoke-WebRequest -Uri $imageUrl -OutFile $outputFile -Headers $caaHeaders -TimeoutSec 30
+                Write-Host "  Downloaded: Front.$extension" -ForegroundColor Green
+                Write-Log "Downloaded cover art from Cover Art Archive: Front.$extension"
+                $artDownloaded = $true
+                $script:CoverArtDownloaded = $true
+            }
+        } catch {
+            Write-Host "  Cover Art Archive: not available" -ForegroundColor Yellow
+            Write-Log "Cover Art Archive lookup failed: $_"
+        }
+    }
+
+    # Fallback: Search for album cover image online
+    if (-not $artDownloaded) {
+        Write-Host "  Searching for album cover online..." -ForegroundColor Gray
+
+        # Build search query
+        $searchQuery = if ($artist) { "$artist $album album cover" } else { "$album album cover" }
+
+        try {
+            # Use DuckDuckGo image search API (no auth required)
+            $encodedQuery = [System.Web.HttpUtility]::UrlEncode($searchQuery)
+            $searchUrl = "https://duckduckgo.com/?q=$encodedQuery&iax=images&ia=images"
+
+            # Try to get a representative image from Open Library (book covers) or similar
+            # For audiobooks/language courses, try Open Library first
+            $openLibraryQuery = [System.Web.HttpUtility]::UrlEncode($album)
+            $olUrl = "https://openlibrary.org/search.json?q=$openLibraryQuery&limit=1"
+
+            $olHeaders = @{ "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)" }
+            $olResponse = Invoke-RestMethod -Uri $olUrl -Headers $olHeaders -TimeoutSec 10
+
+            if ($olResponse.docs -and $olResponse.docs.Count -gt 0 -and $olResponse.docs[0].cover_i) {
+                $coverId = $olResponse.docs[0].cover_i
+                $coverUrl = "https://covers.openlibrary.org/b/id/$coverId-L.jpg"
+
+                $outputFile = Join-Path $finalOutputDir "Front.jpg"
+                Invoke-WebRequest -Uri $coverUrl -OutFile $outputFile -Headers $olHeaders -TimeoutSec 30
+
+                # Verify the file was downloaded and has content
+                if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    Write-Host "  Downloaded: Front.jpg (from Open Library)" -ForegroundColor Green
+                    Write-Log "Downloaded cover art from Open Library: Front.jpg"
+                    $artDownloaded = $true
+                    $script:CoverArtDownloaded = $true
+                } else {
+                    Remove-Item $outputFile -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {
+            Write-Log "Open Library lookup failed: $_"
+        }
+
+        # If still no art, try Google Books API (good for audiobooks/language courses)
+        if (-not $artDownloaded) {
+            try {
+                $gbQuery = [System.Web.HttpUtility]::UrlEncode($album)
+                $gbUrl = "https://www.googleapis.com/books/v1/volumes?q=$gbQuery&maxResults=1"
+                $gbResponse = Invoke-RestMethod -Uri $gbUrl -TimeoutSec 10
+
+                if ($gbResponse.items -and $gbResponse.items.Count -gt 0) {
+                    $volumeInfo = $gbResponse.items[0].volumeInfo
+                    if ($volumeInfo.imageLinks -and $volumeInfo.imageLinks.thumbnail) {
+                        # Get larger image by modifying the URL
+                        $thumbnailUrl = $volumeInfo.imageLinks.thumbnail -replace 'zoom=\d', 'zoom=3'
+                        $thumbnailUrl = $thumbnailUrl -replace '&edge=curl', ''
+
+                        $outputFile = Join-Path $finalOutputDir "Front.jpg"
+                        Invoke-WebRequest -Uri $thumbnailUrl -OutFile $outputFile -TimeoutSec 30
+
+                        if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                            Write-Host "  Downloaded: Front.jpg (from Google Books)" -ForegroundColor Green
+                            Write-Log "Downloaded cover art from Google Books: Front.jpg"
+                            $artDownloaded = $true
+                            $script:CoverArtDownloaded = $true
+                        } else {
+                            Remove-Item $outputFile -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+            } catch {
+                Write-Log "Google Books lookup failed: $_"
+            }
+        }
+
+        if (-not $artDownloaded) {
+            Write-Host "  No cover art found (continuing without)" -ForegroundColor Yellow
+            Write-Log "No cover art found from any source"
+        }
+    }
+}
+
+Complete-CurrentStep
+
+# ========== STEP 4: OPEN DIRECTORY ==========
+Set-CurrentStep -StepNumber 4
+Write-Log "STEP 4/4: Opening directory..."
+Write-Host "`n[STEP 4/4] Opening output directory..." -ForegroundColor Green
 Write-Host "Opening: $finalOutputDir" -ForegroundColor Yellow
 Start-Process explorer.exe -ArgumentList $finalOutputDir
 Complete-CurrentStep
@@ -679,6 +824,8 @@ Show-StepsSummary
 Write-Host "`n--- FILE SUMMARY ---" -ForegroundColor Cyan
 Write-Host "  Total tracks: $($rippedFiles.Count)" -ForegroundColor White
 Write-Host "  Total size: $totalSizeMB MB" -ForegroundColor White
+$coverArtStatus = if ($script:CoverArtDownloaded) { "Yes" } else { "No" }
+Write-Host "  Cover art: $coverArtStatus" -ForegroundColor White
 Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
 Write-Host "========================================`n" -ForegroundColor Cyan
 
