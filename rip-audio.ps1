@@ -654,6 +654,74 @@ if ($rippedTracks.Count -gt 0) {
     }
 }
 
+# Ensure metadata tags are set from input arguments (especially when MusicBrainz unavailable)
+# This guarantees ARTIST, ALBUM, ALBUMARTIST, TITLE, TRACKNUMBER are never blank
+Write-Host "`nEnsuring metadata tags from disc details..." -ForegroundColor Yellow
+
+# Re-scan for tracks (in case they were renamed)
+$rippedTracks = @()
+foreach ($ext in $audioExtensions) {
+    $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
+    if ($files -and $files.Count -gt 0) {
+        $rippedTracks = $files | Sort-Object Name
+        $detectedFormat = $ext.TrimStart("*.")
+        break
+    }
+}
+
+if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
+    # Check if metaflac is available
+    $metaflacAvailable = Get-Command metaflac -ErrorAction SilentlyContinue
+
+    if ($metaflacAvailable) {
+        $tagArtist = if ($artist) { $artist } else { "Unknown Artist" }
+        $tagAlbum = $album
+        $totalTracks = $rippedTracks.Count
+
+        foreach ($track in $rippedTracks) {
+            # Extract track number from filename
+            $trackNum = 1
+            if ($track.BaseName -match '^(\d{2})') {
+                $trackNum = [int]$Matches[1]
+            }
+
+            # Build track title: use existing title if present, otherwise "Track ##"
+            # First check if track already has a meaningful title
+            $existingTitle = $null
+            try {
+                $existingTags = & metaflac --show-tag=TITLE $track.FullName 2>$null
+                if ($existingTags -and $existingTags -notmatch "Track\s*\d+") {
+                    $existingTitle = ($existingTags -split '=', 2)[1]
+                }
+            } catch {}
+
+            $trackTitle = if ($existingTitle) { $existingTitle } else { "Track $("{0:D2}" -f $trackNum)" }
+
+            # Set all metadata tags
+            try {
+                # Remove existing tags we're about to set (to avoid duplicates)
+                & metaflac --remove-tag=ARTIST --remove-tag=ALBUM --remove-tag=ALBUMARTIST --remove-tag=TITLE --remove-tag=TRACKNUMBER --remove-tag=TRACKTOTAL $track.FullName 2>$null
+
+                # Set new tags
+                & metaflac --set-tag="ARTIST=$tagArtist" --set-tag="ALBUM=$tagAlbum" --set-tag="ALBUMARTIST=$tagArtist" --set-tag="TITLE=$trackTitle" --set-tag="TRACKNUMBER=$trackNum" --set-tag="TRACKTOTAL=$totalTracks" $track.FullName
+
+                Write-Host "  Tagged: $($track.Name)" -ForegroundColor Gray
+                Write-Log "Tagged: $($track.Name) [Artist=$tagArtist, Album=$tagAlbum, Title=$trackTitle, Track=$trackNum/$totalTracks]"
+            } catch {
+                Write-Host "  Failed to tag: $($track.Name)" -ForegroundColor Yellow
+                Write-Log "WARNING: Failed to tag $($track.Name): $_"
+            }
+        }
+        Write-Host "Metadata tagging complete" -ForegroundColor Green
+    } else {
+        Write-Host "  metaflac not found - skipping metadata tagging" -ForegroundColor Yellow
+        Write-Log "WARNING: metaflac not available, skipping metadata tagging"
+    }
+} elseif ($rippedTracks.Count -gt 0) {
+    Write-Host "  Metadata tagging only supported for FLAC format" -ForegroundColor Yellow
+    Write-Log "Skipping metadata tagging - format is $detectedFormat (only FLAC supported)"
+}
+
 Complete-CurrentStep
 
 # Eject disc after successful rip
