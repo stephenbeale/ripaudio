@@ -602,6 +602,58 @@ if ($cyanripExitCode -ne 0) {
 
 Write-Host "`ncyanrip complete!" -ForegroundColor Green
 Write-Log "STEP 1/4: cyanrip complete"
+
+# Rename tracks if they have generic names (no MusicBrainz metadata)
+# Format: "## - Artist - Album" e.g. "01 - John Martyn - Solid Air"
+$audioExtensions = @("*.flac", "*.mp3", "*.opus", "*.m4a", "*.wav")
+$rippedTracks = @()
+foreach ($ext in $audioExtensions) {
+    $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
+    if ($files -and $files.Count -gt 0) {
+        $rippedTracks = $files
+        break
+    }
+}
+
+if ($rippedTracks.Count -gt 0) {
+    # Check if tracks have generic names (pattern: "## - Track ##" or just "Track ##")
+    $genericPattern = "^\d{2}\s*-?\s*Track\s*\d+"
+    $hasGenericNames = $rippedTracks | Where-Object { $_.BaseName -match $genericPattern }
+
+    if ($hasGenericNames -and $hasGenericNames.Count -gt 0) {
+        Write-Host "`nRenaming tracks with disc details..." -ForegroundColor Yellow
+
+        # Build the naming components from script parameters
+        $namingArtist = if ($artist) { $artist } else { "Unknown Artist" }
+        $namingAlbum = $album
+
+        foreach ($track in $rippedTracks) {
+            # Extract track number from filename
+            if ($track.BaseName -match '^(\d{2})') {
+                $trackNum = $Matches[1]
+                $newName = "$trackNum - $namingArtist - $namingAlbum$($track.Extension)"
+
+                # Sanitize filename (remove invalid characters)
+                $newName = $newName -replace '[\\/:*?"<>|]', '_'
+
+                $newPath = Join-Path $finalOutputDir $newName
+
+                if ($track.FullName -ne $newPath) {
+                    try {
+                        Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
+                        Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
+                        Write-Log "Renamed: $($track.Name) -> $newName"
+                    } catch {
+                        Write-Host "  Failed to rename: $($track.Name)" -ForegroundColor Yellow
+                        Write-Log "WARNING: Failed to rename $($track.Name): $_"
+                    }
+                }
+            }
+        }
+        Write-Host "Track renaming complete" -ForegroundColor Green
+    }
+}
+
 Complete-CurrentStep
 
 # Eject disc after successful rip
