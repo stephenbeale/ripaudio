@@ -1,0 +1,912 @@
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$Path,
+
+    [Parameter()]
+    [string]$Artist = "",
+
+    [Parameter()]
+    [string]$Album = "",
+
+    [Parameter()]
+    [switch]$SkipRename,
+
+    [Parameter()]
+    [switch]$SkipCoverArt,
+
+    [Parameter()]
+    [switch]$Force
+)
+
+# ========== STEP TRACKING ==========
+$script:AllSteps = @(
+    @{ Number = 1; Name = "Scan files"; Description = "Read existing tags and identify gaps" }
+    @{ Number = 2; Name = "Search metadata"; Description = "Query MusicBrainz, iTunes, Deezer" }
+    @{ Number = 3; Name = "Confirm changes"; Description = "Show comparison and get approval" }
+    @{ Number = 4; Name = "Apply tags"; Description = "Write metadata to audio files" }
+    @{ Number = 5; Name = "Cover art"; Description = "Download album cover art" }
+    @{ Number = 6; Name = "Rename files"; Description = "Rename files to standard format" }
+)
+$script:CompletedSteps = @()
+$script:CurrentStep = $null
+$script:TotalSteps = 6
+
+function Set-CurrentStep {
+    param([int]$StepNumber)
+    $script:CurrentStep = $script:AllSteps | Where-Object { $_.Number -eq $StepNumber }
+}
+
+function Complete-CurrentStep {
+    if ($script:CurrentStep) {
+        $script:CompletedSteps += $script:CurrentStep
+    }
+}
+
+function Get-RemainingSteps {
+    $completedNumbers = $script:CompletedSteps | ForEach-Object { $_.Number }
+    return $script:AllSteps | Where-Object { $_.Number -notin $completedNumbers }
+}
+
+function Show-StepsSummary {
+    param([switch]$ShowRemaining)
+
+    Write-Host "`n--- STEPS COMPLETED ---" -ForegroundColor Green
+    if ($script:CompletedSteps.Count -eq 0) {
+        Write-Host "  (none)" -ForegroundColor Gray
+    } else {
+        foreach ($step in $script:CompletedSteps) {
+            Write-Host "  [X] Step $($step.Number)/$($script:TotalSteps): $($step.Name)" -ForegroundColor Green
+        }
+    }
+
+    if ($ShowRemaining) {
+        $remaining = Get-RemainingSteps
+        if ($remaining.Count -gt 0) {
+            Write-Host "`n--- STEPS REMAINING ---" -ForegroundColor Yellow
+            foreach ($step in $remaining) {
+                Write-Host "  [ ] Step $($step.Number)/$($script:TotalSteps): $($step.Name) - $($step.Description)" -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+# ========== HELPER FUNCTIONS ==========
+function Write-Log {
+    param([string]$Message)
+    if ($script:LogFile) {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $entry = "[$timestamp] $Message"
+        Add-Content -Path $script:LogFile -Value $entry
+    }
+}
+
+function Stop-WithError {
+    param([string]$Step, [string]$Message)
+
+    Write-Log "========== ERROR =========="
+    Write-Log "Failed at: $Step"
+    Write-Log "Message: $Message"
+
+    Write-Host "`n========================================" -ForegroundColor Red
+    Write-Host "FAILED!" -ForegroundColor Red
+    Write-Host "========================================" -ForegroundColor Red
+    Write-Host "`nError at: $Step" -ForegroundColor Red
+    Write-Host "Message: $Message" -ForegroundColor Red
+
+    Show-StepsSummary -ShowRemaining
+
+    if ($script:LogFile) {
+        Write-Host "`nLog file: $($script:LogFile)" -ForegroundColor Yellow
+    }
+    Write-Host "`n========================================`n" -ForegroundColor Red
+    exit 1
+}
+
+# ========== CORE FUNCTIONS ==========
+
+function Read-ExistingTags {
+    param([string]$FolderPath)
+
+    $audioFiles = Get-ChildItem -Path $FolderPath -Filter "*.flac" -ErrorAction SilentlyContinue | Sort-Object Name
+    if (-not $audioFiles -or $audioFiles.Count -eq 0) {
+        return $null
+    }
+
+    $tracks = @()
+    foreach ($file in $audioFiles) {
+        $tagData = @{
+            File = $file
+            FileName = $file.Name
+            Artist = ""
+            Album = ""
+            AlbumArtist = ""
+            Title = ""
+            TrackNumber = ""
+            Date = ""
+            Genre = ""
+        }
+
+        $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
+        if ($metaflacPath) {
+            $tagFields = @("ARTIST", "ALBUM", "ALBUMARTIST", "TITLE", "TRACKNUMBER", "DATE", "GENRE")
+            foreach ($field in $tagFields) {
+                $value = & metaflac --show-tag=$field $file.FullName 2>$null
+                if ($value -and $value -match "^$field=(.+)$") {
+                    $tagData[$field.Substring(0,1).ToUpper() + $field.Substring(1).ToLower()] = $Matches[1]
+                    # Fix casing for multi-word fields
+                    if ($field -eq "ALBUMARTIST") { $tagData.AlbumArtist = $Matches[1] }
+                    if ($field -eq "TRACKNUMBER") { $tagData.TrackNumber = $Matches[1] }
+                }
+            }
+        }
+
+        $tracks += $tagData
+    }
+
+    return $tracks
+}
+
+function Search-MusicBrainz {
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount)
+
+    $headers = @{
+        "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
+        "Accept" = "application/json"
+    }
+
+    $query = "release:`"$AlbumName`""
+    if ($ArtistName) {
+        $query += " AND artist:`"$ArtistName`""
+    }
+
+    Write-Host "    MusicBrainz: searching..." -ForegroundColor Gray
+    Write-Log "  MusicBrainz query: $query"
+
+    try {
+        $encodedQuery = [System.Web.HttpUtility]::UrlEncode($query)
+        $url = "https://musicbrainz.org/ws/2/release?query=$encodedQuery&limit=10&fmt=json"
+        $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15
+        Start-Sleep -Milliseconds 1100  # Rate limit
+
+        if ($response.releases -and $response.releases.Count -gt 0) {
+            # Prefer release with matching track count
+            $bestMatch = $null
+            if ($TrackCount -gt 0) {
+                foreach ($rel in $response.releases) {
+                    if ($rel.media -and $rel.media.Count -gt 0) {
+                        $relTrackCount = ($rel.media | ForEach-Object { $_.'track-count' } | Measure-Object -Sum).Sum
+                        if ($relTrackCount -eq $TrackCount) {
+                            $bestMatch = $rel
+                            break
+                        }
+                    }
+                }
+            }
+            if (-not $bestMatch) {
+                $bestMatch = $response.releases[0]
+            }
+
+            # Fetch full release details with recordings
+            $detailUrl = "https://musicbrainz.org/ws/2/release/$($bestMatch.id)?inc=recordings+artist-credits+release-groups&fmt=json"
+            $fullRelease = Invoke-RestMethod -Uri $detailUrl -Headers $headers -TimeoutSec 15
+            Start-Sleep -Milliseconds 1100
+
+            $artist = if ($fullRelease.'artist-credit') {
+                ($fullRelease.'artist-credit' | ForEach-Object { $_.name }) -join ""
+            } else { "" }
+
+            Write-Host "    MusicBrainz: found `"$($fullRelease.title)`" by $artist" -ForegroundColor Green
+            Write-Log "  MusicBrainz: found $($fullRelease.title) by $artist (ID: $($fullRelease.id))"
+            return $fullRelease
+        }
+    } catch {
+        Write-Host "    MusicBrainz: search failed - $_" -ForegroundColor Yellow
+        Write-Log "  MusicBrainz search failed: $_"
+    }
+
+    Write-Host "    MusicBrainz: no results" -ForegroundColor Yellow
+    return $null
+}
+
+function Search-iTunes {
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount)
+
+    $query = if ($ArtistName) { "$ArtistName $AlbumName" } else { $AlbumName }
+    $encoded = [System.Web.HttpUtility]::UrlEncode($query)
+
+    Write-Host "    iTunes: searching..." -ForegroundColor Gray
+    Write-Log "  iTunes query: $query"
+
+    try {
+        $url = "https://itunes.apple.com/search?term=$encoded&media=music&entity=album&limit=5"
+        $response = Invoke-RestMethod -Uri $url -TimeoutSec 10
+
+        if ($response.results -and $response.results.Count -gt 0) {
+            # Prefer album with matching track count
+            $bestMatch = $null
+            if ($TrackCount -gt 0) {
+                foreach ($album in $response.results) {
+                    if ($album.trackCount -eq $TrackCount) {
+                        $bestMatch = $album
+                        break
+                    }
+                }
+            }
+            if (-not $bestMatch) {
+                $bestMatch = $response.results[0]
+            }
+
+            # Get track listing
+            $lookupUrl = "https://itunes.apple.com/lookup?id=$($bestMatch.collectionId)&entity=song"
+            $trackResponse = Invoke-RestMethod -Uri $lookupUrl -TimeoutSec 10
+
+            $tracks = @()
+            if ($trackResponse.results) {
+                $tracks = $trackResponse.results | Where-Object { $_.wrapperType -eq "track" } | Sort-Object trackNumber
+            }
+
+            $result = @{
+                Source = "iTunes"
+                Artist = $bestMatch.artistName
+                Album = $bestMatch.collectionName
+                Date = if ($bestMatch.releaseDate) { ($bestMatch.releaseDate).Substring(0, 4) } else { "" }
+                Genre = $bestMatch.primaryGenreName
+                TrackCount = $bestMatch.trackCount
+                ArtworkUrl = if ($bestMatch.artworkUrl100) { $bestMatch.artworkUrl100 -replace '100x100bb', '600x600bb' } else { "" }
+                Tracks = $tracks | ForEach-Object {
+                    @{ Number = $_.trackNumber; Title = $_.trackName; Artist = $_.artistName }
+                }
+            }
+
+            Write-Host "    iTunes: found `"$($result.Album)`" by $($result.Artist)" -ForegroundColor Green
+            Write-Log "  iTunes: found $($result.Album) by $($result.Artist)"
+            return $result
+        }
+    } catch {
+        Write-Host "    iTunes: search failed - $_" -ForegroundColor Yellow
+        Write-Log "  iTunes search failed: $_"
+    }
+
+    Write-Host "    iTunes: no results" -ForegroundColor Yellow
+    return $null
+}
+
+function Search-Deezer {
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount)
+
+    $query = if ($ArtistName) { "$ArtistName $AlbumName" } else { $AlbumName }
+    $encoded = [System.Web.HttpUtility]::UrlEncode($query)
+
+    Write-Host "    Deezer: searching..." -ForegroundColor Gray
+    Write-Log "  Deezer query: $query"
+
+    try {
+        $url = "https://api.deezer.com/search/album?q=$encoded"
+        $response = Invoke-RestMethod -Uri $url -TimeoutSec 10
+
+        if ($response.data -and $response.data.Count -gt 0) {
+            # Prefer album with matching track count
+            $bestMatch = $null
+            if ($TrackCount -gt 0) {
+                foreach ($album in $response.data) {
+                    if ($album.nb_tracks -eq $TrackCount) {
+                        $bestMatch = $album
+                        break
+                    }
+                }
+            }
+            if (-not $bestMatch) {
+                $bestMatch = $response.data[0]
+            }
+
+            # Get track listing from album endpoint
+            $albumUrl = "https://api.deezer.com/album/$($bestMatch.id)"
+            $albumDetail = Invoke-RestMethod -Uri $albumUrl -TimeoutSec 10
+
+            $tracks = @()
+            if ($albumDetail.tracks -and $albumDetail.tracks.data) {
+                $trackNum = 1
+                $tracks = $albumDetail.tracks.data | ForEach-Object {
+                    @{ Number = $trackNum; Title = $_.title; Artist = $_.artist.name }
+                    $trackNum++
+                }
+            }
+
+            $coverUrl = $bestMatch.cover_xl
+            if (-not $coverUrl) { $coverUrl = $bestMatch.cover_big }
+            if (-not $coverUrl) { $coverUrl = $bestMatch.cover_medium }
+
+            $result = @{
+                Source = "Deezer"
+                Artist = $bestMatch.artist.name
+                Album = $bestMatch.title
+                Date = if ($albumDetail.release_date) { ($albumDetail.release_date).Substring(0, 4) } else { "" }
+                Genre = if ($albumDetail.genres -and $albumDetail.genres.data -and $albumDetail.genres.data.Count -gt 0) { $albumDetail.genres.data[0].name } else { "" }
+                TrackCount = $bestMatch.nb_tracks
+                ArtworkUrl = $coverUrl
+                Tracks = $tracks
+            }
+
+            Write-Host "    Deezer: found `"$($result.Album)`" by $($result.Artist)" -ForegroundColor Green
+            Write-Log "  Deezer: found $($result.Album) by $($result.Artist)"
+            return $result
+        }
+    } catch {
+        Write-Host "    Deezer: search failed - $_" -ForegroundColor Yellow
+        Write-Log "  Deezer search failed: $_"
+    }
+
+    Write-Host "    Deezer: no results" -ForegroundColor Yellow
+    return $null
+}
+
+function Search-AllSources {
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount)
+
+    $mbResult = Search-MusicBrainz -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
+    $itunesResult = Search-iTunes -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
+    $deezerResult = Search-Deezer -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
+
+    if (-not $mbResult -and -not $itunesResult -and -not $deezerResult) {
+        return $null
+    }
+
+    # Extract MusicBrainz data into normalized form
+    $mbNorm = $null
+    if ($mbResult) {
+        $mbArtist = if ($mbResult.'artist-credit') {
+            ($mbResult.'artist-credit' | ForEach-Object { $_.name }) -join ""
+        } else { "" }
+
+        $mbTracks = @()
+        if ($mbResult.media -and $mbResult.media[0].tracks) {
+            $num = 1
+            foreach ($t in $mbResult.media[0].tracks) {
+                $tArtist = if ($t.'artist-credit') {
+                    ($t.'artist-credit' | ForEach-Object { $_.name }) -join ""
+                } else { $mbArtist }
+                $mbTracks += @{ Number = $num; Title = $t.title; Artist = $tArtist }
+                $num++
+            }
+        }
+
+        $mbNorm = @{
+            Source = "MusicBrainz"
+            Artist = $mbArtist
+            Album = $mbResult.title
+            Date = if ($mbResult.date) { $mbResult.date.Substring(0, [Math]::Min(4, $mbResult.date.Length)) } else { "" }
+            Genre = ""  # MusicBrainz doesn't return genre in release endpoint
+            TrackCount = if ($mbResult.media) { ($mbResult.media | ForEach-Object { $_.'track-count' } | Measure-Object -Sum).Sum } else { 0 }
+            ReleaseId = $mbResult.id
+            Tracks = $mbTracks
+        }
+    }
+
+    # Merge: Artist/Album/Date/Tracks from MB > Deezer > iTunes
+    #         Genre from Deezer > iTunes
+    #         Cover art: Deezer > iTunes > CAA
+    $merged = @{
+        Artist = ""
+        Album = ""
+        AlbumArtist = ""
+        Date = ""
+        Genre = ""
+        TrackCount = 0
+        ReleaseId = ""
+        Tracks = @()
+        ArtworkUrl = ""
+        ArtworkSource = ""
+        Sources = @{
+            MusicBrainz = $mbNorm
+            iTunes = $itunesResult
+            Deezer = $deezerResult
+        }
+    }
+
+    # Artist (MB > Deezer > iTunes)
+    if ($mbNorm -and $mbNorm.Artist) { $merged.Artist = $mbNorm.Artist }
+    elseif ($deezerResult -and $deezerResult.Artist) { $merged.Artist = $deezerResult.Artist }
+    elseif ($itunesResult -and $itunesResult.Artist) { $merged.Artist = $itunesResult.Artist }
+    $merged.AlbumArtist = $merged.Artist
+
+    # Album (MB > Deezer > iTunes)
+    if ($mbNorm -and $mbNorm.Album) { $merged.Album = $mbNorm.Album }
+    elseif ($deezerResult -and $deezerResult.Album) { $merged.Album = $deezerResult.Album }
+    elseif ($itunesResult -and $itunesResult.Album) { $merged.Album = $itunesResult.Album }
+
+    # Date (MB > Deezer > iTunes)
+    if ($mbNorm -and $mbNorm.Date) { $merged.Date = $mbNorm.Date }
+    elseif ($deezerResult -and $deezerResult.Date) { $merged.Date = $deezerResult.Date }
+    elseif ($itunesResult -and $itunesResult.Date) { $merged.Date = $itunesResult.Date }
+
+    # Genre (Deezer > iTunes)
+    if ($deezerResult -and $deezerResult.Genre) { $merged.Genre = $deezerResult.Genre }
+    elseif ($itunesResult -and $itunesResult.Genre) { $merged.Genre = $itunesResult.Genre }
+
+    # Track count
+    if ($mbNorm -and $mbNorm.TrackCount -gt 0) { $merged.TrackCount = $mbNorm.TrackCount }
+    elseif ($deezerResult -and $deezerResult.TrackCount -gt 0) { $merged.TrackCount = $deezerResult.TrackCount }
+    elseif ($itunesResult -and $itunesResult.TrackCount -gt 0) { $merged.TrackCount = $itunesResult.TrackCount }
+
+    # Release ID (MusicBrainz only)
+    if ($mbNorm -and $mbNorm.ReleaseId) { $merged.ReleaseId = $mbNorm.ReleaseId }
+
+    # Track titles (MB > Deezer; iTunes doesn't reliably provide track names)
+    if ($mbNorm -and $mbNorm.Tracks.Count -gt 0) { $merged.Tracks = $mbNorm.Tracks }
+    elseif ($deezerResult -and $deezerResult.Tracks.Count -gt 0) { $merged.Tracks = $deezerResult.Tracks }
+    elseif ($itunesResult -and $itunesResult.Tracks.Count -gt 0) { $merged.Tracks = $itunesResult.Tracks }
+
+    # Artwork (Deezer 1000x1000 > iTunes 600x600 > CAA)
+    if ($deezerResult -and $deezerResult.ArtworkUrl) {
+        $merged.ArtworkUrl = $deezerResult.ArtworkUrl
+        $merged.ArtworkSource = "Deezer"
+    } elseif ($itunesResult -and $itunesResult.ArtworkUrl) {
+        $merged.ArtworkUrl = $itunesResult.ArtworkUrl
+        $merged.ArtworkSource = "iTunes"
+    } elseif ($mbNorm -and $mbNorm.ReleaseId) {
+        $merged.ArtworkUrl = "CAA:$($mbNorm.ReleaseId)"
+        $merged.ArtworkSource = "Cover Art Archive"
+    }
+
+    return $merged
+}
+
+function Show-MetadataComparison {
+    param([array]$ExistingTracks, [hashtable]$Proposed)
+
+    # Album-level comparison
+    $currentArtist = ($ExistingTracks | Where-Object { $_.Artist } | Select-Object -First 1).Artist
+    $currentAlbum = ($ExistingTracks | Where-Object { $_.Album } | Select-Object -First 1).Album
+    $currentDate = ($ExistingTracks | Where-Object { $_.Date } | Select-Object -First 1).Date
+    $currentGenre = ($ExistingTracks | Where-Object { $_.Genre } | Select-Object -First 1).Genre
+
+    Write-Host "`n  --- Album Metadata ---" -ForegroundColor Cyan
+    Write-Host "  {0,-15} {1,-35} {2,-35}" -f "Field", "Current", "Proposed" -ForegroundColor White
+    Write-Host "  {0,-15} {1,-35} {2,-35}" -f "-----", "-------", "--------" -ForegroundColor Gray
+
+    $fields = @(
+        @{ Name = "Artist"; Current = $currentArtist; New = $Proposed.Artist }
+        @{ Name = "Album"; Current = $currentAlbum; New = $Proposed.Album }
+        @{ Name = "Date"; Current = $currentDate; New = $Proposed.Date }
+        @{ Name = "Genre"; Current = $currentGenre; New = $Proposed.Genre }
+    )
+
+    foreach ($field in $fields) {
+        $cur = if ($field.Current) { $field.Current } else { "(empty)" }
+        $new = if ($field.New) { $field.New } else { "(empty)" }
+        $color = if ($cur -ne $new -and $field.New) { "Yellow" } else { "Gray" }
+        Write-Host "  {0,-15} {1,-35} {2,-35}" -f $field.Name, $cur, $new -ForegroundColor $color
+    }
+
+    # Track-level comparison
+    Write-Host "`n  --- Track Listing ---" -ForegroundColor Cyan
+    Write-Host "  {0,-4} {1,-35} {2,-35}" -f "#", "Current Title", "Proposed Title" -ForegroundColor White
+    Write-Host "  {0,-4} {1,-35} {2,-35}" -f "--", "-------------", "--------------" -ForegroundColor Gray
+
+    for ($i = 0; $i -lt $ExistingTracks.Count; $i++) {
+        $existing = $ExistingTracks[$i]
+        $curTitle = if ($existing.Title) { $existing.Title } else { "(empty)" }
+
+        $newTitle = "(empty)"
+        if ($Proposed.Tracks -and $i -lt $Proposed.Tracks.Count) {
+            $newTitle = $Proposed.Tracks[$i].Title
+        }
+
+        $num = '{0:D2}' -f ($i + 1)
+        $isGeneric = $curTitle -match '^Track \d+$' -or $curTitle -eq "(empty)"
+        $color = if ($isGeneric -and $newTitle -ne "(empty)") { "Yellow" } elseif ($curTitle -ne $newTitle -and $newTitle -ne "(empty)") { "Yellow" } else { "Gray" }
+        Write-Host "  {0,-4} {1,-35} {2,-35}" -f $num, $curTitle, $newTitle -ForegroundColor $color
+    }
+
+    # Rename preview
+    if (-not $SkipRename) {
+        Write-Host "`n  --- Rename Preview ---" -ForegroundColor Cyan
+        Write-Host "  {0,-40} {1,-40}" -f "Current Filename", "New Filename" -ForegroundColor White
+        Write-Host "  {0,-40} {1,-40}" -f "----------------", "------------" -ForegroundColor Gray
+
+        for ($i = 0; $i -lt $ExistingTracks.Count; $i++) {
+            $existing = $ExistingTracks[$i]
+            $currentName = $existing.FileName
+
+            $trackTitle = if ($Proposed.Tracks -and $i -lt $Proposed.Tracks.Count) { $Proposed.Tracks[$i].Title } else { $existing.Title }
+            if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
+
+            $num = '{0:D2}' -f ($i + 1)
+            $sanitizedTitle = $trackTitle -replace '[\\/:*?"<>|]', '_'
+            $ext = $existing.File.Extension
+            $newName = "$num - $sanitizedTitle$ext"
+
+            $color = if ($currentName -ne $newName) { "Yellow" } else { "Gray" }
+            Write-Host "  {0,-40} {1,-40}" -f $currentName, $newName -ForegroundColor $color
+        }
+    }
+
+    # Artwork info
+    if (-not $SkipCoverArt -and $Proposed.ArtworkUrl) {
+        Write-Host "`n  Cover art: $($Proposed.ArtworkSource)" -ForegroundColor Cyan
+    }
+
+    # Source summary
+    $sourceList = @()
+    if ($Proposed.Sources.MusicBrainz) { $sourceList += "MusicBrainz" }
+    if ($Proposed.Sources.iTunes) { $sourceList += "iTunes" }
+    if ($Proposed.Sources.Deezer) { $sourceList += "Deezer" }
+    Write-Host "`n  Sources found: $($sourceList -join ', ')" -ForegroundColor Gray
+}
+
+function Set-AudioTags {
+    param(
+        [string]$FilePath,
+        [int]$TrackNumber,
+        [int]$TotalTracks,
+        [string]$Title,
+        [string]$Artist,
+        [string]$Album,
+        [string]$AlbumArtist,
+        [string]$Date,
+        [string]$Genre,
+        [string]$ReleaseId
+    )
+
+    $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
+    if (-not $metaflacPath) {
+        return $false
+    }
+
+    # Use targeted --remove-tag, not --remove-all-tags, to preserve other metadata
+    $removeArgs = @(
+        "--remove-tag=ARTIST",
+        "--remove-tag=ALBUM",
+        "--remove-tag=ALBUMARTIST",
+        "--remove-tag=TITLE",
+        "--remove-tag=TRACKNUMBER",
+        "--remove-tag=TRACKTOTAL",
+        "--remove-tag=DATE",
+        "--remove-tag=GENRE",
+        "--remove-tag=MUSICBRAINZ_ALBUMID"
+    )
+    & metaflac @removeArgs $FilePath 2>$null
+
+    $setArgs = @(
+        "--set-tag=TITLE=$Title",
+        "--set-tag=ARTIST=$Artist",
+        "--set-tag=ALBUM=$Album",
+        "--set-tag=ALBUMARTIST=$AlbumArtist",
+        "--set-tag=TRACKNUMBER=$TrackNumber",
+        "--set-tag=TRACKTOTAL=$TotalTracks"
+    )
+
+    if ($Date) { $setArgs += "--set-tag=DATE=$Date" }
+    if ($Genre) { $setArgs += "--set-tag=GENRE=$Genre" }
+    if ($ReleaseId) { $setArgs += "--set-tag=MUSICBRAINZ_ALBUMID=$ReleaseId" }
+
+    & metaflac @setArgs $FilePath 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
+function Get-CoverArt {
+    param(
+        [string]$ArtworkUrl,
+        [string]$ArtworkSource,
+        [string]$OutputPath,
+        [string]$ReleaseId
+    )
+
+    $headers = @{
+        "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
+    }
+
+    # Deezer or iTunes direct URL
+    if ($ArtworkUrl -and $ArtworkUrl -notlike "CAA:*") {
+        try {
+            $outputFile = Join-Path $OutputPath "Front.jpg"
+            Invoke-WebRequest -Uri $ArtworkUrl -OutFile $outputFile -Headers $headers -TimeoutSec 30
+
+            if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                Write-Host "    Downloaded: Front.jpg (from $ArtworkSource)" -ForegroundColor Green
+                Write-Log "  Downloaded cover art from $ArtworkSource"
+                return $outputFile
+            }
+            Remove-Item $outputFile -ErrorAction SilentlyContinue
+        } catch {
+            Write-Host "    $ArtworkSource artwork failed: $_" -ForegroundColor Yellow
+        }
+    }
+
+    # CAA fallback
+    if ($ReleaseId) {
+        try {
+            $url = "https://coverartarchive.org/release/$ReleaseId"
+            $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15
+
+            if ($response.images -and $response.images.Count -gt 0) {
+                $frontCover = $response.images | Where-Object { $_.front -eq $true } | Select-Object -First 1
+                if (-not $frontCover) { $frontCover = $response.images[0] }
+
+                $imageUrl = $frontCover.image
+                $extension = if ($imageUrl -match '\.(\w+)$') { $Matches[1] } else { "jpg" }
+                $outputFile = Join-Path $OutputPath "Front.$extension"
+
+                Invoke-WebRequest -Uri $imageUrl -OutFile $outputFile -Headers $headers -TimeoutSec 30
+                if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    Write-Host "    Downloaded: Front.$extension (from Cover Art Archive)" -ForegroundColor Green
+                    Write-Log "  Downloaded cover art from Cover Art Archive"
+                    return $outputFile
+                }
+                Remove-Item $outputFile -ErrorAction SilentlyContinue
+            }
+        } catch {
+            Write-Host "    Cover Art Archive: not available" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "    No cover art found" -ForegroundColor Yellow
+    return $null
+}
+
+function Rename-AudioFiles {
+    param([array]$ExistingTracks, [hashtable]$Proposed)
+
+    $renamedCount = 0
+
+    for ($i = 0; $i -lt $ExistingTracks.Count; $i++) {
+        $track = $ExistingTracks[$i]
+        $file = $track.File
+
+        $trackTitle = if ($Proposed.Tracks -and $i -lt $Proposed.Tracks.Count) { $Proposed.Tracks[$i].Title } else { $track.Title }
+        if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
+
+        $num = '{0:D2}' -f ($i + 1)
+        $sanitizedTitle = $trackTitle -replace '[\\/:*?"<>|]', '_'
+        $ext = $file.Extension
+        $newName = "$num - $sanitizedTitle$ext"
+
+        if ($file.Name -ne $newName) {
+            $newPath = Join-Path $file.DirectoryName $newName
+            try {
+                Rename-Item -Path $file.FullName -NewName $newName -ErrorAction Stop
+                Write-Host "    $($file.Name) -> $newName" -ForegroundColor Gray
+                Write-Log "  Renamed: $($file.Name) -> $newName"
+                $renamedCount++
+            } catch {
+                Write-Host "    Failed to rename $($file.Name): $_" -ForegroundColor Red
+                Write-Log "  ERROR renaming $($file.Name): $_"
+            }
+        }
+    }
+
+    return $renamedCount
+}
+
+# ========== MAIN SCRIPT ==========
+
+# Load System.Web for URL encoding
+Add-Type -AssemblyName System.Web
+
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "Search & Apply Audio Metadata" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+# Validate path
+if (-not (Test-Path $Path)) {
+    Write-Host "`nError: Path not found: $Path" -ForegroundColor Red
+    exit 1
+}
+
+# Setup logging
+$logDir = "C:\Music\logs"
+if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+$logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$script:LogFile = Join-Path $logDir "search-metadata_${logTimestamp}.log"
+
+Write-Log "========== SEARCH METADATA SESSION STARTED =========="
+Write-Log "Path: $Path"
+Write-Log "Artist hint: $Artist"
+Write-Log "Album hint: $Album"
+Write-Log "SkipRename: $SkipRename"
+Write-Log "SkipCoverArt: $SkipCoverArt"
+Write-Log "Force: $Force"
+
+# Window title
+$host.UI.RawUI.WindowTitle = "search-metadata - $Path"
+
+# ========== STEP 1: SCAN FILES ==========
+Set-CurrentStep -StepNumber 1
+Write-Host "`n[STEP 1/$script:TotalSteps] Scanning files..." -ForegroundColor Green
+Write-Log "STEP 1/$($script:TotalSteps): Scanning files in $Path"
+
+$existingTracks = Read-ExistingTags -FolderPath $Path
+
+if (-not $existingTracks -or $existingTracks.Count -eq 0) {
+    Stop-WithError -Step "STEP 1/$($script:TotalSteps): Scan files" -Message "No FLAC files found in: $Path"
+}
+
+Write-Host "  Found $($existingTracks.Count) FLAC file(s)" -ForegroundColor White
+
+# Infer artist/album from tags or folder structure if not provided
+if (-not $Artist) {
+    $tagArtist = ($existingTracks | Where-Object { $_.Artist -and $_.Artist -ne "" } | Select-Object -First 1).Artist
+    if ($tagArtist) {
+        $Artist = $tagArtist
+        Write-Host "  Artist (from tags): $Artist" -ForegroundColor Gray
+    } else {
+        # Try parent folder name
+        $parentPath = Split-Path -Parent $Path
+        $parentName = Split-Path -Leaf $parentPath
+        if ($parentName -ne "Music" -and $parentName -ne "logs") {
+            $Artist = $parentName
+            Write-Host "  Artist (from folder): $Artist" -ForegroundColor Gray
+        }
+    }
+}
+
+if (-not $Album) {
+    $tagAlbum = ($existingTracks | Where-Object { $_.Album -and $_.Album -ne "" } | Select-Object -First 1).Album
+    if ($tagAlbum) {
+        $Album = $tagAlbum
+        Write-Host "  Album (from tags): $Album" -ForegroundColor Gray
+    } else {
+        $Album = Split-Path -Leaf $Path
+        Write-Host "  Album (from folder): $Album" -ForegroundColor Gray
+    }
+}
+
+Write-Host "  Searching for: `"$Album`"" -ForegroundColor White
+if ($Artist) { Write-Host "  by: `"$Artist`"" -ForegroundColor White }
+
+# Check for gaps
+$gapCount = 0
+foreach ($track in $existingTracks) {
+    if (-not $track.Title -or $track.Title -match '^Track \d+$') { $gapCount++ }
+}
+if ($gapCount -gt 0) {
+    Write-Host "  Tracks with missing/generic titles: $gapCount" -ForegroundColor Yellow
+}
+
+Write-Log "  Artist: $Artist, Album: $Album, Tracks: $($existingTracks.Count), Gaps: $gapCount"
+
+Complete-CurrentStep
+
+# ========== STEP 2: SEARCH METADATA ==========
+Set-CurrentStep -StepNumber 2
+Write-Host "`n[STEP 2/$script:TotalSteps] Searching metadata sources..." -ForegroundColor Green
+Write-Log "STEP 2/$($script:TotalSteps): Searching metadata sources"
+
+$merged = Search-AllSources -AlbumName $Album -ArtistName $Artist -TrackCount $existingTracks.Count
+
+if (-not $merged) {
+    Stop-WithError -Step "STEP 2/$($script:TotalSteps): Search metadata" -Message "No results found from any source for `"$Album`" by `"$Artist`""
+}
+
+Write-Host "`n  Merged result: `"$($merged.Album)`" by $($merged.Artist)" -ForegroundColor Green
+if ($merged.Date) { Write-Host "  Year: $($merged.Date)" -ForegroundColor Gray }
+if ($merged.Genre) { Write-Host "  Genre: $($merged.Genre)" -ForegroundColor Gray }
+Write-Host "  Tracks: $($merged.Tracks.Count)" -ForegroundColor Gray
+
+Complete-CurrentStep
+
+# ========== STEP 3: CONFIRM CHANGES ==========
+Set-CurrentStep -StepNumber 3
+Write-Host "`n[STEP 3/$script:TotalSteps] Review proposed changes..." -ForegroundColor Green
+Write-Log "STEP 3/$($script:TotalSteps): Showing comparison"
+
+Show-MetadataComparison -ExistingTracks $existingTracks -Proposed $merged
+
+if (-not $Force) {
+    Write-Host ""
+    $confirm = Read-Host "  Apply these changes? [Y/n]"
+    if ($confirm -and $confirm.ToUpper() -ne "Y") {
+        Write-Host "`n  Cancelled by user." -ForegroundColor Yellow
+        Write-Log "User cancelled"
+        exit 0
+    }
+}
+
+Complete-CurrentStep
+
+# ========== STEP 4: APPLY TAGS ==========
+Set-CurrentStep -StepNumber 4
+Write-Host "`n[STEP 4/$script:TotalSteps] Applying tags..." -ForegroundColor Green
+Write-Log "STEP 4/$($script:TotalSteps): Applying tags"
+
+$tagCount = 0
+for ($i = 0; $i -lt $existingTracks.Count; $i++) {
+    $track = $existingTracks[$i]
+    $trackTitle = if ($merged.Tracks -and $i -lt $merged.Tracks.Count) { $merged.Tracks[$i].Title } else { $track.Title }
+    if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
+
+    $trackArtist = $merged.Artist
+    if ($merged.Tracks -and $i -lt $merged.Tracks.Count -and $merged.Tracks[$i].Artist) {
+        $trackArtist = $merged.Tracks[$i].Artist
+    }
+
+    $tagged = Set-AudioTags -FilePath $track.File.FullName `
+        -TrackNumber ($i + 1) -TotalTracks $existingTracks.Count `
+        -Title $trackTitle -Artist $trackArtist `
+        -Album $merged.Album -AlbumArtist $merged.Artist `
+        -Date $merged.Date -Genre $merged.Genre `
+        -ReleaseId $merged.ReleaseId
+
+    if ($tagged) {
+        $tagCount++
+    }
+}
+
+Write-Host "  Tagged $tagCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
+Write-Log "  Tagged $tagCount files"
+
+Complete-CurrentStep
+
+# ========== STEP 5: COVER ART ==========
+Set-CurrentStep -StepNumber 5
+
+if ($SkipCoverArt) {
+    Write-Host "`n[STEP 5/$script:TotalSteps] Cover art (skipped)" -ForegroundColor Yellow
+    Write-Log "STEP 5/$($script:TotalSteps): Cover art skipped"
+} else {
+    Write-Host "`n[STEP 5/$script:TotalSteps] Downloading cover art..." -ForegroundColor Green
+    Write-Log "STEP 5/$($script:TotalSteps): Downloading cover art"
+
+    # Check if art already exists
+    $existingArt = Get-ChildItem -Path $Path -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+    if ($existingArt -and -not $Force) {
+        Write-Host "    Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Gray
+        Write-Log "  Cover art already exists"
+    } else {
+        $artFile = Get-CoverArt -ArtworkUrl $merged.ArtworkUrl -ArtworkSource $merged.ArtworkSource `
+            -OutputPath $Path -ReleaseId $merged.ReleaseId
+        if (-not $artFile) {
+            Write-Log "  No cover art downloaded"
+        }
+    }
+}
+
+Complete-CurrentStep
+
+# ========== STEP 6: RENAME FILES ==========
+Set-CurrentStep -StepNumber 6
+
+if ($SkipRename) {
+    Write-Host "`n[STEP 6/$script:TotalSteps] Rename files (skipped)" -ForegroundColor Yellow
+    Write-Log "STEP 6/$($script:TotalSteps): Rename skipped"
+} else {
+    Write-Host "`n[STEP 6/$script:TotalSteps] Renaming files..." -ForegroundColor Green
+    Write-Log "STEP 6/$($script:TotalSteps): Renaming files"
+
+    $renamedCount = Rename-AudioFiles -ExistingTracks $existingTracks -Proposed $merged
+
+    if ($renamedCount -gt 0) {
+        Write-Host "  Renamed $renamedCount file(s)" -ForegroundColor Green
+    } else {
+        Write-Host "  No files needed renaming" -ForegroundColor Gray
+    }
+    Write-Log "  Renamed $renamedCount files"
+}
+
+Complete-CurrentStep
+
+# ========== SUMMARY ==========
+Write-Host "`n========================================" -ForegroundColor Cyan
+Write-Host "COMPLETE!" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Cyan
+
+Write-Host "`n--- SUMMARY ---" -ForegroundColor Cyan
+Write-Host "  Album: $($merged.Album)" -ForegroundColor White
+Write-Host "  Artist: $($merged.Artist)" -ForegroundColor White
+Write-Host "  Files tagged: $tagCount" -ForegroundColor White
+if (-not $SkipRename) {
+    Write-Host "  Files renamed: $renamedCount" -ForegroundColor White
+}
+Write-Host "  Path: $Path" -ForegroundColor White
+Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
+
+Show-StepsSummary
+
+Write-Host "`n========================================`n" -ForegroundColor Cyan
+
+$host.UI.RawUI.WindowTitle = "search-metadata - DONE"
+
+Write-Log "========== SESSION COMPLETE =========="
+Write-Log "Album: $($merged.Album) by $($merged.Artist)"
+Write-Log "Files tagged: $tagCount"
+if (-not $SkipRename) { Write-Log "Files renamed: $renamedCount" }

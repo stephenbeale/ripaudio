@@ -5,6 +5,7 @@
 - [x] Add `-Drive` and `-OutputDrive` args to configure input/output drives
 - [x] Add `-N` flag to cyanrip for discs not in MusicBrainz (PR #3)
 - [x] Cover art handling - sequential fallback: Cover Art Archive, MusicBrainz search + CAA, iTunes, Deezer (PR #20)
+- [x] Multi-source metadata search - `search-metadata.ps1` scans folder, searches MusicBrainz + iTunes + Deezer, applies tags + cover art + renames
 
 ## Planned Features
 
