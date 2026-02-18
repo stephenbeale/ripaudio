@@ -191,6 +191,59 @@ This script uses [cyanrip](https://github.com/cyanreg/cyanrip), a feature-rich a
 - `-o` : Output format(s)
 - `-d` : Drive specification
 
+## search-metadata.ps1
+
+Standalone script that scans a folder of audio files, searches 3 metadata sources (MusicBrainz, iTunes, Deezer), shows a comparison for confirmation, then applies tags, downloads cover art, and renames files.
+
+### Usage
+
+```
+.\search-metadata.ps1 -Path <folder> [-Artist <string>] [-Album <string>] [-SkipRename] [-SkipCoverArt] [-Force]
+```
+
+### Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `-Path` | Yes | - | Folder containing audio files |
+| `-Artist` | No | - | Artist name hint (auto-detected from tags/folder) |
+| `-Album` | No | - | Album name hint (auto-detected from tags/folder) |
+| `-SkipRename` | No | - | Don't rename files |
+| `-SkipCoverArt` | No | - | Don't download cover art |
+| `-Force` | No | - | Skip confirmation prompt |
+
+### Examples
+
+```powershell
+# Search and apply metadata to a folder
+.\search-metadata.ps1 -Path "C:\Music\Unknown Album"
+
+# With artist/album hints
+.\search-metadata.ps1 -Path "C:\Music\rip" -Artist "Pink Floyd" -Album "The Wall"
+
+# Skip rename, auto-confirm
+.\search-metadata.ps1 -Path "C:\Music\rip" -SkipRename -Force
+
+# Tags only, no artwork or renaming
+.\search-metadata.ps1 -Path "C:\Music\rip" -SkipRename -SkipCoverArt
+```
+
+### 6-Step Workflow
+
+1. **Scan files** - Read existing tags via metaflac, identify gaps
+2. **Search metadata** - Query MusicBrainz, iTunes, Deezer; merge best results
+3. **Confirm changes** - Show side-by-side comparison, user approves or declines
+4. **Apply tags** - Write ARTIST, ALBUM, TITLE, TRACKNUMBER, DATE, GENRE via metaflac
+5. **Cover art** - Download best artwork (Deezer 1000x1000 > iTunes 600x600 > CAA)
+6. **Rename files** - Rename to `## - Title.flac` format
+
+### Metadata Source Priority
+
+- **Artist/Album/Date/Tracks**: MusicBrainz > Deezer > iTunes
+- **Genre**: Deezer > iTunes
+- **Cover art**: Deezer (1000x1000) > iTunes (600x600) > Cover Art Archive
+- **Track titles**: MusicBrainz > Deezer
+
 ## Related Projects
 
 - [ripdisc](https://github.com/stephenbeale/ripdisc) - DVD/Blu-ray ripping toolkit using MakeMKV and HandBrake

@@ -17,9 +17,12 @@ When the user says **"make a workflow"**, execute the full git lifecycle. The wo
 
 ```
 ripaudio/
-    rip-audio.ps1      # Main PowerShell script
-    README.md          # User documentation
-    CLAUDE.md          # This file - development notes
+    rip-audio.ps1        # Main CD ripping script (cyanrip)
+    get-metadata.ps1     # MusicBrainz metadata lookup and CUE file generation
+    search-metadata.ps1  # Multi-source metadata search, tag, rename (MB + iTunes + Deezer)
+    README.md            # User documentation
+    CLAUDE.md            # This file - development notes
+    Roadmap.md           # Planned features
 ```
 
 ## Script Architecture
@@ -146,3 +149,26 @@ Potential improvements to consider:
 - No immediate action required — all cover art sources are working
 - Consider adding `-quality` parameter for lossy format bitrate control (see Future Enhancements)
 - CDDB fallback remains a potential future improvement for releases not in MusicBrainz
+
+---
+
+### 2026-02-18 - New search-metadata.ps1 Script
+
+**Work Completed:**
+
+- Created `search-metadata.ps1` - standalone multi-source metadata search, tag, and rename tool
+  - 6-step workflow: scan files, search metadata, confirm changes, apply tags, cover art, rename files
+  - Searches 3 sources: MusicBrainz, iTunes, Deezer
+  - Merges results with priority: MB > Deezer > iTunes for artist/album/date/tracks, Deezer > iTunes for genre, Deezer > iTunes > CAA for artwork
+  - Colored side-by-side comparison table (current vs proposed) with rename preview
+  - Uses targeted `--remove-tag` instead of `--remove-all-tags` to preserve existing metadata
+  - Track count matching to pick best edition from search results
+  - Artist/album auto-detection from existing tags or folder structure
+  - Follows existing patterns: step tracking, Write-Log, Stop-WithError, colored output, logging to C:\Music\logs\
+
+**Key Design Decisions:**
+- Standalone script (not modifying get-metadata.ps1) to keep concerns separate
+- `Read-ExistingTags` reads via metaflac per-field rather than --export-tags-to for simpler parsing
+- `Search-AllSources` fetches full release details from MB (inc=recordings+artist-credits+release-groups)
+- Rename format is `## - Title.ext` (simple, no artist/album in filename since folder provides context)
+- Confirmation prompt shown by default, skippable with `-Force`
