@@ -4,6 +4,7 @@
 
 - [x] Add `-Drive` and `-OutputDrive` args to configure input/output drives
 - [x] Add `-N` flag to cyanrip for discs not in MusicBrainz (PR #3)
+- [x] Cover art handling - sequential fallback: Cover Art Archive, MusicBrainz search + CAA, iTunes, Deezer (PR #20)
 
 ## Planned Features
 
@@ -40,9 +41,6 @@ Add AccurateRip verification reporting to confirm rip accuracy.
 
 ### Queue Mode
 Batch ripping mode similar to ripdisc for processing multiple discs sequentially.
-
-### Cover Art Handling
-Options for cover art extraction/embedding from disc or MusicBrainz.
 
 ### CDDB Fallback
 Fall back to CDDB/freedb when MusicBrainz has no match for disc metadata.
