@@ -122,3 +122,27 @@ Potential improvements to consider:
 - [ ] Queue mode for batch ripping (similar to ripdisc)
 - [x] Cover art handling (sequential fallback: CAA, MusicBrainz+CAA, iTunes, Deezer)
 - [ ] CDDB fallback when MusicBrainz has no match
+
+---
+
+### 2026-02-18 - Replace Cover Art Sources with Music APIs
+
+**Work Completed:**
+
+- PR #20 merged: Replaced book-oriented cover art sources (Open Library, Google Books) with proper music album art APIs in both `rip-audio.ps1` and `get-metadata.ps1`
+  - New sequential fallback chain:
+    1. Cover Art Archive direct lookup (using release ID from cue file)
+    2. MusicBrainz search + CAA (search by artist+album, then fetch from CAA)
+    3. iTunes Search API (free, no auth required, 600x600 artwork)
+    4. Deezer API (free, no auth required, up to 1000x1000 artwork)
+- PR #21 merged: Updated Roadmap.md and CLAUDE.md to mark cover art handling as completed
+
+**Testing:**
+- Tested against "Seasick Steve - You Can't Teach an Old Dog New Tricks": iTunes and Deezer returned results (CAA had no art for that release)
+- Tested against "Howard Shore - The Lord of the Rings: The Two Towers": all 3 sources (CAA, iTunes, Deezer) returned artwork
+- Verified actual image download works (117.9 KB JPG from iTunes)
+
+**Next Steps:**
+- No immediate action required — all cover art sources are working
+- Consider adding `-quality` parameter for lossy format bitrate control (see Future Enhancements)
+- CDDB fallback remains a potential future improvement for releases not in MusicBrainz
