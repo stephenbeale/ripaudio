@@ -120,5 +120,5 @@ Potential improvements to consider:
 - [ ] Support multiple output formats in single rip (`-o flac,mp3`)
 - [ ] Add AccurateRip verification reporting
 - [ ] Queue mode for batch ripping (similar to ripdisc)
-- [ ] Cover art handling options
+- [x] Cover art handling (sequential fallback: CAA, MusicBrainz+CAA, iTunes, Deezer)
 - [ ] CDDB fallback when MusicBrainz has no match
