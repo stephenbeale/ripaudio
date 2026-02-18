@@ -248,37 +248,98 @@ function Search-MusicBrainz {
 function Get-CoverArt {
     param(
         [string]$ReleaseId,
-        [string]$OutputPath
+        [string]$OutputPath,
+        [string]$Album = "",
+        [string]$Artist = ""
     )
 
     $headers = @{
         "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
     }
 
-    try {
-        # Query Cover Art Archive
-        $url = "https://coverartarchive.org/release/$ReleaseId"
-        $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15
+    # Source 1: Cover Art Archive (with known release ID)
+    if ($ReleaseId) {
+        try {
+            $url = "https://coverartarchive.org/release/$ReleaseId"
+            $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15
 
-        if ($response.images -and $response.images.Count -gt 0) {
-            # Find front cover
-            $frontCover = $response.images | Where-Object { $_.front -eq $true } | Select-Object -First 1
-            if (-not $frontCover) {
-                $frontCover = $response.images[0]
+            if ($response.images -and $response.images.Count -gt 0) {
+                $frontCover = $response.images | Where-Object { $_.front -eq $true } | Select-Object -First 1
+                if (-not $frontCover) { $frontCover = $response.images[0] }
+
+                $imageUrl = $frontCover.image
+                $extension = if ($imageUrl -match '\.(\w+)$') { $Matches[1] } else { "jpg" }
+                $outputFile = Join-Path $OutputPath "Front.$extension"
+
+                Invoke-WebRequest -Uri $imageUrl -OutFile $outputFile -Headers $headers -TimeoutSec 30
+                if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    Write-Host "  Downloaded: Front.$extension (from Cover Art Archive)" -ForegroundColor Green
+                    return $outputFile
+                }
+                Remove-Item $outputFile -ErrorAction SilentlyContinue
             }
-
-            # Download the image
-            $imageUrl = $frontCover.image
-            $extension = if ($imageUrl -match '\.(\w+)$') { $Matches[1] } else { "jpg" }
-            $outputFile = Join-Path $OutputPath "Front.$extension"
-
-            Invoke-WebRequest -Uri $imageUrl -OutFile $outputFile -Headers $headers -TimeoutSec 30
-            return $outputFile
+        } catch {
+            Write-Host "  Cover Art Archive: not available" -ForegroundColor Yellow
         }
-    } catch {
-        Write-Host "  Cover art not available: $_" -ForegroundColor Yellow
     }
 
+    # Source 2: iTunes Search API (free, no auth, high-quality artwork)
+    if ($Album) {
+        try {
+            $itunesQuery = if ($Artist) { "$Artist $Album" } else { $Album }
+            $itunesEncoded = [System.Web.HttpUtility]::UrlEncode($itunesQuery)
+            $itunesUrl = "https://itunes.apple.com/search?term=$itunesEncoded&media=music&entity=album&limit=1"
+            $itunesResponse = Invoke-RestMethod -Uri $itunesUrl -TimeoutSec 10
+
+            if ($itunesResponse.results -and $itunesResponse.results.Count -gt 0) {
+                $artworkUrl = $itunesResponse.results[0].artworkUrl100
+                if ($artworkUrl) {
+                    $artworkUrl = $artworkUrl -replace '100x100bb', '600x600bb'
+                    $outputFile = Join-Path $OutputPath "Front.jpg"
+                    Invoke-WebRequest -Uri $artworkUrl -OutFile $outputFile -TimeoutSec 30
+
+                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                        Write-Host "  Downloaded: Front.jpg (from iTunes)" -ForegroundColor Green
+                        return $outputFile
+                    }
+                    Remove-Item $outputFile -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {
+            Write-Host "  iTunes Search: not available" -ForegroundColor Yellow
+        }
+    }
+
+    # Source 3: Deezer API (free, no auth, up to 1000x1000 artwork)
+    if ($Album) {
+        try {
+            $deezerQuery = if ($Artist) { "$Artist $Album" } else { $Album }
+            $deezerEncoded = [System.Web.HttpUtility]::UrlEncode($deezerQuery)
+            $deezerUrl = "https://api.deezer.com/search/album?q=$deezerEncoded"
+            $deezerResponse = Invoke-RestMethod -Uri $deezerUrl -TimeoutSec 10
+
+            if ($deezerResponse.data -and $deezerResponse.data.Count -gt 0) {
+                $coverUrl = $deezerResponse.data[0].cover_xl
+                if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_big }
+                if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_medium }
+
+                if ($coverUrl) {
+                    $outputFile = Join-Path $OutputPath "Front.jpg"
+                    Invoke-WebRequest -Uri $coverUrl -OutFile $outputFile -TimeoutSec 30
+
+                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                        Write-Host "  Downloaded: Front.jpg (from Deezer)" -ForegroundColor Green
+                        return $outputFile
+                    }
+                    Remove-Item $outputFile -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {
+            Write-Host "  Deezer: not available" -ForegroundColor Yellow
+        }
+    }
+
+    Write-Host "  No cover art found from any source" -ForegroundColor Yellow
     return $null
 }
 
@@ -588,11 +649,10 @@ foreach ($result in $metadataResults) {
     }
 
     # Download cover art if requested
-    if ($DownloadArt -and $mbRelease.id) {
+    if ($DownloadArt) {
         Write-Host "    Downloading cover art..." -ForegroundColor Gray
-        $artFile = Get-CoverArt -ReleaseId $mbRelease.id -OutputPath $album.Path
+        $artFile = Get-CoverArt -ReleaseId $mbRelease.id -OutputPath $album.Path -Album $album.Name -Artist $album.Artist
         if ($artFile) {
-            Write-Host "    Downloaded: $(Split-Path -Leaf $artFile)" -ForegroundColor Green
             Write-Log "  Downloaded cover art: $artFile"
             $artCount++
         }

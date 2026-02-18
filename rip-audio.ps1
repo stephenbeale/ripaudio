@@ -838,83 +838,125 @@ if ($existingArt -and $existingArt.Count -gt 0) {
         }
     }
 
-    # Fallback: Search for album cover image online
+    # Fallback 1: Search MusicBrainz by artist+album, then use Cover Art Archive
     if (-not $artDownloaded) {
-        Write-Host "  Searching for album cover online..." -ForegroundColor Gray
-
-        # Build search query
-        $searchQuery = if ($artist) { "$artist $album album cover" } else { "$album album cover" }
-
+        Write-Host "  Searching MusicBrainz for release..." -ForegroundColor Gray
         try {
-            # Use DuckDuckGo image search API (no auth required)
-            $encodedQuery = [System.Web.HttpUtility]::UrlEncode($searchQuery)
-            $searchUrl = "https://duckduckgo.com/?q=$encodedQuery&iax=images&ia=images"
+            $mbSearchHeaders = @{
+                "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
+                "Accept" = "application/json"
+            }
+            $mbQuery = if ($artist) { "release:`"$album`" AND artist:`"$artist`"" } else { "release:`"$album`"" }
+            $mbEncodedQuery = [System.Web.HttpUtility]::UrlEncode($mbQuery)
+            $mbSearchUrl = "https://musicbrainz.org/ws/2/release?query=$mbEncodedQuery&limit=1&fmt=json"
+            $mbSearchResponse = Invoke-RestMethod -Uri $mbSearchUrl -Headers $mbSearchHeaders -TimeoutSec 10
 
-            # Try to get a representative image from Open Library (book covers) or similar
-            # For audiobooks/language courses, try Open Library first
-            $openLibraryQuery = [System.Web.HttpUtility]::UrlEncode($album)
-            $olUrl = "https://openlibrary.org/search.json?q=$openLibraryQuery&limit=1"
+            if ($mbSearchResponse.releases -and $mbSearchResponse.releases.Count -gt 0) {
+                $mbReleaseId = $mbSearchResponse.releases[0].id
+                Write-Host "  Found MusicBrainz release: $mbReleaseId" -ForegroundColor Gray
 
-            $olHeaders = @{ "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)" }
-            $olResponse = Invoke-RestMethod -Uri $olUrl -Headers $olHeaders -TimeoutSec 10
+                Start-Sleep -Milliseconds 1100  # MusicBrainz rate limit
 
-            if ($olResponse.docs -and $olResponse.docs.Count -gt 0 -and $olResponse.docs[0].cover_i) {
-                $coverId = $olResponse.docs[0].cover_i
-                $coverUrl = "https://covers.openlibrary.org/b/id/$coverId-L.jpg"
+                $caaSearchUrl = "https://coverartarchive.org/release/$mbReleaseId"
+                $caaSearchResponse = Invoke-RestMethod -Uri $caaSearchUrl -Headers $mbSearchHeaders -TimeoutSec 10
 
-                $outputFile = Join-Path $finalOutputDir "Front.jpg"
-                Invoke-WebRequest -Uri $coverUrl -OutFile $outputFile -Headers $olHeaders -TimeoutSec 30
+                if ($caaSearchResponse.images -and $caaSearchResponse.images.Count -gt 0) {
+                    $frontCover = $caaSearchResponse.images | Where-Object { $_.front -eq $true } | Select-Object -First 1
+                    if (-not $frontCover) { $frontCover = $caaSearchResponse.images[0] }
 
-                # Verify the file was downloaded and has content
-                if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
-                    Write-Host "  Downloaded: Front.jpg (from Open Library)" -ForegroundColor Green
-                    Write-Log "Downloaded cover art from Open Library: Front.jpg"
-                    $artDownloaded = $true
-                    $script:CoverArtDownloaded = $true
-                } else {
-                    Remove-Item $outputFile -ErrorAction SilentlyContinue
+                    $imageUrl = $frontCover.image
+                    $extension = if ($imageUrl -match '\.(\w+)$') { $Matches[1] } else { "jpg" }
+                    $outputFile = Join-Path $finalOutputDir "Front.$extension"
+
+                    Invoke-WebRequest -Uri $imageUrl -OutFile $outputFile -Headers $mbSearchHeaders -TimeoutSec 30
+                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                        Write-Host "  Downloaded: Front.$extension (from MusicBrainz/CAA search)" -ForegroundColor Green
+                        Write-Log "Downloaded cover art from MusicBrainz/CAA search: Front.$extension"
+                        $artDownloaded = $true
+                        $script:CoverArtDownloaded = $true
+                    } else {
+                        Remove-Item $outputFile -ErrorAction SilentlyContinue
+                    }
                 }
             }
         } catch {
-            Write-Log "Open Library lookup failed: $_"
+            Write-Host "  MusicBrainz/CAA search: not available" -ForegroundColor Yellow
+            Write-Log "MusicBrainz/CAA search failed: $_"
         }
+    }
 
-        # If still no art, try Google Books API (good for audiobooks/language courses)
-        if (-not $artDownloaded) {
-            try {
-                $gbQuery = [System.Web.HttpUtility]::UrlEncode($album)
-                $gbUrl = "https://www.googleapis.com/books/v1/volumes?q=$gbQuery&maxResults=1"
-                $gbResponse = Invoke-RestMethod -Uri $gbUrl -TimeoutSec 10
+    # Fallback 2: iTunes Search API (free, no auth, high-quality artwork)
+    if (-not $artDownloaded) {
+        Write-Host "  Trying iTunes Search API..." -ForegroundColor Gray
+        try {
+            $itunesQuery = if ($artist) { "$artist $album" } else { $album }
+            $itunesEncoded = [System.Web.HttpUtility]::UrlEncode($itunesQuery)
+            $itunesUrl = "https://itunes.apple.com/search?term=$itunesEncoded&media=music&entity=album&limit=1"
+            $itunesResponse = Invoke-RestMethod -Uri $itunesUrl -TimeoutSec 10
 
-                if ($gbResponse.items -and $gbResponse.items.Count -gt 0) {
-                    $volumeInfo = $gbResponse.items[0].volumeInfo
-                    if ($volumeInfo.imageLinks -and $volumeInfo.imageLinks.thumbnail) {
-                        # Get larger image by modifying the URL
-                        $thumbnailUrl = $volumeInfo.imageLinks.thumbnail -replace 'zoom=\d', 'zoom=3'
-                        $thumbnailUrl = $thumbnailUrl -replace '&edge=curl', ''
+            if ($itunesResponse.results -and $itunesResponse.results.Count -gt 0) {
+                $artworkUrl = $itunesResponse.results[0].artworkUrl100
+                if ($artworkUrl) {
+                    # Replace 100x100 with 600x600 for higher resolution
+                    $artworkUrl = $artworkUrl -replace '100x100bb', '600x600bb'
 
-                        $outputFile = Join-Path $finalOutputDir "Front.jpg"
-                        Invoke-WebRequest -Uri $thumbnailUrl -OutFile $outputFile -TimeoutSec 30
+                    $outputFile = Join-Path $finalOutputDir "Front.jpg"
+                    Invoke-WebRequest -Uri $artworkUrl -OutFile $outputFile -TimeoutSec 30
 
-                        if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
-                            Write-Host "  Downloaded: Front.jpg (from Google Books)" -ForegroundColor Green
-                            Write-Log "Downloaded cover art from Google Books: Front.jpg"
-                            $artDownloaded = $true
-                            $script:CoverArtDownloaded = $true
-                        } else {
-                            Remove-Item $outputFile -ErrorAction SilentlyContinue
-                        }
+                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                        Write-Host "  Downloaded: Front.jpg (from iTunes)" -ForegroundColor Green
+                        Write-Log "Downloaded cover art from iTunes: Front.jpg"
+                        $artDownloaded = $true
+                        $script:CoverArtDownloaded = $true
+                    } else {
+                        Remove-Item $outputFile -ErrorAction SilentlyContinue
                     }
                 }
-            } catch {
-                Write-Log "Google Books lookup failed: $_"
             }
+        } catch {
+            Write-Host "  iTunes Search: not available" -ForegroundColor Yellow
+            Write-Log "iTunes Search failed: $_"
         }
+    }
 
-        if (-not $artDownloaded) {
-            Write-Host "  No cover art found (continuing without)" -ForegroundColor Yellow
-            Write-Log "No cover art found from any source"
+    # Fallback 3: Deezer API (free, no auth, up to 1000x1000 artwork)
+    if (-not $artDownloaded) {
+        Write-Host "  Trying Deezer API..." -ForegroundColor Gray
+        try {
+            $deezerQuery = if ($artist) { "$artist $album" } else { $album }
+            $deezerEncoded = [System.Web.HttpUtility]::UrlEncode($deezerQuery)
+            $deezerUrl = "https://api.deezer.com/search/album?q=$deezerEncoded"
+            $deezerResponse = Invoke-RestMethod -Uri $deezerUrl -TimeoutSec 10
+
+            if ($deezerResponse.data -and $deezerResponse.data.Count -gt 0) {
+                # Use cover_big (500x500) or cover_xl (1000x1000) for best quality
+                $coverUrl = $deezerResponse.data[0].cover_xl
+                if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_big }
+                if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_medium }
+
+                if ($coverUrl) {
+                    $outputFile = Join-Path $finalOutputDir "Front.jpg"
+                    Invoke-WebRequest -Uri $coverUrl -OutFile $outputFile -TimeoutSec 30
+
+                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                        Write-Host "  Downloaded: Front.jpg (from Deezer)" -ForegroundColor Green
+                        Write-Log "Downloaded cover art from Deezer: Front.jpg"
+                        $artDownloaded = $true
+                        $script:CoverArtDownloaded = $true
+                    } else {
+                        Remove-Item $outputFile -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        } catch {
+            Write-Host "  Deezer: not available" -ForegroundColor Yellow
+            Write-Log "Deezer lookup failed: $_"
         }
+    }
+
+    if (-not $artDownloaded) {
+        Write-Host "  No cover art found from any source (continuing without)" -ForegroundColor Yellow
+        Write-Log "No cover art found from any source"
     }
 }
 
