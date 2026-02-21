@@ -152,6 +152,61 @@ function Write-Log {
     }
 }
 
+# ========== ACCURATERIP PARSING ==========
+function Parse-AccurateRipResults {
+    param([string]$Output)
+
+    $result = @{
+        DbStatus = "unknown"        # found, not found, error, mismatch, disabled
+        TracksVerified = -1          # -1 = not available
+        TracksTotal = -1
+        TracksPartial = 0
+        TrackDetails = @()           # array of per-track results
+    }
+
+    # Disc-level status
+    if ($Output -match 'AccurateRip:\s+(found|not found|error|mismatch|disabled)') {
+        $result.DbStatus = $Matches[1]
+    }
+
+    # Finish report summary
+    if ($Output -match 'Tracks ripped accurately: (\d+)/(\d+)') {
+        $result.TracksVerified = [int]$Matches[1]
+        $result.TracksTotal = [int]$Matches[2]
+    }
+    if ($Output -match 'Tracks ripped partially accurately: (\d+)/(\d+)') {
+        $result.TracksPartial = [int]$Matches[1]
+    }
+
+    # Per-track details (parse v1/v2 lines)
+    $trackNum = 0
+    foreach ($line in ($Output -split "`n")) {
+        if ($line -match '^\s+Track\s+(\d+)') {
+            $trackNum = [int]$Matches[1]
+        }
+        if ($line -match '^\s{4}Accurip (v1|v2):\s+([0-9A-Fa-f]{8})\s+\(accurately ripped, confidence (\d+)\)') {
+            $result.TrackDetails += @{
+                Track = $trackNum
+                Version = $Matches[1]
+                Checksum = $Matches[2]
+                Confidence = [int]$Matches[3]
+                Status = "accurate"
+            }
+        }
+        elseif ($line -match '^\s{4}Accurip (v1|v2):\s+([0-9A-Fa-f]{8})\s+\(not found') {
+            $result.TrackDetails += @{
+                Track = $trackNum
+                Version = $Matches[1]
+                Checksum = $Matches[2]
+                Confidence = 0
+                Status = "not found"
+            }
+        }
+    }
+
+    return $result
+}
+
 # ========== CDDB FALLBACK ==========
 function Search-CDDB {
     param(
@@ -1173,6 +1228,35 @@ if ($cyanripExitCode -ne 0) {
 Write-Host "`ncyanrip complete!" -ForegroundColor Green
 Write-Log "STEP 1/4: cyanrip complete"
 
+# Parse AccurateRip results
+$arResults = Parse-AccurateRipResults -Output $cyanripOutputText
+
+# Display AR summary
+if ($arResults.DbStatus -eq "found") {
+    if ($arResults.TracksVerified -ge 0) {
+        $arColor = if ($arResults.TracksVerified -eq $arResults.TracksTotal) { "Green" } else { "Yellow" }
+        Write-Host "AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) tracks verified" -ForegroundColor $arColor
+        if ($arResults.TracksPartial -gt 0) {
+            Write-Host "  ($($arResults.TracksPartial) partially accurate)" -ForegroundColor Yellow
+        }
+    }
+} elseif ($arResults.DbStatus -eq "not found") {
+    Write-Host "AccurateRip: disc not in database" -ForegroundColor Yellow
+} elseif ($arResults.DbStatus -eq "disabled") {
+    # Say nothing - user explicitly disabled it
+} elseif ($arResults.DbStatus -ne "unknown") {
+    Write-Host "AccurateRip: $($arResults.DbStatus)" -ForegroundColor Yellow
+}
+
+# Log AR results
+Write-Log "AccurateRip DB status: $($arResults.DbStatus)"
+if ($arResults.TracksVerified -ge 0) {
+    Write-Log "AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) tracks verified"
+    if ($arResults.TracksPartial -gt 0) {
+        Write-Log "AccurateRip: $($arResults.TracksPartial) partially accurate"
+    }
+}
+
 # Rename tracks if they have generic names (no MusicBrainz metadata)
 # Format: "## - Artist - Album" e.g. "01 - John Martyn - Solid Air"
 $audioExtensions = @("*.flac", "*.mp3", "*.opus", "*.m4a", "*.wav")
@@ -1601,6 +1685,11 @@ Write-Host "  Total tracks: $($rippedFiles.Count)" -ForegroundColor White
 Write-Host "  Total size: $totalSizeMB MB" -ForegroundColor White
 $coverArtStatus = if ($script:CoverArtDownloaded) { "Yes" } else { "No" }
 Write-Host "  Cover art: $coverArtStatus" -ForegroundColor White
+if ($arResults.DbStatus -eq "found" -and $arResults.TracksVerified -ge 0) {
+    Write-Host "  AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) verified" -ForegroundColor White
+} elseif ($arResults.DbStatus -eq "not found") {
+    Write-Host "  AccurateRip: disc not in database" -ForegroundColor White
+}
 Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
 Write-Host "========================================`n" -ForegroundColor Cyan
 
@@ -1608,9 +1697,15 @@ Write-Log "========== RIP SESSION COMPLETE =========="
 Write-Log "Final location: $finalOutputDir"
 Write-Log "Total tracks: $($rippedFiles.Count)"
 Write-Log "Total size: $totalSizeMB MB"
+if ($arResults.TracksVerified -ge 0) {
+    Write-Log "AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) verified"
+}
 
 Enable-ConsoleClose
 $host.UI.RawUI.WindowTitle = "$windowTitle - DONE"
+if ($arResults.DbStatus -eq "found" -and $arResults.TracksVerified -ge 0 -and $arResults.TracksVerified -lt $arResults.TracksTotal) {
+    $host.UI.RawUI.WindowTitle += " - AR PARTIAL"
+}
 
 } catch {
     # Handle ProcessQueue item failures (thrown by Stop-WithError)
