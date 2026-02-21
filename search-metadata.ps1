@@ -18,7 +18,10 @@ param(
     [switch]$Force,
 
     [Parameter()]
-    [switch]$Recurse
+    [switch]$Recurse,
+
+    [Parameter()]
+    [switch]$DryRun
 )
 
 # ========== STEP TRACKING ==========
@@ -696,7 +699,8 @@ function Process-AlbumFolder {
         [switch]$ForceMode,
         [switch]$SkipRenameMode,
         [switch]$SkipCoverArtMode,
-        [switch]$BatchMode
+        [switch]$BatchMode,
+        [switch]$DryRunMode
     )
 
     # Reset step tracking for each album
@@ -813,7 +817,9 @@ function Process-AlbumFolder {
 
     Show-MetadataComparison -ExistingTracks $existingTracks -Proposed $merged
 
-    if (-not $ForceMode) {
+    if ($DryRunMode) {
+        Write-Host "`n  [DRY RUN] No changes will be made." -ForegroundColor Cyan
+    } elseif (-not $ForceMode) {
         Write-Host ""
         $confirm = Read-Host "  Apply these changes? [Y/n]"
         if ($confirm -and $confirm.ToUpper() -ne "Y") {
@@ -830,34 +836,43 @@ function Process-AlbumFolder {
 
     # ========== STEP 4: APPLY TAGS ==========
     Set-CurrentStep -StepNumber 4
-    Write-Host "`n[STEP 4/$script:TotalSteps] Applying tags..." -ForegroundColor Green
-    Write-Log "STEP 4/$($script:TotalSteps): Applying tags"
 
     $tagCount = 0
-    for ($i = 0; $i -lt $existingTracks.Count; $i++) {
-        $track = $existingTracks[$i]
-        $trackTitle = if ($merged.Tracks -and $i -lt $merged.Tracks.Count) { $merged.Tracks[$i].Title } else { $track.Title }
-        if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
+    if ($DryRunMode) {
+        Write-Host "`n[STEP 4/$script:TotalSteps] Applying tags (dry run)..." -ForegroundColor Green
+        Write-Log "STEP 4/$($script:TotalSteps): Applying tags (dry run)"
+        $tagCount = $existingTracks.Count
+        Write-Host "  [DRY RUN] Would tag $tagCount file(s)" -ForegroundColor Cyan
+        Write-Log "  [DRY RUN] Would tag $tagCount files"
+    } else {
+        Write-Host "`n[STEP 4/$script:TotalSteps] Applying tags..." -ForegroundColor Green
+        Write-Log "STEP 4/$($script:TotalSteps): Applying tags"
 
-        $trackArtist = $merged.Artist
-        if ($merged.Tracks -and $i -lt $merged.Tracks.Count -and $merged.Tracks[$i].Artist) {
-            $trackArtist = $merged.Tracks[$i].Artist
+        for ($i = 0; $i -lt $existingTracks.Count; $i++) {
+            $track = $existingTracks[$i]
+            $trackTitle = if ($merged.Tracks -and $i -lt $merged.Tracks.Count) { $merged.Tracks[$i].Title } else { $track.Title }
+            if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
+
+            $trackArtist = $merged.Artist
+            if ($merged.Tracks -and $i -lt $merged.Tracks.Count -and $merged.Tracks[$i].Artist) {
+                $trackArtist = $merged.Tracks[$i].Artist
+            }
+
+            $tagged = Set-AudioTags -FilePath $track.File.FullName `
+                -TrackNumber ($i + 1) -TotalTracks $existingTracks.Count `
+                -Title $trackTitle -Artist $trackArtist `
+                -Album $merged.Album -AlbumArtist $merged.Artist `
+                -Date $merged.Date -Genre $merged.Genre `
+                -ReleaseId $merged.ReleaseId
+
+            if ($tagged) {
+                $tagCount++
+            }
         }
 
-        $tagged = Set-AudioTags -FilePath $track.File.FullName `
-            -TrackNumber ($i + 1) -TotalTracks $existingTracks.Count `
-            -Title $trackTitle -Artist $trackArtist `
-            -Album $merged.Album -AlbumArtist $merged.Artist `
-            -Date $merged.Date -Genre $merged.Genre `
-            -ReleaseId $merged.ReleaseId
-
-        if ($tagged) {
-            $tagCount++
-        }
+        Write-Host "  Tagged $tagCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
+        Write-Log "  Tagged $tagCount files"
     }
-
-    Write-Host "  Tagged $tagCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
-    Write-Log "  Tagged $tagCount files"
 
     Complete-CurrentStep
 
@@ -867,6 +882,21 @@ function Process-AlbumFolder {
     if ($SkipCoverArtMode) {
         Write-Host "`n[STEP 5/$script:TotalSteps] Cover art (skipped)" -ForegroundColor Yellow
         Write-Log "STEP 5/$($script:TotalSteps): Cover art skipped"
+    } elseif ($DryRunMode) {
+        Write-Host "`n[STEP 5/$script:TotalSteps] Cover art (dry run)..." -ForegroundColor Green
+        Write-Log "STEP 5/$($script:TotalSteps): Cover art (dry run)"
+
+        $existingArt = Get-ChildItem -Path $FolderPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+        if ($existingArt) {
+            Write-Host "  [DRY RUN] Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Cyan
+            Write-Log "  [DRY RUN] Cover art already exists"
+        } elseif ($merged.ArtworkUrl) {
+            Write-Host "  [DRY RUN] Would download cover art from $($merged.ArtworkSource)" -ForegroundColor Cyan
+            Write-Log "  [DRY RUN] Would download cover art from $($merged.ArtworkSource)"
+        } else {
+            Write-Host "  [DRY RUN] No cover art available" -ForegroundColor Cyan
+            Write-Log "  [DRY RUN] No cover art available"
+        }
     } else {
         Write-Host "`n[STEP 5/$script:TotalSteps] Downloading cover art..." -ForegroundColor Green
         Write-Log "STEP 5/$($script:TotalSteps): Downloading cover art"
@@ -894,6 +924,34 @@ function Process-AlbumFolder {
     if ($SkipRenameMode) {
         Write-Host "`n[STEP 6/$script:TotalSteps] Rename files (skipped)" -ForegroundColor Yellow
         Write-Log "STEP 6/$($script:TotalSteps): Rename skipped"
+    } elseif ($DryRunMode) {
+        Write-Host "`n[STEP 6/$script:TotalSteps] Rename files (dry run)..." -ForegroundColor Green
+        Write-Log "STEP 6/$($script:TotalSteps): Rename files (dry run)"
+
+        for ($i = 0; $i -lt $existingTracks.Count; $i++) {
+            $track = $existingTracks[$i]
+            $file = $track.File
+
+            $trackTitle = if ($merged.Tracks -and $i -lt $merged.Tracks.Count) { $merged.Tracks[$i].Title } else { $track.Title }
+            if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
+
+            $num = '{0:D2}' -f ($i + 1)
+            $sanitizedTitle = $trackTitle -replace '[\\/:*?"<>|]', '_'
+            $ext = $file.Extension
+            $newName = "$num - $sanitizedTitle$ext"
+
+            if ($file.Name -ne $newName) {
+                Write-Host "    $($file.Name) -> $newName" -ForegroundColor Cyan
+                $renamedCount++
+            }
+        }
+
+        if ($renamedCount -gt 0) {
+            Write-Host "  [DRY RUN] Would rename $renamedCount file(s)" -ForegroundColor Cyan
+        } else {
+            Write-Host "  [DRY RUN] No files would need renaming" -ForegroundColor Cyan
+        }
+        Write-Log "  [DRY RUN] Would rename $renamedCount files"
     } else {
         Write-Host "`n[STEP 6/$script:TotalSteps] Renaming files..." -ForegroundColor Green
         Write-Log "STEP 6/$($script:TotalSteps): Renaming files"
@@ -953,6 +1011,7 @@ Write-Log "SkipRename: $SkipRename"
 Write-Log "SkipCoverArt: $SkipCoverArt"
 Write-Log "Force: $Force"
 Write-Log "Recurse: $Recurse"
+Write-Log "DryRun: $DryRun"
 
 # Window title
 $host.UI.RawUI.WindowTitle = "search-metadata - $Path"
@@ -1003,7 +1062,7 @@ if ($Recurse) {
         try {
             $result = Process-AlbumFolder -FolderPath $folder `
                 -ForceMode:$true -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
-                -BatchMode
+                -BatchMode -DryRunMode:$DryRun
 
             $batchResults += $result
 
@@ -1036,11 +1095,13 @@ if ($Recurse) {
     $totalTagged = ($batchResults | ForEach-Object { $_.TagCount } | Measure-Object -Sum).Sum
     $totalRenamed = ($batchResults | ForEach-Object { $_.RenameCount } | Measure-Object -Sum).Sum
 
+    $dryRunLabel = if ($DryRun) { "[DRY RUN] " } else { "" }
+
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "BATCH COMPLETE!" -ForegroundColor Green
+    Write-Host "${dryRunLabel}BATCH COMPLETE!" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Cyan
 
-    Write-Host "`n--- BATCH SUMMARY ---" -ForegroundColor Cyan
+    Write-Host "`n--- ${dryRunLabel}BATCH SUMMARY ---" -ForegroundColor Cyan
     Write-Host "  Albums processed: $($albumFolders.Count)" -ForegroundColor White
     Write-Host "  Successful: $successCount" -ForegroundColor Green
     if ($failedCount -gt 0) {
@@ -1083,14 +1144,17 @@ if ($Recurse) {
     # ========== SINGLE FOLDER MODE ==========
     $result = Process-AlbumFolder -FolderPath $Path `
         -ArtistHint $Artist -AlbumHint $Album `
-        -ForceMode:$Force -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt
+        -ForceMode:$Force -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
+        -DryRunMode:$DryRun
 
     # ========== SUMMARY ==========
+    $dryRunLabel = if ($DryRun) { "[DRY RUN] " } else { "" }
+
     Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "COMPLETE!" -ForegroundColor Green
+    Write-Host "${dryRunLabel}COMPLETE!" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Cyan
 
-    Write-Host "`n--- SUMMARY ---" -ForegroundColor Cyan
+    Write-Host "`n--- ${dryRunLabel}SUMMARY ---" -ForegroundColor Cyan
     Write-Host "  Album: $($result.Album)" -ForegroundColor White
     Write-Host "  Artist: $($result.Artist)" -ForegroundColor White
     Write-Host "  Files tagged: $($result.TagCount)" -ForegroundColor White
