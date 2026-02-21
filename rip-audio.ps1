@@ -617,8 +617,18 @@ foreach ($ext in $audioExtensions) {
     }
 }
 
-if ($rippedTracks.Count -gt 0 -and $skipMusicBrainz) {
-    # MusicBrainz was skipped, so tracks have generic names - rename using script params
+$hasGenericNames = $false
+if ($rippedTracks.Count -gt 0) {
+    foreach ($t in $rippedTracks) {
+        if ($t.BaseName -match '^\d{2}\s*-\s*Track\s*\d+$' -or $t.BaseName -match '^\d{2}$') {
+            $hasGenericNames = $true
+            break
+        }
+    }
+}
+
+if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
+    # Tracks have generic names (MusicBrainz skipped or returned no useful data) - rename using script params
     Write-Host "`nRenaming tracks with disc details..." -ForegroundColor Yellow
 
     $namingArtist = if ($artist) { $artist } else { "Unknown Artist" }
