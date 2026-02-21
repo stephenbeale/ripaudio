@@ -15,7 +15,10 @@ param(
     [switch]$SkipCoverArt,
 
     [Parameter()]
-    [switch]$Force
+    [switch]$Force,
+
+    [Parameter()]
+    [switch]$Recurse
 )
 
 # ========== STEP TRACKING ==========
@@ -678,6 +681,244 @@ function Rename-AudioFiles {
     return $renamedCount
 }
 
+# ========== PER-ALBUM PROCESSING FUNCTION ==========
+
+function Reset-StepTracking {
+    $script:CompletedSteps = @()
+    $script:CurrentStep = $null
+}
+
+function Process-AlbumFolder {
+    param(
+        [string]$FolderPath,
+        [string]$ArtistHint,
+        [string]$AlbumHint,
+        [switch]$ForceMode,
+        [switch]$SkipRenameMode,
+        [switch]$SkipCoverArtMode,
+        [switch]$BatchMode
+    )
+
+    # Reset step tracking for each album
+    Reset-StepTracking
+
+    $albumResult = @{
+        Path = $FolderPath
+        Artist = ""
+        Album = ""
+        Status = "failed"  # default, updated on success
+        TagCount = 0
+        RenameCount = 0
+        Error = ""
+    }
+
+    $folderArtist = $ArtistHint
+    $folderAlbum = $AlbumHint
+
+    # ========== STEP 1: SCAN FILES ==========
+    Set-CurrentStep -StepNumber 1
+    Write-Host "`n[STEP 1/$script:TotalSteps] Scanning files..." -ForegroundColor Green
+    Write-Log "STEP 1/$($script:TotalSteps): Scanning files in $FolderPath"
+
+    $existingTracks = Read-ExistingTags -FolderPath $FolderPath
+
+    if (-not $existingTracks -or $existingTracks.Count -eq 0) {
+        $msg = "No FLAC files found in: $FolderPath"
+        if ($BatchMode) {
+            Write-Host "  ERROR: $msg" -ForegroundColor Red
+            Write-Log "  ERROR: $msg"
+            $albumResult.Error = $msg
+            return $albumResult
+        }
+        Stop-WithError -Step "STEP 1/$($script:TotalSteps): Scan files" -Message $msg
+    }
+
+    Write-Host "  Found $($existingTracks.Count) FLAC file(s)" -ForegroundColor White
+
+    # Infer artist/album from tags or folder structure if not provided
+    if (-not $folderArtist) {
+        $tagArtist = ($existingTracks | Where-Object { $_.Artist -and $_.Artist -ne "" } | Select-Object -First 1).Artist
+        if ($tagArtist) {
+            $folderArtist = $tagArtist
+            Write-Host "  Artist (from tags): $folderArtist" -ForegroundColor Gray
+        } else {
+            # Try parent folder name
+            $parentPath = Split-Path -Parent $FolderPath
+            $parentName = Split-Path -Leaf $parentPath
+            if ($parentName -ne "Music" -and $parentName -ne "logs") {
+                $folderArtist = $parentName
+                Write-Host "  Artist (from folder): $folderArtist" -ForegroundColor Gray
+            }
+        }
+    }
+
+    if (-not $folderAlbum) {
+        $tagAlbum = ($existingTracks | Where-Object { $_.Album -and $_.Album -ne "" } | Select-Object -First 1).Album
+        if ($tagAlbum) {
+            $folderAlbum = $tagAlbum
+            Write-Host "  Album (from tags): $folderAlbum" -ForegroundColor Gray
+        } else {
+            $folderAlbum = Split-Path -Leaf $FolderPath
+            Write-Host "  Album (from folder): $folderAlbum" -ForegroundColor Gray
+        }
+    }
+
+    Write-Host "  Searching for: `"$folderAlbum`"" -ForegroundColor White
+    if ($folderArtist) { Write-Host "  by: `"$folderArtist`"" -ForegroundColor White }
+
+    # Check for gaps
+    $gapCount = 0
+    foreach ($track in $existingTracks) {
+        if (-not $track.Title -or $track.Title -match '^Track \d+$') { $gapCount++ }
+    }
+    if ($gapCount -gt 0) {
+        Write-Host "  Tracks with missing/generic titles: $gapCount" -ForegroundColor Yellow
+    }
+
+    Write-Log "  Artist: $folderArtist, Album: $folderAlbum, Tracks: $($existingTracks.Count), Gaps: $gapCount"
+
+    Complete-CurrentStep
+
+    # ========== STEP 2: SEARCH METADATA ==========
+    Set-CurrentStep -StepNumber 2
+    Write-Host "`n[STEP 2/$script:TotalSteps] Searching metadata sources..." -ForegroundColor Green
+    Write-Log "STEP 2/$($script:TotalSteps): Searching metadata sources"
+
+    $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+
+    if (-not $merged) {
+        $msg = "No results found from any source for `"$folderAlbum`" by `"$folderArtist`""
+        if ($BatchMode) {
+            Write-Host "  ERROR: $msg" -ForegroundColor Red
+            Write-Log "  ERROR: $msg"
+            $albumResult.Error = $msg
+            $albumResult.Artist = $folderArtist
+            $albumResult.Album = $folderAlbum
+            return $albumResult
+        }
+        Stop-WithError -Step "STEP 2/$($script:TotalSteps): Search metadata" -Message $msg
+    }
+
+    Write-Host "`n  Merged result: `"$($merged.Album)`" by $($merged.Artist)" -ForegroundColor Green
+    if ($merged.Date) { Write-Host "  Year: $($merged.Date)" -ForegroundColor Gray }
+    if ($merged.Genre) { Write-Host "  Genre: $($merged.Genre)" -ForegroundColor Gray }
+    Write-Host "  Tracks: $($merged.Tracks.Count)" -ForegroundColor Gray
+
+    Complete-CurrentStep
+
+    # ========== STEP 3: CONFIRM CHANGES ==========
+    Set-CurrentStep -StepNumber 3
+    Write-Host "`n[STEP 3/$script:TotalSteps] Review proposed changes..." -ForegroundColor Green
+    Write-Log "STEP 3/$($script:TotalSteps): Showing comparison"
+
+    Show-MetadataComparison -ExistingTracks $existingTracks -Proposed $merged
+
+    if (-not $ForceMode) {
+        Write-Host ""
+        $confirm = Read-Host "  Apply these changes? [Y/n]"
+        if ($confirm -and $confirm.ToUpper() -ne "Y") {
+            Write-Host "`n  Cancelled by user." -ForegroundColor Yellow
+            Write-Log "User cancelled"
+            $albumResult.Artist = $merged.Artist
+            $albumResult.Album = $merged.Album
+            $albumResult.Status = "skipped"
+            return $albumResult
+        }
+    }
+
+    Complete-CurrentStep
+
+    # ========== STEP 4: APPLY TAGS ==========
+    Set-CurrentStep -StepNumber 4
+    Write-Host "`n[STEP 4/$script:TotalSteps] Applying tags..." -ForegroundColor Green
+    Write-Log "STEP 4/$($script:TotalSteps): Applying tags"
+
+    $tagCount = 0
+    for ($i = 0; $i -lt $existingTracks.Count; $i++) {
+        $track = $existingTracks[$i]
+        $trackTitle = if ($merged.Tracks -and $i -lt $merged.Tracks.Count) { $merged.Tracks[$i].Title } else { $track.Title }
+        if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
+
+        $trackArtist = $merged.Artist
+        if ($merged.Tracks -and $i -lt $merged.Tracks.Count -and $merged.Tracks[$i].Artist) {
+            $trackArtist = $merged.Tracks[$i].Artist
+        }
+
+        $tagged = Set-AudioTags -FilePath $track.File.FullName `
+            -TrackNumber ($i + 1) -TotalTracks $existingTracks.Count `
+            -Title $trackTitle -Artist $trackArtist `
+            -Album $merged.Album -AlbumArtist $merged.Artist `
+            -Date $merged.Date -Genre $merged.Genre `
+            -ReleaseId $merged.ReleaseId
+
+        if ($tagged) {
+            $tagCount++
+        }
+    }
+
+    Write-Host "  Tagged $tagCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
+    Write-Log "  Tagged $tagCount files"
+
+    Complete-CurrentStep
+
+    # ========== STEP 5: COVER ART ==========
+    Set-CurrentStep -StepNumber 5
+
+    if ($SkipCoverArtMode) {
+        Write-Host "`n[STEP 5/$script:TotalSteps] Cover art (skipped)" -ForegroundColor Yellow
+        Write-Log "STEP 5/$($script:TotalSteps): Cover art skipped"
+    } else {
+        Write-Host "`n[STEP 5/$script:TotalSteps] Downloading cover art..." -ForegroundColor Green
+        Write-Log "STEP 5/$($script:TotalSteps): Downloading cover art"
+
+        # Check if art already exists
+        $existingArt = Get-ChildItem -Path $FolderPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+        if ($existingArt -and -not $ForceMode) {
+            Write-Host "    Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Gray
+            Write-Log "  Cover art already exists"
+        } else {
+            $artFile = Get-CoverArt -ArtworkUrl $merged.ArtworkUrl -ArtworkSource $merged.ArtworkSource `
+                -OutputPath $FolderPath -ReleaseId $merged.ReleaseId
+            if (-not $artFile) {
+                Write-Log "  No cover art downloaded"
+            }
+        }
+    }
+
+    Complete-CurrentStep
+
+    # ========== STEP 6: RENAME FILES ==========
+    Set-CurrentStep -StepNumber 6
+
+    $renamedCount = 0
+    if ($SkipRenameMode) {
+        Write-Host "`n[STEP 6/$script:TotalSteps] Rename files (skipped)" -ForegroundColor Yellow
+        Write-Log "STEP 6/$($script:TotalSteps): Rename skipped"
+    } else {
+        Write-Host "`n[STEP 6/$script:TotalSteps] Renaming files..." -ForegroundColor Green
+        Write-Log "STEP 6/$($script:TotalSteps): Renaming files"
+
+        $renamedCount = Rename-AudioFiles -ExistingTracks $existingTracks -Proposed $merged
+
+        if ($renamedCount -gt 0) {
+            Write-Host "  Renamed $renamedCount file(s)" -ForegroundColor Green
+        } else {
+            Write-Host "  No files needed renaming" -ForegroundColor Gray
+        }
+        Write-Log "  Renamed $renamedCount files"
+    }
+
+    Complete-CurrentStep
+
+    $albumResult.Artist = $merged.Artist
+    $albumResult.Album = $merged.Album
+    $albumResult.Status = "success"
+    $albumResult.TagCount = $tagCount
+    $albumResult.RenameCount = $renamedCount
+
+    return $albumResult
+}
+
 # ========== MAIN SCRIPT ==========
 
 # Load System.Web for URL encoding
@@ -693,6 +934,11 @@ if (-not (Test-Path $Path)) {
     exit 1
 }
 
+# Warn if -Artist or -Album used with -Recurse (each folder infers its own)
+if ($Recurse -and ($Artist -or $Album)) {
+    Write-Host "`nWarning: -Artist and -Album hints are ignored in -Recurse mode (each folder infers its own)" -ForegroundColor Yellow
+}
+
 # Setup logging
 $logDir = "C:\Music\logs"
 if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
@@ -706,207 +952,162 @@ Write-Log "Album hint: $Album"
 Write-Log "SkipRename: $SkipRename"
 Write-Log "SkipCoverArt: $SkipCoverArt"
 Write-Log "Force: $Force"
+Write-Log "Recurse: $Recurse"
 
 # Window title
 $host.UI.RawUI.WindowTitle = "search-metadata - $Path"
 
-# ========== STEP 1: SCAN FILES ==========
-Set-CurrentStep -StepNumber 1
-Write-Host "`n[STEP 1/$script:TotalSteps] Scanning files..." -ForegroundColor Green
-Write-Log "STEP 1/$($script:TotalSteps): Scanning files in $Path"
+if ($Recurse) {
+    # ========== RECURSE MODE ==========
+    Write-Host "`nRecurse mode: scanning for album folders under $Path" -ForegroundColor Cyan
+    Write-Log "Recurse mode: scanning for album folders"
 
-$existingTracks = Read-ExistingTags -FolderPath $Path
+    # Find all directories containing at least one FLAC file
+    $albumFolders = @()
+    $allFlacFiles = Get-ChildItem -Path $Path -Filter "*.flac" -Recurse -ErrorAction SilentlyContinue
+    if ($allFlacFiles) {
+        $albumFolders = $allFlacFiles | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique
+    }
 
-if (-not $existingTracks -or $existingTracks.Count -eq 0) {
-    Stop-WithError -Step "STEP 1/$($script:TotalSteps): Scan files" -Message "No FLAC files found in: $Path"
-}
+    if ($albumFolders.Count -eq 0) {
+        Write-Host "`nNo FLAC files found under: $Path" -ForegroundColor Red
+        Write-Log "No FLAC files found under $Path"
+        exit 1
+    }
 
-Write-Host "  Found $($existingTracks.Count) FLAC file(s)" -ForegroundColor White
+    Write-Host "  Found $($albumFolders.Count) album folder(s):" -ForegroundColor White
+    foreach ($folder in $albumFolders) {
+        $relPath = $folder.Substring($Path.Length).TrimStart('\', '/')
+        if (-not $relPath) { $relPath = "." }
+        $flacCount = (Get-ChildItem -Path $folder -Filter "*.flac" -ErrorAction SilentlyContinue).Count
+        Write-Host "    $relPath ($flacCount files)" -ForegroundColor Gray
+    }
+    Write-Log "Found $($albumFolders.Count) album folders"
 
-# Infer artist/album from tags or folder structure if not provided
-if (-not $Artist) {
-    $tagArtist = ($existingTracks | Where-Object { $_.Artist -and $_.Artist -ne "" } | Select-Object -First 1).Artist
-    if ($tagArtist) {
-        $Artist = $tagArtist
-        Write-Host "  Artist (from tags): $Artist" -ForegroundColor Gray
-    } else {
-        # Try parent folder name
-        $parentPath = Split-Path -Parent $Path
-        $parentName = Split-Path -Leaf $parentPath
-        if ($parentName -ne "Music" -and $parentName -ne "logs") {
-            $Artist = $parentName
-            Write-Host "  Artist (from folder): $Artist" -ForegroundColor Gray
+    # Process each folder
+    $batchResults = @()
+    $albumNum = 0
+
+    foreach ($folder in $albumFolders) {
+        $albumNum++
+        $relPath = $folder.Substring($Path.Length).TrimStart('\', '/')
+        if (-not $relPath) { $relPath = "." }
+
+        Write-Host "`n========================================" -ForegroundColor Cyan
+        Write-Host "Album $albumNum/$($albumFolders.Count): $relPath" -ForegroundColor Cyan
+        Write-Host "========================================" -ForegroundColor Cyan
+        Write-Log "========== Album $albumNum/$($albumFolders.Count): $relPath =========="
+
+        $host.UI.RawUI.WindowTitle = "search-metadata [$albumNum/$($albumFolders.Count)] $relPath"
+
+        try {
+            $result = Process-AlbumFolder -FolderPath $folder `
+                -ForceMode:$true -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
+                -BatchMode
+
+            $batchResults += $result
+
+            if ($result.Status -eq "success") {
+                Write-Host "`n  Done: $($result.Artist) - $($result.Album)" -ForegroundColor Green
+            } elseif ($result.Status -eq "skipped") {
+                Write-Host "`n  Skipped: $relPath" -ForegroundColor Yellow
+            } else {
+                Write-Host "`n  Failed: $relPath - $($result.Error)" -ForegroundColor Red
+            }
+        } catch {
+            Write-Host "`n  Failed: $relPath - $_" -ForegroundColor Red
+            Write-Log "  ERROR processing $relPath`: $_"
+            $batchResults += @{
+                Path = $folder
+                Artist = ""
+                Album = $relPath
+                Status = "failed"
+                TagCount = 0
+                RenameCount = 0
+                Error = "$_"
+            }
         }
     }
-}
 
-if (-not $Album) {
-    $tagAlbum = ($existingTracks | Where-Object { $_.Album -and $_.Album -ne "" } | Select-Object -First 1).Album
-    if ($tagAlbum) {
-        $Album = $tagAlbum
-        Write-Host "  Album (from tags): $Album" -ForegroundColor Gray
-    } else {
-        $Album = Split-Path -Leaf $Path
-        Write-Host "  Album (from folder): $Album" -ForegroundColor Gray
+    # ========== BATCH SUMMARY ==========
+    $successCount = ($batchResults | Where-Object { $_.Status -eq "success" }).Count
+    $failedCount = ($batchResults | Where-Object { $_.Status -eq "failed" }).Count
+    $skippedCount = ($batchResults | Where-Object { $_.Status -eq "skipped" }).Count
+    $totalTagged = ($batchResults | ForEach-Object { $_.TagCount } | Measure-Object -Sum).Sum
+    $totalRenamed = ($batchResults | ForEach-Object { $_.RenameCount } | Measure-Object -Sum).Sum
+
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "BATCH COMPLETE!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Cyan
+
+    Write-Host "`n--- BATCH SUMMARY ---" -ForegroundColor Cyan
+    Write-Host "  Albums processed: $($albumFolders.Count)" -ForegroundColor White
+    Write-Host "  Successful: $successCount" -ForegroundColor Green
+    if ($failedCount -gt 0) {
+        Write-Host "  Failed: $failedCount" -ForegroundColor Red
     }
-}
-
-Write-Host "  Searching for: `"$Album`"" -ForegroundColor White
-if ($Artist) { Write-Host "  by: `"$Artist`"" -ForegroundColor White }
-
-# Check for gaps
-$gapCount = 0
-foreach ($track in $existingTracks) {
-    if (-not $track.Title -or $track.Title -match '^Track \d+$') { $gapCount++ }
-}
-if ($gapCount -gt 0) {
-    Write-Host "  Tracks with missing/generic titles: $gapCount" -ForegroundColor Yellow
-}
-
-Write-Log "  Artist: $Artist, Album: $Album, Tracks: $($existingTracks.Count), Gaps: $gapCount"
-
-Complete-CurrentStep
-
-# ========== STEP 2: SEARCH METADATA ==========
-Set-CurrentStep -StepNumber 2
-Write-Host "`n[STEP 2/$script:TotalSteps] Searching metadata sources..." -ForegroundColor Green
-Write-Log "STEP 2/$($script:TotalSteps): Searching metadata sources"
-
-$merged = Search-AllSources -AlbumName $Album -ArtistName $Artist -TrackCount $existingTracks.Count
-
-if (-not $merged) {
-    Stop-WithError -Step "STEP 2/$($script:TotalSteps): Search metadata" -Message "No results found from any source for `"$Album`" by `"$Artist`""
-}
-
-Write-Host "`n  Merged result: `"$($merged.Album)`" by $($merged.Artist)" -ForegroundColor Green
-if ($merged.Date) { Write-Host "  Year: $($merged.Date)" -ForegroundColor Gray }
-if ($merged.Genre) { Write-Host "  Genre: $($merged.Genre)" -ForegroundColor Gray }
-Write-Host "  Tracks: $($merged.Tracks.Count)" -ForegroundColor Gray
-
-Complete-CurrentStep
-
-# ========== STEP 3: CONFIRM CHANGES ==========
-Set-CurrentStep -StepNumber 3
-Write-Host "`n[STEP 3/$script:TotalSteps] Review proposed changes..." -ForegroundColor Green
-Write-Log "STEP 3/$($script:TotalSteps): Showing comparison"
-
-Show-MetadataComparison -ExistingTracks $existingTracks -Proposed $merged
-
-if (-not $Force) {
-    Write-Host ""
-    $confirm = Read-Host "  Apply these changes? [Y/n]"
-    if ($confirm -and $confirm.ToUpper() -ne "Y") {
-        Write-Host "`n  Cancelled by user." -ForegroundColor Yellow
-        Write-Log "User cancelled"
-        exit 0
+    if ($skippedCount -gt 0) {
+        Write-Host "  Skipped: $skippedCount" -ForegroundColor Yellow
     }
-}
-
-Complete-CurrentStep
-
-# ========== STEP 4: APPLY TAGS ==========
-Set-CurrentStep -StepNumber 4
-Write-Host "`n[STEP 4/$script:TotalSteps] Applying tags..." -ForegroundColor Green
-Write-Log "STEP 4/$($script:TotalSteps): Applying tags"
-
-$tagCount = 0
-for ($i = 0; $i -lt $existingTracks.Count; $i++) {
-    $track = $existingTracks[$i]
-    $trackTitle = if ($merged.Tracks -and $i -lt $merged.Tracks.Count) { $merged.Tracks[$i].Title } else { $track.Title }
-    if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
-
-    $trackArtist = $merged.Artist
-    if ($merged.Tracks -and $i -lt $merged.Tracks.Count -and $merged.Tracks[$i].Artist) {
-        $trackArtist = $merged.Tracks[$i].Artist
+    Write-Host "  Total files tagged: $totalTagged" -ForegroundColor White
+    if (-not $SkipRename) {
+        Write-Host "  Total files renamed: $totalRenamed" -ForegroundColor White
     }
 
-    $tagged = Set-AudioTags -FilePath $track.File.FullName `
-        -TrackNumber ($i + 1) -TotalTracks $existingTracks.Count `
-        -Title $trackTitle -Artist $trackArtist `
-        -Album $merged.Album -AlbumArtist $merged.Artist `
-        -Date $merged.Date -Genre $merged.Genre `
-        -ReleaseId $merged.ReleaseId
-
-    if ($tagged) {
-        $tagCount++
-    }
-}
-
-Write-Host "  Tagged $tagCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
-Write-Log "  Tagged $tagCount files"
-
-Complete-CurrentStep
-
-# ========== STEP 5: COVER ART ==========
-Set-CurrentStep -StepNumber 5
-
-if ($SkipCoverArt) {
-    Write-Host "`n[STEP 5/$script:TotalSteps] Cover art (skipped)" -ForegroundColor Yellow
-    Write-Log "STEP 5/$($script:TotalSteps): Cover art skipped"
-} else {
-    Write-Host "`n[STEP 5/$script:TotalSteps] Downloading cover art..." -ForegroundColor Green
-    Write-Log "STEP 5/$($script:TotalSteps): Downloading cover art"
-
-    # Check if art already exists
-    $existingArt = Get-ChildItem -Path $Path -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
-    if ($existingArt -and -not $Force) {
-        Write-Host "    Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Gray
-        Write-Log "  Cover art already exists"
-    } else {
-        $artFile = Get-CoverArt -ArtworkUrl $merged.ArtworkUrl -ArtworkSource $merged.ArtworkSource `
-            -OutputPath $Path -ReleaseId $merged.ReleaseId
-        if (-not $artFile) {
-            Write-Log "  No cover art downloaded"
+    # Per-album breakdown
+    if ($batchResults.Count -gt 1) {
+        Write-Host "`n--- PER-ALBUM RESULTS ---" -ForegroundColor Cyan
+        foreach ($r in $batchResults) {
+            $relPath = $r.Path.Substring($Path.Length).TrimStart('\', '/')
+            if (-not $relPath) { $relPath = "." }
+            $statusColor = switch ($r.Status) { "success" { "Green" } "skipped" { "Yellow" } default { "Red" } }
+            $statusIcon = switch ($r.Status) { "success" { "[OK]" } "skipped" { "[--]" } default { "[!!]" } }
+            $label = if ($r.Artist -and $r.Album) { "$($r.Artist) - $($r.Album)" } else { $relPath }
+            Write-Host "  $statusIcon $label" -ForegroundColor $statusColor
+            if ($r.Error) {
+                Write-Host "       $($r.Error)" -ForegroundColor Red
+            }
         }
     }
-}
 
-Complete-CurrentStep
+    Write-Host "`n  Log file: $($script:LogFile)" -ForegroundColor White
+    Write-Host "`n========================================`n" -ForegroundColor Cyan
 
-# ========== STEP 6: RENAME FILES ==========
-Set-CurrentStep -StepNumber 6
+    $host.UI.RawUI.WindowTitle = "search-metadata - BATCH DONE ($successCount/$($albumFolders.Count))"
 
-if ($SkipRename) {
-    Write-Host "`n[STEP 6/$script:TotalSteps] Rename files (skipped)" -ForegroundColor Yellow
-    Write-Log "STEP 6/$($script:TotalSteps): Rename skipped"
+    Write-Log "========== BATCH COMPLETE =========="
+    Write-Log "Albums: $($albumFolders.Count), Success: $successCount, Failed: $failedCount, Skipped: $skippedCount"
+    Write-Log "Total tagged: $totalTagged, Total renamed: $totalRenamed"
+
 } else {
-    Write-Host "`n[STEP 6/$script:TotalSteps] Renaming files..." -ForegroundColor Green
-    Write-Log "STEP 6/$($script:TotalSteps): Renaming files"
+    # ========== SINGLE FOLDER MODE ==========
+    $result = Process-AlbumFolder -FolderPath $Path `
+        -ArtistHint $Artist -AlbumHint $Album `
+        -ForceMode:$Force -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt
 
-    $renamedCount = Rename-AudioFiles -ExistingTracks $existingTracks -Proposed $merged
+    # ========== SUMMARY ==========
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "COMPLETE!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Cyan
 
-    if ($renamedCount -gt 0) {
-        Write-Host "  Renamed $renamedCount file(s)" -ForegroundColor Green
-    } else {
-        Write-Host "  No files needed renaming" -ForegroundColor Gray
+    Write-Host "`n--- SUMMARY ---" -ForegroundColor Cyan
+    Write-Host "  Album: $($result.Album)" -ForegroundColor White
+    Write-Host "  Artist: $($result.Artist)" -ForegroundColor White
+    Write-Host "  Files tagged: $($result.TagCount)" -ForegroundColor White
+    if (-not $SkipRename) {
+        Write-Host "  Files renamed: $($result.RenameCount)" -ForegroundColor White
     }
-    Write-Log "  Renamed $renamedCount files"
+    Write-Host "  Path: $Path" -ForegroundColor White
+    Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
+
+    Show-StepsSummary
+
+    Write-Host "`n========================================`n" -ForegroundColor Cyan
+
+    $host.UI.RawUI.WindowTitle = "search-metadata - DONE"
+
+    Write-Log "========== SESSION COMPLETE =========="
+    Write-Log "Album: $($result.Album) by $($result.Artist)"
+    Write-Log "Files tagged: $($result.TagCount)"
+    if (-not $SkipRename) { Write-Log "Files renamed: $($result.RenameCount)" }
 }
-
-Complete-CurrentStep
-
-# ========== SUMMARY ==========
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "COMPLETE!" -ForegroundColor Green
-Write-Host "========================================" -ForegroundColor Cyan
-
-Write-Host "`n--- SUMMARY ---" -ForegroundColor Cyan
-Write-Host "  Album: $($merged.Album)" -ForegroundColor White
-Write-Host "  Artist: $($merged.Artist)" -ForegroundColor White
-Write-Host "  Files tagged: $tagCount" -ForegroundColor White
-if (-not $SkipRename) {
-    Write-Host "  Files renamed: $renamedCount" -ForegroundColor White
-}
-Write-Host "  Path: $Path" -ForegroundColor White
-Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
-
-Show-StepsSummary
-
-Write-Host "`n========================================`n" -ForegroundColor Cyan
-
-$host.UI.RawUI.WindowTitle = "search-metadata - DONE"
-
-Write-Log "========== SESSION COMPLETE =========="
-Write-Log "Album: $($merged.Album) by $($merged.Artist)"
-Write-Log "Files tagged: $tagCount"
-if (-not $SkipRename) { Write-Log "Files renamed: $renamedCount" }
