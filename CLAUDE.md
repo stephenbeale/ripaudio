@@ -282,3 +282,37 @@ These branches have no commits ahead of master and were pruned from local tracki
 2. Consider end-to-end testing of the full rip workflow with a real disc (AccurateRip parsing needs live cyanrip output to validate regex patterns)
 3. Consider adding `-Recurse` flag to `search-metadata.ps1` for processing nested subdirectories
 4. Stale remote branches on GitHub (noted in 2026-02-18 closure) may still need manual cleanup via the GitHub branch manager if not already done
+
+---
+
+### 2026-02-21 - search-metadata.ps1 -Recurse Flag
+
+**Work Completed:**
+
+- PR #33 merged: Added `-Recurse` switch to `search-metadata.ps1`
+  - Refactored per-album processing logic (steps 1-6) into a `Process-AlbumFolder` function with an accompanying `Reset-StepTracking` helper to reset step state between albums
+  - In recurse mode, the script discovers all subdirectories under the target path that contain at least one FLAC file, then processes each as an independent album
+  - Per-album error handling: failures in one album are caught and logged, processing continues to the next (no single failure aborts the batch)
+  - Confirmation prompt auto-forced in recurse mode (equivalent to `-Force`) to avoid interactive prompts stalling a batch run
+  - Window title updated with progress indicator (`[N/M] Album - Artist`) during batch processing
+  - Batch summary shown on completion: total albums processed, count of successes and failures, list of any failed folders
+  - README.md updated with `-Recurse` parameter documentation and usage examples
+  - Roadmap.md updated to mark `-Recurse` as completed (all roadmap items now complete)
+
+**Technical Notes:**
+- `Reset-StepTracking` clears the module-level `$script:Steps` array and `$script:CurrentStep` counter so each album starts with a fresh step display
+- `Process-AlbumFolder` wraps the existing 6-step workflow; the top-level script body calls it once (single mode) or iterates subdirectories (recurse mode)
+- Subdirectory discovery uses `Get-ChildItem -Recurse -Directory` filtered to those containing `*.flac` files
+- The target folder itself is excluded from recurse discovery (it is not treated as a sub-album)
+
+**Session Verified Clean:**
+- PR #33 squash-merged to master
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+
+**Priority for Next Session:**
+1. All roadmap items are complete — no pending development work remains
+2. Consider end-to-end testing of `search-metadata.ps1 -Recurse` against a real music library directory tree to validate batch processing, error recovery, and window title progress
+3. Consider end-to-end testing of `rip-audio.ps1` with a real disc to validate AccurateRip regex parsing against live cyanrip output
+4. Stale remote branches on GitHub (noted in 2026-02-18 closure) may still need manual cleanup via the GitHub branch manager if not already done
