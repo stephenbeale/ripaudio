@@ -12,7 +12,13 @@ param(
     [string]$OutputDrive = "E:",
 
     [Parameter()]
-    [string]$format = "flac"
+    [string]$format = "flac",
+
+    [Parameter()]
+    [switch]$Fitness,
+
+    [Parameter()]
+    [switch]$Music
 )
 
 # ========== STEP TRACKING ==========
@@ -152,12 +158,16 @@ if ($format -notin $validFormats) {
     exit 1
 }
 
+# Determine content type and root folder
+$contentType = if ($Fitness) { "Fitness" } elseif ($Music) { "Music" } else { "Music" }
+$rootFolder = $contentType
+
 # Build output directory path
-# Format: E:\Music\{Artist}\{Album}\ or E:\Music\{Album}\ if no artist
+# Format: E:\{RootFolder}\{Artist}\{Album}\ or E:\{RootFolder}\{Album}\ if no artist
 if ($artist) {
-    $finalOutputDir = "$outputDriveLetter\Music\$artist\$album"
+    $finalOutputDir = "$outputDriveLetter\$rootFolder\$artist\$album"
 } else {
-    $finalOutputDir = "$outputDriveLetter\Music\$album"
+    $finalOutputDir = "$outputDriveLetter\$rootFolder\$album"
 }
 
 # ========== DRIVE CONFIRMATION ==========
@@ -207,6 +217,7 @@ if ($artist) {
 }
 Write-Log "Format: $format"
 Write-Log "Drive: $driveLetter"
+Write-Log "Content Type: $contentType"
 Write-Log "Output Drive: $outputDriveLetter"
 Write-Log "Final Output: $finalOutputDir"
 Write-Log "Log file: $($script:LogFile)"
@@ -277,6 +288,7 @@ Write-Host "Album: $album" -ForegroundColor White
 if ($artist) {
     Write-Host "Artist: $artist" -ForegroundColor White
 }
+Write-Host "Type: $contentType" -ForegroundColor White
 Write-Host "Format: $format" -ForegroundColor White
 Write-Host "Drive: $driveLetter" -ForegroundColor White
 Write-Host "Output Drive: $outputDriveLetter" -ForegroundColor White
