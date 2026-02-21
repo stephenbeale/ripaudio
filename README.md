@@ -225,19 +225,20 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 ### Usage
 
 ```
-.\search-metadata.ps1 -Path <folder> [-Artist <string>] [-Album <string>] [-SkipRename] [-SkipCoverArt] [-Force]
+.\search-metadata.ps1 -Path <folder> [-Artist <string>] [-Album <string>] [-SkipRename] [-SkipCoverArt] [-Force] [-Recurse]
 ```
 
 ### Parameters
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `-Path` | Yes | - | Folder containing audio files |
-| `-Artist` | No | - | Artist name hint (auto-detected from tags/folder) |
-| `-Album` | No | - | Album name hint (auto-detected from tags/folder) |
+| `-Path` | Yes | - | Folder containing audio files (or parent folder with `-Recurse`) |
+| `-Artist` | No | - | Artist name hint (auto-detected from tags/folder; ignored with `-Recurse`) |
+| `-Album` | No | - | Album name hint (auto-detected from tags/folder; ignored with `-Recurse`) |
 | `-SkipRename` | No | - | Don't rename files |
 | `-SkipCoverArt` | No | - | Don't download cover art |
-| `-Force` | No | - | Skip confirmation prompt |
+| `-Force` | No | - | Skip confirmation prompt (implied with `-Recurse`) |
+| `-Recurse` | No | - | Process all subdirectories containing FLAC files |
 
 ### Examples
 
@@ -253,6 +254,12 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 
 # Tags only, no artwork or renaming
 .\search-metadata.ps1 -Path "C:\Music\rip" -SkipRename -SkipCoverArt
+
+# Process all album folders under a directory
+.\search-metadata.ps1 -Path "C:\Music" -Recurse
+
+# Recurse with no renaming
+.\search-metadata.ps1 -Path "C:\Music\Pink Floyd" -Recurse -SkipRename
 ```
 
 ### 6-Step Workflow
