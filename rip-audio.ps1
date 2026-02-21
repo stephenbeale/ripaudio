@@ -163,6 +163,46 @@ if ($artist) {
     $finalOutputDir = "$outputDriveLetter\Music\$album"
 }
 
+# ========== PATH LENGTH VALIDATION ==========
+# Check worst-case output path against Windows MAX_PATH (260 chars) before starting
+$MAX_PATH = 260
+$worstCaseFilename = "01 - $(if ($artist) { $artist } else { 'Unknown Artist' }) - $album.$format"
+# Sanitize the same way the rename logic does
+$worstCaseFilename = $worstCaseFilename -replace '[\\/:*?"<>|]', '_'
+$worstCasePath = Join-Path $finalOutputDir $worstCaseFilename
+$pathLength = $worstCasePath.Length
+$WARNING_THRESHOLD = $MAX_PATH - 20
+
+if ($pathLength -ge $MAX_PATH) {
+    Write-Host "`n========================================" -ForegroundColor Red
+    Write-Host "PATH TOO LONG" -ForegroundColor Red
+    Write-Host "========================================" -ForegroundColor Red
+    Write-Host "`nThe worst-case output path exceeds the Windows MAX_PATH limit ($MAX_PATH chars)." -ForegroundColor Red
+    Write-Host "`n  Directory:  $finalOutputDir" -ForegroundColor White
+    Write-Host "  Filename:   $worstCaseFilename" -ForegroundColor White
+    Write-Host "  Total:      $pathLength chars (limit: $MAX_PATH)" -ForegroundColor Yellow
+    Write-Host "`nSuggestions:" -ForegroundColor Cyan
+    Write-Host "  - Use a shorter album name with -album" -ForegroundColor White
+    Write-Host "  - Use a shorter artist name with -artist" -ForegroundColor White
+    Write-Host "  - Change the output drive to one with a shorter base path" -ForegroundColor White
+    Write-Host ""
+
+    $pathChoice = Read-Host "Continue anyway? (y/N)"
+    if ($pathChoice -notmatch "^[Yy]") {
+        Write-Host "Aborted by user." -ForegroundColor Yellow
+        exit 0
+    }
+    Write-Host "Continuing despite path length warning..." -ForegroundColor Yellow
+} elseif ($pathLength -ge $WARNING_THRESHOLD) {
+    Write-Host "`n--- PATH LENGTH WARNING ---" -ForegroundColor Yellow
+    Write-Host "The output path is within 20 chars of the Windows MAX_PATH limit." -ForegroundColor Yellow
+    Write-Host "  Directory:  $finalOutputDir" -ForegroundColor White
+    Write-Host "  Filename:   $worstCaseFilename" -ForegroundColor White
+    Write-Host "  Total:      $pathLength chars (limit: $MAX_PATH)" -ForegroundColor White
+    Write-Host "  Remaining:  $($MAX_PATH - $pathLength) chars" -ForegroundColor White
+    Write-Host ""
+}
+
 # ========== DRIVE CONFIRMATION ==========
 # Show which drive will be used and confirm before proceeding
 Write-Host "`n========================================" -ForegroundColor Cyan

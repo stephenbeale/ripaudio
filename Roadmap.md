@@ -7,14 +7,15 @@
 - [x] Cover art handling - sequential fallback: Cover Art Archive, MusicBrainz search + CAA, iTunes, Deezer (PR #20)
 - [x] Multi-source metadata search - `search-metadata.ps1` scans folder, searches MusicBrainz + iTunes + Deezer, applies tags + cover art + renames
 - [x] Optional MusicBrainz requirement - `-RequireMusicBrainz` switch stops the rip if disc not found in MusicBrainz
+- [x] Path length validation - checks worst-case output path against Windows MAX_PATH (260 chars) before rip starts, with breakdown and confirmation prompt
 
 ## Planned Features
 
 ### ~~Optional MusicBrainz Requirement~~ (Done)
 Moved to Completed section.
 
-### Path Length Validation
-Check all output paths against Windows MAX_PATH (260 chars) before starting rip. Warn user and offer to abort if path would be too long, allowing them to input a shorter title. Consider all subdirectories and filename patterns.
+### ~~Path Length Validation~~ (Done)
+Moved to Completed section.
 
 ### Quality Parameter
 Add `-Quality` parameter for lossy format bitrate control (mp3, opus, aac).
