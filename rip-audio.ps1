@@ -529,6 +529,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             $validChoice = $true
             Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
             Write-Log "User chose to continue without MusicBrainz metadata (connection failed)"
+            $skipMusicBrainz = $true
 
             $cyanripArgs += @("-N")
             Push-Location $parentDir
@@ -561,6 +562,7 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
     if ($continueChoice -eq "" -or $continueChoice -match "^[Yy]") {
         Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
         Write-Log "User chose to continue without MusicBrainz metadata"
+        $skipMusicBrainz = $true
 
         # Re-run cyanrip with -N flag to skip metadata requirement
         $cyanripArgs += @("-N")
@@ -615,43 +617,37 @@ foreach ($ext in $audioExtensions) {
     }
 }
 
-if ($rippedTracks.Count -gt 0) {
-    # Check if tracks have generic names (pattern: "## - Track ##" or just "Track ##")
-    $genericPattern = "^\d{2}\s*-?\s*Track\s*\d+"
-    $hasGenericNames = $rippedTracks | Where-Object { $_.BaseName -match $genericPattern }
+if ($rippedTracks.Count -gt 0 -and $skipMusicBrainz) {
+    # MusicBrainz was skipped, so tracks have generic names - rename using script params
+    Write-Host "`nRenaming tracks with disc details..." -ForegroundColor Yellow
 
-    if ($hasGenericNames -and $hasGenericNames.Count -gt 0) {
-        Write-Host "`nRenaming tracks with disc details..." -ForegroundColor Yellow
+    $namingArtist = if ($artist) { $artist } else { "Unknown Artist" }
+    $namingAlbum = $album
 
-        # Build the naming components from script parameters
-        $namingArtist = if ($artist) { $artist } else { "Unknown Artist" }
-        $namingAlbum = $album
+    foreach ($track in ($rippedTracks | Sort-Object Name)) {
+        # Extract track number from filename
+        if ($track.BaseName -match '^(\d{2})') {
+            $trackNum = $Matches[1]
+            $newName = "$trackNum - $namingArtist - $namingAlbum$($track.Extension)"
 
-        foreach ($track in $rippedTracks) {
-            # Extract track number from filename
-            if ($track.BaseName -match '^(\d{2})') {
-                $trackNum = $Matches[1]
-                $newName = "$trackNum - $namingArtist - $namingAlbum$($track.Extension)"
+            # Sanitize filename (remove invalid characters)
+            $newName = $newName -replace '[\\/:*?"<>|]', '_'
 
-                # Sanitize filename (remove invalid characters)
-                $newName = $newName -replace '[\\/:*?"<>|]', '_'
+            $newPath = Join-Path $finalOutputDir $newName
 
-                $newPath = Join-Path $finalOutputDir $newName
-
-                if ($track.FullName -ne $newPath) {
-                    try {
-                        Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
-                        Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
-                        Write-Log "Renamed: $($track.Name) -> $newName"
-                    } catch {
-                        Write-Host "  Failed to rename: $($track.Name)" -ForegroundColor Yellow
-                        Write-Log "WARNING: Failed to rename $($track.Name): $_"
-                    }
+            if ($track.FullName -ne $newPath) {
+                try {
+                    Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
+                    Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
+                    Write-Log "Renamed: $($track.Name) -> $newName"
+                } catch {
+                    Write-Host "  Failed to rename: $($track.Name)" -ForegroundColor Yellow
+                    Write-Log "WARNING: Failed to rename $($track.Name): $_"
                 }
             }
         }
-        Write-Host "Track renaming complete" -ForegroundColor Green
     }
+    Write-Host "Track renaming complete" -ForegroundColor Green
 }
 
 # Ensure metadata tags are set from input arguments (especially when MusicBrainz unavailable)
