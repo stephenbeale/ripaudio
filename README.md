@@ -225,7 +225,7 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 ### Usage
 
 ```
-.\search-metadata.ps1 -Path <folder> [-Artist <string>] [-Album <string>] [-SkipRename] [-SkipCoverArt] [-Force] [-Recurse]
+.\search-metadata.ps1 -Path <folder> [-Artist <string>] [-Album <string>] [-SkipRename] [-SkipCoverArt] [-Force] [-Recurse] [-DryRun]
 ```
 
 ### Parameters
@@ -239,6 +239,7 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 | `-SkipCoverArt` | No | - | Don't download cover art |
 | `-Force` | No | - | Skip confirmation prompt (implied with `-Recurse`) |
 | `-Recurse` | No | - | Process all subdirectories containing FLAC files |
+| `-DryRun` | No | - | Preview all changes without writing to disk |
 
 ### Examples
 
@@ -260,6 +261,12 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 
 # Recurse with no renaming
 .\search-metadata.ps1 -Path "C:\Music\Pink Floyd" -Recurse -SkipRename
+
+# Preview what would change without writing anything
+.\search-metadata.ps1 -Path "C:\Music\Unknown Album" -DryRun
+
+# Dry run across all album folders
+.\search-metadata.ps1 -Path "C:\Music" -Recurse -DryRun
 ```
 
 ### 6-Step Workflow

@@ -14,3 +14,4 @@
 - [x] Multiple output formats - comma-separated `-format "flac,mp3"` for parallel encoding in a single pass
 - [x] AccurateRip verification reporting - parses cyanrip AR output (disc status, per-track v1/v2 checksums, confidence levels), displays in banner/summary, logs results
 - [x] Recurse flag for search-metadata.ps1 - `-Recurse` processes all subdirectories containing FLAC files, with per-album error handling and batch summary
+- [x] Dry run flag for search-metadata.ps1 - `-DryRun` previews all tag, cover art, and rename changes without writing to disk
