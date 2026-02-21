@@ -30,7 +30,7 @@ ripaudio/
 The script follows the same patterns as the ripdisc project:
 
 ### Step Tracking
-- 3-step workflow: cyanrip rip, verify output, open directory
+- 4-step workflow: cyanrip rip, verify output, cover art, open directory
 - Each step tracked with colored console output
 - Summary shown on completion or error
 
@@ -200,3 +200,31 @@ These branches have no commits ahead of master and were pruned from local tracki
 1. Test `search-metadata.ps1` against real FLAC files in a local music library to validate the 6-step workflow end-to-end
 2. Consider adding `-Recurse` flag to process nested album subdirectories
 3. Review stale remote branches for cleanup on GitHub
+
+---
+
+### 2026-02-21 - Queue Mode + CDDB Fallback
+
+**Work Completed:**
+
+- Added Queue Mode (`-Queue` and `-ProcessQueue` switches):
+  - `-Queue` adds album entries to `C:\Music\rip-queue.json` with file locking (same pattern as ripdisc) for concurrent safety
+  - `-ProcessQueue` reads queue, prompts for disc insertion per entry, runs full 4-step workflow, removes completed entries, shows aggregate summary
+  - Queue entries store Album, Artist, Format, QueuedAt timestamp
+  - ProcessQueue auto-continues through interactive prompts (MB unreachable, directory exists, path length, multiple releases)
+  - Re-reads queue between entries to pick up concurrently added items
+  - Mutually exclusive params validated at startup
+
+- Added CDDB Fallback when MusicBrainz has no match:
+  - `Search-CDDB` function: parses TOC from cyanrip output, computes CDDB disc ID (standard algorithm), queries gnudb.org via HTTP CDDB protocol
+  - Two lookup strategies: TOC-based disc ID query (primary), text search by album name (fallback)
+  - CDDB track names used for file renaming (`## - Track Title.ext`) and FLAC metadata tagging
+  - Inserted between MB failure detection and generic names fallback
+  - Shows CDDB results preview (artist, album, first 5 tracks) before proceeding
+
+**Technical Notes:**
+- CDDB disc ID computed from LBA offsets + 150-frame lead-in, using standard digit-sum algorithm
+- gnudb.org HTTP API: `cddb query` for disc lookup, `cddb read` for full track listing, `cddb album` for text search
+- DTITLE and TTITLE fields parsed with multi-line continuation support
+- ProcessQueue uses try/catch around main body; Stop-WithError throws instead of exit in queue mode
+- Queue file deleted automatically when empty after ProcessQueue completes

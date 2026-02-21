@@ -1,6 +1,6 @@
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$album,
+    [Parameter()]
+    [string]$album = "",
 
     [Parameter()]
     [string]$artist = "",
@@ -15,7 +15,13 @@ param(
     [string]$format = "flac",
 
     [Parameter()]
-    [switch]$RequireMusicBrainz
+    [switch]$RequireMusicBrainz,
+
+    [Parameter()]
+    [switch]$Queue,
+
+    [Parameter()]
+    [switch]$ProcessQueue
 )
 
 # ========== STEP TRACKING ==========
@@ -143,17 +149,377 @@ function Write-Log {
     }
 }
 
+# ========== CDDB FALLBACK ==========
+function Search-CDDB {
+    param(
+        [string]$CyanripOutput,
+        [string]$AlbumName = "",
+        [string]$ArtistName = ""
+    )
+
+    $genre = $null
+    $matchDiscId = $null
+    $numTracks = 0
+
+    # Try 1: TOC-based lookup from cyanrip output
+    $trackStarts = @()
+    $leadOut = $null
+
+    foreach ($line in ($CyanripOutput -split "`n")) {
+        if ($line -match 'Track\s+\d+:\s+start\s+(\d+)') {
+            $trackStarts += [int]$Matches[1]
+        }
+        if ($line -match 'Lead-?out:\s*(\d+)') {
+            $leadOut = [int]$Matches[1]
+        }
+    }
+
+    if ($trackStarts.Count -gt 0 -and $null -ne $leadOut) {
+        $numTracks = $trackStarts.Count
+
+        # Compute CDDB disc ID - offsets include 150-frame lead-in
+        $cddbOffsets = $trackStarts | ForEach-Object { $_ + 150 }
+        $leadOutCddb = $leadOut + 150
+
+        # Sum digits of each track's start second
+        $digitSum = 0
+        foreach ($offset in $cddbOffsets) {
+            $seconds = [math]::Floor($offset / 75)
+            while ($seconds -gt 0) {
+                $digitSum += $seconds % 10
+                $seconds = [math]::Floor($seconds / 10)
+            }
+        }
+
+        $totalSeconds = [math]::Floor($leadOutCddb / 75) - [math]::Floor($cddbOffsets[0] / 75)
+        $discId = (($digitSum % 0xFF) -shl 24) -bor ($totalSeconds -shl 8) -bor $numTracks
+        $discIdHex = $discId.ToString("x8")
+
+        # Query gnudb.org
+        $offsetsStr = ($cddbOffsets | ForEach-Object { $_.ToString() }) -join "+"
+        $totalSecs = [math]::Floor($leadOutCddb / 75)
+
+        $queryUrl = "http://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+query+$discIdHex+$numTracks+$offsetsStr+$totalSecs&hello=user+host+RipAudio+1.0&proto=6"
+
+        try {
+            $queryResponse = Invoke-WebRequest -Uri $queryUrl -TimeoutSec 10 -UseBasicParsing
+            $queryText = $queryResponse.Content
+
+            if ($queryText -match '^200\s+(\S+)\s+(\S+)') {
+                $genre = $Matches[1]
+                $matchDiscId = $Matches[2]
+            } elseif ($queryText -match '^21[01]') {
+                # Multiple/inexact matches - take first
+                $lines = $queryText -split "`n"
+                foreach ($qline in $lines[1..($lines.Length-1)]) {
+                    if ($qline -match '^\s*(\S+)\s+(\S+)\s+(.+)' -and $qline.Trim() -ne '.') {
+                        $genre = $Matches[1]
+                        $matchDiscId = $Matches[2]
+                        break
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    # Try 2: Text search fallback (if TOC lookup didn't find anything)
+    if (-not $genre -and $AlbumName) {
+        $searchTerm = if ($ArtistName) { "$ArtistName $AlbumName" } else { $AlbumName }
+        $searchEncoded = [System.Web.HttpUtility]::UrlEncode($searchTerm)
+        $albumUrl = "http://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+album+$searchEncoded&hello=user+host+RipAudio+1.0&proto=6"
+
+        try {
+            $albumResponse = Invoke-WebRequest -Uri $albumUrl -TimeoutSec 10 -UseBasicParsing
+            $albumText = $albumResponse.Content
+
+            if ($albumText -match '^21[01]') {
+                $lines = $albumText -split "`n"
+                foreach ($aline in $lines[1..($lines.Length-1)]) {
+                    if ($aline -match '^\s*(\S+)\s+(\S+)\s+(.+)' -and $aline.Trim() -ne '.') {
+                        $genre = $Matches[1]
+                        $matchDiscId = $Matches[2]
+                        break
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    if (-not $genre -or -not $matchDiscId) {
+        return $null
+    }
+
+    # Read full CDDB entry
+    $readUrl = "http://gnudb.gnudb.org/~cddb/cddb.cgi?cmd=cddb+read+$genre+$matchDiscId&hello=user+host+RipAudio+1.0&proto=6"
+
+    try {
+        $readResponse = Invoke-WebRequest -Uri $readUrl -TimeoutSec 10 -UseBasicParsing
+        $readText = $readResponse.Content
+    } catch {
+        return $null
+    }
+
+    # Parse DTITLE=Artist / Album (may span multiple lines)
+    $cddbArtist = ""
+    $cddbAlbum = ""
+    $dtitleParts = @()
+    foreach ($line in ($readText -split "`n")) {
+        if ($line -match '^DTITLE=(.*)') {
+            $dtitleParts += $Matches[1].Trim()
+        }
+    }
+    $dtitle = $dtitleParts -join ""
+    if ($dtitle -match '^(.+?)\s*/\s*(.+)$') {
+        $cddbArtist = $Matches[1].Trim()
+        $cddbAlbum = $Matches[2].Trim()
+    } else {
+        $cddbAlbum = $dtitle.Trim()
+    }
+
+    # Parse TTITLE0=Track Title (may span multiple lines with same key)
+    $trackTitles = @{}
+    foreach ($line in ($readText -split "`n")) {
+        if ($line -match '^TTITLE(\d+)=(.*)') {
+            $trackNum = [int]$Matches[1]
+            $title = $Matches[2].Trim()
+            if ($trackTitles.ContainsKey($trackNum)) {
+                $trackTitles[$trackNum] += $title
+            } else {
+                $trackTitles[$trackNum] = $title
+            }
+        }
+    }
+
+    # Build ordered track list
+    $trackCount = if ($numTracks -gt 0) { $numTracks } else { ($trackTitles.Keys | Measure-Object -Maximum).Maximum + 1 }
+    $tracks = @()
+    for ($i = 0; $i -lt $trackCount; $i++) {
+        if ($trackTitles.ContainsKey($i)) {
+            $tracks += $trackTitles[$i]
+        } else {
+            $tracks += "Track $("{0:D2}" -f ($i + 1))"
+        }
+    }
+
+    return @{
+        Artist = $cddbArtist
+        Album = $cddbAlbum
+        Tracks = $tracks
+    }
+}
+
+# ========== QUEUE FUNCTIONS ==========
+$script:QueueFilePath = "C:\Music\rip-queue.json"
+$script:QueueLockPath = "C:\Music\rip-queue.lock"
+
+function Add-ToQueue {
+    param(
+        [string]$Album,
+        [string]$Artist,
+        [string]$Format
+    )
+
+    $entry = @{
+        Album = $Album
+        Artist = $Artist
+        Format = $Format
+        QueuedAt = (Get-Date -Format "o")
+    }
+
+    # File locking for concurrent safety (same pattern as ripdisc)
+    $retryCount = 0
+    $maxRetries = 10
+    $lockAcquired = $false
+
+    while (-not $lockAcquired -and $retryCount -lt $maxRetries) {
+        try {
+            $lockStream = [System.IO.File]::Open($script:QueueLockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+            $lockAcquired = $true
+        } catch {
+            $retryCount++
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
+    if (-not $lockAcquired) {
+        Write-Host "WARNING: Could not acquire lock file - writing without lock" -ForegroundColor Red
+    }
+
+    try {
+        if (Test-Path $script:QueueFilePath) {
+            $queue = Get-Content $script:QueueFilePath -Raw | ConvertFrom-Json
+            if ($queue -isnot [System.Array]) { $queue = @($queue) }
+        } else {
+            $queue = @()
+        }
+
+        $queue += $entry
+        $queue | ConvertTo-Json -Depth 10 | Set-Content $script:QueueFilePath -Encoding UTF8
+
+        return $queue.Count
+    } finally {
+        if ($lockStream) { $lockStream.Close() }
+        Remove-Item $script:QueueLockPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Read-QueueFile {
+    if (-not (Test-Path $script:QueueFilePath)) {
+        return @()
+    }
+
+    $queue = Get-Content $script:QueueFilePath -Raw | ConvertFrom-Json
+    if ($null -eq $queue) { return @() }
+    if ($queue -isnot [System.Array]) { $queue = @($queue) }
+    return $queue
+}
+
+function Remove-FromQueue {
+    param([object]$Entry)
+
+    $retryCount = 0
+    $maxRetries = 10
+    $lockAcquired = $false
+
+    while (-not $lockAcquired -and $retryCount -lt $maxRetries) {
+        try {
+            $lockStream = [System.IO.File]::Open($script:QueueLockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+            $lockAcquired = $true
+        } catch {
+            $retryCount++
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
+    if (-not $lockAcquired) {
+        Write-Host "WARNING: Could not acquire lock file - removing without lock" -ForegroundColor Red
+    }
+
+    try {
+        if (Test-Path $script:QueueFilePath) {
+            $queue = Get-Content $script:QueueFilePath -Raw | ConvertFrom-Json
+            if ($null -eq $queue) { return }
+            if ($queue -isnot [System.Array]) { $queue = @($queue) }
+
+            # Remove the matching entry (match by Album + Artist + QueuedAt)
+            $queue = @($queue | Where-Object {
+                $_.Album -ne $Entry.Album -or $_.Artist -ne $Entry.Artist -or $_.QueuedAt -ne $Entry.QueuedAt
+            })
+
+            if ($queue.Count -eq 0) {
+                Remove-Item $script:QueueFilePath -Force -ErrorAction SilentlyContinue
+            } else {
+                $queue | ConvertTo-Json -Depth 10 | Set-Content $script:QueueFilePath -Encoding UTF8
+            }
+        }
+    } finally {
+        if ($lockStream) { $lockStream.Close() }
+        Remove-Item $script:QueueLockPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# ========== PARAMETER VALIDATION ==========
+if ($Queue -and $ProcessQueue) {
+    Write-Host "ERROR: -Queue and -ProcessQueue are mutually exclusive" -ForegroundColor Red
+    exit 1
+}
+if (-not $ProcessQueue -and -not $album) {
+    Write-Host "ERROR: -album parameter is required (unless using -ProcessQueue)" -ForegroundColor Red
+    exit 1
+}
+
 # ========== CONFIGURATION ==========
 # Normalize drive letters (add colon if missing)
 $driveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
 $outputDriveLetter = if ($OutputDrive -match ':$') { $OutputDrive } else { "${OutputDrive}:" }
 
-# Validate format parameter
+# Validate format parameter (for non-ProcessQueue modes where format comes from param)
 $validFormats = @("flac", "mp3", "opus", "aac", "wav", "alac")
-if ($format -notin $validFormats) {
+if (-not $ProcessQueue -and $format -notin $validFormats) {
     Write-Host "ERROR: Invalid format '$format'. Valid formats: $($validFormats -join ', ')" -ForegroundColor Red
     exit 1
 }
+
+# ========== QUEUE MODE: ADD TO QUEUE ==========
+if ($Queue) {
+    if ($format -notin $validFormats) {
+        Write-Host "ERROR: Invalid format '$format'. Valid formats: $($validFormats -join ', ')" -ForegroundColor Red
+        exit 1
+    }
+
+    $queueDir = Split-Path $script:QueueFilePath -Parent
+    if (!(Test-Path $queueDir)) { New-Item -ItemType Directory -Path $queueDir -Force | Out-Null }
+
+    $totalJobs = Add-ToQueue -Album $album -Artist $artist -Format $format
+
+    $queueLabel = if ($artist) { "$artist - $album" } else { $album }
+    Write-Host "`n========================================" -ForegroundColor Magenta
+    Write-Host "QUEUED!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Magenta
+    Write-Host "  Album:  $album" -ForegroundColor White
+    if ($artist) {
+        Write-Host "  Artist: $artist" -ForegroundColor White
+    }
+    Write-Host "  Format: $format" -ForegroundColor White
+    Write-Host "  Total jobs in queue: $totalJobs" -ForegroundColor Cyan
+    Write-Host "========================================`n" -ForegroundColor Magenta
+    $host.UI.RawUI.WindowTitle = "$queueLabel - QUEUED"
+    exit 0
+}
+
+# ========== PROCESSING LOOP ==========
+$script:IsProcessingQueue = $ProcessQueue.IsPresent
+$queueStats = @{ Processed = 0; Failed = 0; Skipped = 0 }
+$script:CddbResult = $null
+
+do {
+    # Reset per-album state
+    $script:CompletedSteps = @()
+    $script:CurrentStep = $null
+    $script:CddbResult = $null
+    $itemFailed = $false
+
+    if ($script:IsProcessingQueue) {
+        # Re-read queue each iteration to pick up concurrent additions
+        $queue = Read-QueueFile
+        if ($queue.Count -eq 0) {
+            Write-Host "`nQueue is empty!" -ForegroundColor Green
+            break
+        }
+
+        $currentEntry = $queue[0]
+        $entryLabel = if ($currentEntry.Artist) { "$($currentEntry.Artist) - $($currentEntry.Album)" } else { $currentEntry.Album }
+
+        Write-Host "`n========================================" -ForegroundColor Magenta
+        Write-Host "QUEUE: $($queue.Count) album(s) remaining" -ForegroundColor Magenta
+        Write-Host "Next: $entryLabel" -ForegroundColor White
+        Write-Host "========================================" -ForegroundColor Magenta
+
+        $queuePrompt = Read-Host "Insert disc for [$entryLabel], press Enter to continue (S to skip, Q to quit)"
+        if ($queuePrompt -match '^[Ss]') {
+            Remove-FromQueue -Entry $currentEntry
+            $queueStats.Skipped++
+            continue
+        }
+        if ($queuePrompt -match '^[Qq]') {
+            break
+        }
+
+        # Override variables from queue entry
+        $album = $currentEntry.Album
+        $artist = $currentEntry.Artist
+        $format = if ($currentEntry.Format) { $currentEntry.Format } else { "flac" }
+
+        # Validate format from queue entry
+        if ($format -notin $validFormats) {
+            Write-Host "ERROR: Invalid format '$format' in queue entry for $entryLabel. Skipping." -ForegroundColor Red
+            Remove-FromQueue -Entry $currentEntry
+            $queueStats.Failed++
+            continue
+        }
+    }
+
+try { # try block wraps main processing - catch handles ProcessQueue failures
 
 # Build output directory path
 # Format: E:\Music\{Artist}\{Album}\ or E:\Music\{Album}\ if no artist
@@ -187,10 +553,14 @@ if ($pathLength -ge $MAX_PATH) {
     Write-Host "  - Change the output drive to one with a shorter base path" -ForegroundColor White
     Write-Host ""
 
-    $pathChoice = Read-Host "Continue anyway? (y/N)"
-    if ($pathChoice -notmatch "^[Yy]") {
-        Write-Host "Aborted by user." -ForegroundColor Yellow
-        exit 0
+    if ($script:IsProcessingQueue) {
+        Write-Host "ProcessQueue mode: auto-continuing despite path length..." -ForegroundColor Yellow
+    } else {
+        $pathChoice = Read-Host "Continue anyway? (y/N)"
+        if ($pathChoice -notmatch "^[Yy]") {
+            Write-Host "Aborted by user." -ForegroundColor Yellow
+            exit 0
+        }
     }
     Write-Host "Continuing despite path length warning..." -ForegroundColor Yellow
 } elseif ($pathLength -ge $WARNING_THRESHOLD) {
@@ -218,8 +588,10 @@ if ($RequireMusicBrainz) {
     Write-Host "MusicBrainz: REQUIRED" -ForegroundColor Yellow
 }
 Write-Host "========================================" -ForegroundColor Cyan
-$host.UI.RawUI.WindowTitle = "rip-audio - INPUT"
-$response = Read-Host "Press Enter to continue, or Ctrl+C to abort"
+if (-not $script:IsProcessingQueue) {
+    $host.UI.RawUI.WindowTitle = "rip-audio - INPUT"
+    $response = Read-Host "Press Enter to continue, or Ctrl+C to abort"
+}
 
 # Disable close button to prevent accidental window closure during rip
 Disable-ConsoleClose
@@ -302,8 +674,8 @@ function Stop-WithError {
         }
     }
 
-    # Open the relevant directory if it exists
-    if (Test-Path $finalOutputDir) {
+    # Open the relevant directory if it exists (skip in ProcessQueue mode)
+    if (-not $script:IsProcessingQueue -and (Test-Path $finalOutputDir)) {
         Write-Host "`n--- OPENING DIRECTORY ---" -ForegroundColor Cyan
         Write-Host "Opening: $finalOutputDir" -ForegroundColor Yellow
         Start-Process explorer.exe -ArgumentList $finalOutputDir
@@ -314,6 +686,10 @@ function Stop-WithError {
     Write-Host "Please complete the remaining steps manually" -ForegroundColor Red
     Write-Host "========================================`n" -ForegroundColor Red
     Enable-ConsoleClose
+
+    if ($script:IsProcessingQueue) {
+        throw "QUEUE_ITEM_FAILED"
+    }
     exit 1
 }
 
@@ -362,22 +738,26 @@ if (!(Test-Path $finalOutputDir)) {
             Write-Host "  ... and $($existingFiles.Count - 5) more" -ForegroundColor Gray
         }
 
-        Write-Host "`nChoose an option:" -ForegroundColor Cyan
-        Write-Host "  [1] Continue (may overwrite existing files)" -ForegroundColor Yellow
-        Write-Host "  [2] Abort" -ForegroundColor Yellow
+        if ($script:IsProcessingQueue) {
+            Write-Host "ProcessQueue mode: auto-continuing with existing directory..." -ForegroundColor Yellow
+        } else {
+            Write-Host "`nChoose an option:" -ForegroundColor Cyan
+            Write-Host "  [1] Continue (may overwrite existing files)" -ForegroundColor Yellow
+            Write-Host "  [2] Abort" -ForegroundColor Yellow
 
-        $choice = $null
-        while ($choice -ne '1' -and $choice -ne '2') {
-            $choice = Read-Host "Enter 1 or 2"
-            if ($choice -ne '1' -and $choice -ne '2') {
-                Write-Host "Invalid choice. Please enter 1 or 2." -ForegroundColor Red
+            $choice = $null
+            while ($choice -ne '1' -and $choice -ne '2') {
+                $choice = Read-Host "Enter 1 or 2"
+                if ($choice -ne '1' -and $choice -ne '2') {
+                    Write-Host "Invalid choice. Please enter 1 or 2." -ForegroundColor Red
+                }
             }
-        }
 
-        if ($choice -eq '2') {
-            Write-Host "Aborted by user." -ForegroundColor Yellow
-            Enable-ConsoleClose
-            exit 0
+            if ($choice -eq '2') {
+                Write-Host "Aborted by user." -ForegroundColor Yellow
+                Enable-ConsoleClose
+                exit 0
+            }
         }
         Write-Log "User chose to continue with existing directory"
     } else {
@@ -405,7 +785,12 @@ try {
     Write-Host "MusicBrainz API: UNREACHABLE" -ForegroundColor Red
     Write-Host "  (API may be down, rate-limited, or blocked)" -ForegroundColor Gray
 
-    if ($RequireMusicBrainz) {
+    # In ProcessQueue mode, auto-continue without metadata (unless RequireMusicBrainz is set)
+    if ($script:IsProcessingQueue -and -not $RequireMusicBrainz) {
+        Write-Host "ProcessQueue mode: auto-continuing without MusicBrainz metadata" -ForegroundColor Yellow
+        Write-Log "MusicBrainz API unreachable - ProcessQueue auto-continuing without metadata"
+        $skipMusicBrainz = $true
+    } elseif ($RequireMusicBrainz) {
         Write-Host "`n  -RequireMusicBrainz is set, cannot continue without MusicBrainz." -ForegroundColor Red
         Write-Host "  [R] Retry connection" -ForegroundColor White
         Write-Host "  [Q] Quit" -ForegroundColor White
@@ -531,13 +916,19 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
         }
         Write-Host ""
 
-        $validChoice = $false
-        while (-not $validChoice) {
-            $choice = Read-Host "Enter release number (1-$($releases.Count))"
-            if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $releases.Count) {
-                $validChoice = $true
-            } else {
-                Write-Host "Invalid choice. Please enter a number between 1 and $($releases.Count)" -ForegroundColor Yellow
+        if ($script:IsProcessingQueue) {
+            # Auto-pick first release in ProcessQueue mode
+            $choice = "1"
+            Write-Host "ProcessQueue mode: auto-selecting release 1" -ForegroundColor Yellow
+        } else {
+            $validChoice = $false
+            while (-not $validChoice) {
+                $choice = Read-Host "Enter release number (1-$($releases.Count))"
+                if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $releases.Count) {
+                    $validChoice = $true
+                } else {
+                    Write-Host "Invalid choice. Please enter a number between 1 and $($releases.Count)" -ForegroundColor Yellow
+                }
             }
         }
 
@@ -634,7 +1025,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
     }
 }
 
-# Check if disc not found in MusicBrainz - offer to continue without metadata
+# Check if disc not found in MusicBrainz - try CDDB fallback, then offer generic names
 if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find release info") {
     Write-Host "`nDisc not found in MusicBrainz database." -ForegroundColor Yellow
 
@@ -642,20 +1033,31 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
         Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Disc not found in MusicBrainz and -RequireMusicBrainz is set"
     }
 
-    Write-Host "Track names will be generic (01 - Track 01, etc.)" -ForegroundColor Yellow
-    Write-Host ""
+    # Try CDDB fallback before falling back to generic names
+    Write-Host "Searching CDDB (gnudb.org) for disc info..." -ForegroundColor Yellow
+    Write-Log "Attempting CDDB fallback lookup..."
+    $script:CddbResult = Search-CDDB -CyanripOutput $cyanripOutputText -AlbumName $album -ArtistName $artist
 
-    $continueChoice = Read-Host "Continue without metadata? (Y/n)"
-    if ($continueChoice -eq "" -or $continueChoice -match "^[Yy]") {
-        Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
-        Write-Log "User chose to continue without MusicBrainz metadata"
+    if ($script:CddbResult) {
+        Write-Host "CDDB match found!" -ForegroundColor Green
+        Write-Host "  Artist: $($script:CddbResult.Artist)" -ForegroundColor White
+        Write-Host "  Album:  $($script:CddbResult.Album)" -ForegroundColor White
+        Write-Host "  Tracks: $($script:CddbResult.Tracks.Count)" -ForegroundColor White
+        foreach ($i in 0..([math]::Min($script:CddbResult.Tracks.Count, 5) - 1)) {
+            Write-Host "    $("{0:D2}" -f ($i+1)). $($script:CddbResult.Tracks[$i])" -ForegroundColor Gray
+        }
+        if ($script:CddbResult.Tracks.Count -gt 5) {
+            Write-Host "    ... and $($script:CddbResult.Tracks.Count - 5) more" -ForegroundColor Gray
+        }
+        Write-Log "CDDB match: $($script:CddbResult.Artist) - $($script:CddbResult.Album) ($($script:CddbResult.Tracks.Count) tracks)"
+
+        # Continue with -N flag (CDDB names will be applied after rip)
+        Write-Host "`nContinuing with CDDB metadata..." -ForegroundColor Green
         $skipMusicBrainz = $true
-
-        # Re-run cyanrip with -N flag to skip metadata requirement
         $cyanripArgs += @("-N")
         $cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0 -N"
         Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
-        Write-Log "cyanrip command (no metadata): $cmdDisplay"
+        Write-Log "cyanrip command (CDDB fallback, no MB): $cmdDisplay"
 
         Push-Location $parentDir
         try {
@@ -669,6 +1071,42 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
         Pop-Location
 
         $cyanripOutputText = $cyanripOutput -join "`n"
+    } else {
+        Write-Host "CDDB: No match found" -ForegroundColor Yellow
+        Write-Log "CDDB fallback: no match found"
+        Write-Host "Track names will be generic (01 - Track 01, etc.)" -ForegroundColor Yellow
+        Write-Host ""
+
+        if ($script:IsProcessingQueue) {
+            # Auto-continue in ProcessQueue mode
+            $continueChoice = "y"
+        } else {
+            $continueChoice = Read-Host "Continue without metadata? (Y/n)"
+        }
+        if ($continueChoice -eq "" -or $continueChoice -match "^[Yy]") {
+            Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
+            Write-Log "User chose to continue without MusicBrainz metadata"
+            $skipMusicBrainz = $true
+
+            # Re-run cyanrip with -N flag to skip metadata requirement
+            $cyanripArgs += @("-N")
+            $cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0 -N"
+            Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
+            Write-Log "cyanrip command (no metadata): $cmdDisplay"
+
+            Push-Location $parentDir
+            try {
+                $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+                $cyanripExitCode = $LASTEXITCODE
+                $cyanripOutput | ForEach-Object { Write-Host $_ }
+            } catch {
+                Pop-Location
+                Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
+            }
+            Pop-Location
+
+            $cyanripOutputText = $cyanripOutput -join "`n"
+        }
     }
 }
 
@@ -715,36 +1153,65 @@ if ($rippedTracks.Count -gt 0) {
 }
 
 if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
-    # Tracks have generic names (MusicBrainz skipped or returned no useful data) - rename using script params
-    Write-Host "`nRenaming tracks with disc details..." -ForegroundColor Yellow
+    if ($script:CddbResult -and $script:CddbResult.Tracks.Count -gt 0) {
+        # Use CDDB track names for renaming
+        Write-Host "`nRenaming tracks with CDDB metadata..." -ForegroundColor Yellow
 
-    $namingArtist = if ($artist) { $artist } else { "Unknown Artist" }
-    $namingAlbum = $album
+        foreach ($track in ($rippedTracks | Sort-Object Name)) {
+            if ($track.BaseName -match '^(\d{2})') {
+                $trackNum = [int]$Matches[1]
+                $trackIdx = $trackNum - 1
+                $trackTitle = if ($trackIdx -lt $script:CddbResult.Tracks.Count) { $script:CddbResult.Tracks[$trackIdx] } else { "Track $($Matches[1])" }
+                $newName = "$($Matches[1]) - $trackTitle$($track.Extension)"
 
-    foreach ($track in ($rippedTracks | Sort-Object Name)) {
-        # Extract track number from filename
-        if ($track.BaseName -match '^(\d{2})') {
-            $trackNum = $Matches[1]
-            $newName = "$trackNum - $namingArtist - $namingAlbum$($track.Extension)"
+                # Sanitize filename (remove invalid characters)
+                $newName = $newName -replace '[\\/:*?"<>|]', '_'
 
-            # Sanitize filename (remove invalid characters)
-            $newName = $newName -replace '[\\/:*?"<>|]', '_'
+                $newPath = Join-Path $finalOutputDir $newName
 
-            $newPath = Join-Path $finalOutputDir $newName
-
-            if ($track.FullName -ne $newPath) {
-                try {
-                    Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
-                    Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
-                    Write-Log "Renamed: $($track.Name) -> $newName"
-                } catch {
-                    Write-Host "  Failed to rename: $($track.Name)" -ForegroundColor Yellow
-                    Write-Log "WARNING: Failed to rename $($track.Name): $_"
+                if ($track.FullName -ne $newPath) {
+                    try {
+                        Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
+                        Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
+                        Write-Log "Renamed (CDDB): $($track.Name) -> $newName"
+                    } catch {
+                        Write-Host "  Failed to rename: $($track.Name)" -ForegroundColor Yellow
+                        Write-Log "WARNING: Failed to rename $($track.Name): $_"
+                    }
                 }
             }
         }
+        Write-Host "Track renaming complete (CDDB)" -ForegroundColor Green
+    } else {
+        # No CDDB data - rename using script params (generic: ## - Artist - Album)
+        Write-Host "`nRenaming tracks with disc details..." -ForegroundColor Yellow
+
+        $namingArtist = if ($artist) { $artist } else { "Unknown Artist" }
+        $namingAlbum = $album
+
+        foreach ($track in ($rippedTracks | Sort-Object Name)) {
+            if ($track.BaseName -match '^(\d{2})') {
+                $trackNum = $Matches[1]
+                $newName = "$trackNum - $namingArtist - $namingAlbum$($track.Extension)"
+
+                $newName = $newName -replace '[\\/:*?"<>|]', '_'
+
+                $newPath = Join-Path $finalOutputDir $newName
+
+                if ($track.FullName -ne $newPath) {
+                    try {
+                        Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
+                        Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
+                        Write-Log "Renamed: $($track.Name) -> $newName"
+                    } catch {
+                        Write-Host "  Failed to rename: $($track.Name)" -ForegroundColor Yellow
+                        Write-Log "WARNING: Failed to rename $($track.Name): $_"
+                    }
+                }
+            }
+        }
+        Write-Host "Track renaming complete" -ForegroundColor Green
     }
-    Write-Host "Track renaming complete" -ForegroundColor Green
 }
 
 # Ensure metadata tags are set from input arguments (especially when MusicBrainz unavailable)
@@ -767,8 +1234,9 @@ if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
     $metaflacAvailable = Get-Command metaflac -ErrorAction SilentlyContinue
 
     if ($metaflacAvailable) {
-        $tagArtist = if ($artist) { $artist } else { "Unknown Artist" }
-        $tagAlbum = $album
+        # Use CDDB data for tags when available, otherwise fall back to script params
+        $tagArtist = if ($script:CddbResult -and $script:CddbResult.Artist) { $script:CddbResult.Artist } elseif ($artist) { $artist } else { "Unknown Artist" }
+        $tagAlbum = if ($script:CddbResult -and $script:CddbResult.Album) { $script:CddbResult.Album } else { $album }
         $totalTracks = $rippedTracks.Count
 
         foreach ($track in $rippedTracks) {
@@ -778,17 +1246,27 @@ if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
                 $trackNum = [int]$Matches[1]
             }
 
-            # Build track title: use existing title if present, otherwise "Track ##"
-            # First check if track already has a meaningful title
-            $existingTitle = $null
-            try {
-                $existingTags = & metaflac --show-tag=TITLE $track.FullName 2>$null
-                if ($existingTags -and $existingTags -notmatch "Track\s*\d+") {
-                    $existingTitle = ($existingTags -split '=', 2)[1]
-                }
-            } catch {}
+            # Build track title: CDDB > existing tag > generic "Track ##"
+            $trackIdx = $trackNum - 1
+            $trackTitle = $null
 
-            $trackTitle = if ($existingTitle) { $existingTitle } else { "Track $("{0:D2}" -f $trackNum)" }
+            # Try CDDB track name first
+            if ($script:CddbResult -and $trackIdx -lt $script:CddbResult.Tracks.Count) {
+                $trackTitle = $script:CddbResult.Tracks[$trackIdx]
+            }
+
+            # Fall back to existing tag
+            if (-not $trackTitle) {
+                try {
+                    $existingTags = & metaflac --show-tag=TITLE $track.FullName 2>$null
+                    if ($existingTags -and $existingTags -notmatch "Track\s*\d+") {
+                        $trackTitle = ($existingTags -split '=', 2)[1]
+                    }
+                } catch {}
+            }
+
+            # Fall back to generic name
+            if (-not $trackTitle) { $trackTitle = "Track $("{0:D2}" -f $trackNum)" }
 
             # Set all metadata tags
             try {
@@ -1091,3 +1569,48 @@ Write-Log "Total size: $totalSizeMB MB"
 
 Enable-ConsoleClose
 $host.UI.RawUI.WindowTitle = "$windowTitle - DONE"
+
+} catch {
+    # Handle ProcessQueue item failures (thrown by Stop-WithError)
+    if ($script:IsProcessingQueue -and $_.Exception.Message -eq "QUEUE_ITEM_FAILED") {
+        $itemFailed = $true
+    } else {
+        throw
+    }
+}
+
+# ========== QUEUE ENTRY CLEANUP ==========
+if ($script:IsProcessingQueue) {
+    if ($itemFailed) {
+        $queueStats.Failed++
+    } else {
+        $queueStats.Processed++
+    }
+    Remove-FromQueue -Entry $currentEntry
+
+    $queueTotal = $queueStats.Processed + $queueStats.Failed + $queueStats.Skipped
+    Write-Host "`n--- Queue progress: $($queueStats.Processed) processed, $($queueStats.Skipped) skipped, $($queueStats.Failed) failed ($queueTotal total) ---" -ForegroundColor Magenta
+}
+
+} while ($script:IsProcessingQueue)
+
+# ========== QUEUE AGGREGATE SUMMARY ==========
+if ($script:IsProcessingQueue) {
+    $queueTotal = $queueStats.Processed + $queueStats.Failed + $queueStats.Skipped
+    Write-Host "`n========================================" -ForegroundColor Magenta
+    Write-Host "QUEUE COMPLETE!" -ForegroundColor Green
+    Write-Host "========================================" -ForegroundColor Magenta
+    Write-Host "  Albums processed: $($queueStats.Processed)" -ForegroundColor White
+    Write-Host "  Albums skipped:   $($queueStats.Skipped)" -ForegroundColor White
+    Write-Host "  Albums failed:    $($queueStats.Failed)" -ForegroundColor White
+    Write-Host "  Total:            $queueTotal" -ForegroundColor White
+    Write-Host "========================================`n" -ForegroundColor Magenta
+
+    # Delete queue file if empty
+    $remainingQueue = Read-QueueFile
+    if ($remainingQueue.Count -eq 0 -and (Test-Path $script:QueueFilePath)) {
+        Remove-Item $script:QueueFilePath -Force -ErrorAction SilentlyContinue
+    }
+
+    Enable-ConsoleClose
+}

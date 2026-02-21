@@ -8,6 +8,8 @@
 - [x] Multi-source metadata search - `search-metadata.ps1` scans folder, searches MusicBrainz + iTunes + Deezer, applies tags + cover art + renames
 - [x] Optional MusicBrainz requirement - `-RequireMusicBrainz` switch stops the rip if disc not found in MusicBrainz
 - [x] Path length validation - checks worst-case output path against Windows MAX_PATH (260 chars) before rip starts, with breakdown and confirmation prompt
+- [x] Queue mode - `-Queue` adds albums to `C:\Music\rip-queue.json`, `-ProcessQueue` processes them sequentially with file locking for concurrency
+- [x] CDDB fallback - when MusicBrainz has no match, queries gnudb.org (CDDB protocol) for track names via TOC-based disc ID lookup, with text search fallback
 
 ## Planned Features
 
@@ -34,8 +36,8 @@ Support ripping to multiple formats in a single pass.
 ### AccurateRip Verification
 Add AccurateRip verification reporting to confirm rip accuracy.
 
-### Queue Mode
-Batch ripping mode similar to ripdisc for processing multiple discs sequentially.
+### ~~Queue Mode~~ (Done)
+Moved to Completed section.
 
-### CDDB Fallback
-Fall back to CDDB/freedb when MusicBrainz has no match for disc metadata.
+### ~~CDDB Fallback~~ (Done)
+Moved to Completed section.
