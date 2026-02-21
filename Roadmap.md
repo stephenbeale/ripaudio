@@ -10,6 +10,7 @@
 - [x] Path length validation - checks worst-case output path against Windows MAX_PATH (260 chars) before rip starts, with breakdown and confirmation prompt
 - [x] Queue mode - `-Queue` adds albums to `C:\Music\rip-queue.json`, `-ProcessQueue` processes them sequentially with file locking for concurrency
 - [x] CDDB fallback - when MusicBrainz has no match, queries gnudb.org (CDDB protocol) for track names via TOC-based disc ID lookup, with text search fallback
+- [x] Quality parameter - `-Quality` for lossy format bitrate control (mp3, opus, aac), passed to cyanrip as `-b`
 
 ## Planned Features
 
@@ -19,12 +20,8 @@ Moved to Completed section.
 ### ~~Path Length Validation~~ (Done)
 Moved to Completed section.
 
-### Quality Parameter
-Add `-Quality` parameter for lossy format bitrate control (mp3, opus, aac).
-
-```powershell
-.\rip-audio.ps1 -album "My Album" -format mp3 -Quality 320
-```
+### ~~Quality Parameter~~ (Done)
+Moved to Completed section.
 
 ### Multiple Output Formats
 Support ripping to multiple formats in a single pass.
