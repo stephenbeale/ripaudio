@@ -119,12 +119,12 @@ MusicBrainz lookup is automatic - cyanrip will query MusicBrainz for disc metada
 
 Potential improvements to consider:
 
-- [ ] Add `-quality` parameter for lossy format bitrate control
-- [ ] Support multiple output formats in single rip (`-o flac,mp3`)
-- [ ] Add AccurateRip verification reporting
-- [ ] Queue mode for batch ripping (similar to ripdisc)
+- [x] Add `-quality` parameter for lossy format bitrate control
+- [x] Support multiple output formats in single rip (`-o flac,mp3`)
+- [x] Add AccurateRip verification reporting
+- [x] Queue mode for batch ripping (similar to ripdisc)
 - [x] Cover art handling (sequential fallback: CAA, MusicBrainz+CAA, iTunes, Deezer)
-- [ ] CDDB fallback when MusicBrainz has no match
+- [x] CDDB fallback when MusicBrainz has no match
 
 ---
 
@@ -228,3 +228,57 @@ These branches have no commits ahead of master and were pruned from local tracki
 - DTITLE and TTITLE fields parsed with multi-line continuation support
 - ProcessQueue uses try/catch around main body; Stop-WithError throws instead of exit in queue mode
 - Queue file deleted automatically when empty after ProcessQueue completes
+
+---
+
+### 2026-02-21 - AccurateRip Verification Reporting
+
+**Work Completed:**
+
+- Added `Parse-AccurateRipResults` function to parse cyanrip's AccurateRip output:
+  - Disc-level status: found, not found, error, mismatch, disabled
+  - Finish report: tracks ripped accurately N/M, partially accurately N/M
+  - Per-track details: v1/v2 checksums, confidence levels, accurate/not found status
+- AccurateRip results displayed after rip completes (green if all verified, yellow if partial)
+- AccurateRip status included in FILE SUMMARY block at session end
+- AccurateRip results logged to session log file
+- Window title appended with "AR PARTIAL" if not all tracks verified
+- No new parameters needed - cyanrip enables AR by default
+
+**Technical Notes:**
+- cyanrip outputs AR data at three levels: disc-level status line, per-track Accurip v1/v2 lines, and finish report summary
+- Parser handles all three levels independently (any subset may be present)
+- TrackDetails array captures per-track v1/v2 checksums for potential future detailed reporting
+- Roadmap.md updated to mark AccurateRip as completed
+
+---
+
+### 2026-02-21 - Session Closure
+
+**PRs Merged This Session:**
+- PR #22 - Created `search-metadata.ps1` (multi-source metadata search, tag, rename: MusicBrainz + iTunes + Deezer)
+- PR #25 - Fixed generic track rename fallback (triggers when filenames are generic regardless of `-skipMusicBrainz`)
+- PR #26 - Added `-RequireMusicBrainz` switch (stops rip if disc not found in MusicBrainz)
+- PR #27 - Added path length validation (checks worst-case output path against Windows MAX_PATH 260 chars)
+- PR #29 - Added `-Quality` parameter for lossy format bitrate control (32-320 kbps, passed to cyanrip as `-b`)
+- PR #30 - Added multiple output format support (comma-separated `-format "flac,mp3"` for parallel encoding)
+- PR #31 - Added AccurateRip verification reporting (`Parse-AccurateRipResults`, coloured summary, log output, window title suffix)
+
+**Session Verified Clean:**
+- All PRs squash-merged to master
+- Stash list cleared (2 stashes dropped: AccurateRip WIP now committed, older path-length stash superseded)
+- All stale local branches deleted: bugfix/fix-cyanrip-path-conversion, docs/musicbrainz-release-selection, feature/3-musicbrainz-not-found-fallback, feature/musicbrainz-not-found-fallback
+- Remote tracking refs pruned (9 deleted remote branches cleaned up)
+- Working tree: clean
+- No unpushed commits
+- No open PRs
+
+**Roadmap Status:**
+- All planned features are now complete. Roadmap.md contains only the Completed section.
+- The "Future Enhancements" section in CLAUDE.md now shows all items checked off.
+
+**Priority for Next Session:**
+1. The roadmap is complete — no outstanding development items
+2. Consider end-to-end testing of the full rip workflow with a real disc (AccurateRip parsing needs live cyanrip output to validate regex patterns)
+3. Consider adding `-Recurse` flag to `search-metadata.ps1` for processing nested subdirectories
+4. Stale remote branches on GitHub (noted in 2026-02-18 closure) may still need manual cleanup via the GitHub branch manager if not already done
