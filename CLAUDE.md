@@ -343,3 +343,39 @@ These branches have no commits ahead of master and were pruned from local tracki
 2. Repository is fully clean with no stale branches or open PRs
 3. Consider end-to-end testing of `search-metadata.ps1 -Recurse` against a real music library directory tree
 4. Consider end-to-end testing of `rip-audio.ps1` with a real disc to validate AccurateRip regex parsing against live cyanrip output
+
+---
+
+### 2026-02-21 - search-metadata.ps1 -DryRun Flag
+
+**Work Completed:**
+
+- PR #34 merged: Added `-DryRun` switch to `search-metadata.ps1`
+  - New `[switch]$DryRun` parameter in script param block, passed as `-DryRunMode` to `Process-AlbumFolder`
+  - Steps 1 (scan) and 2 (search) run identically — they're read-only operations
+  - Step 3 (confirm): Shows `[DRY RUN] No changes will be made.` banner, skips confirmation prompt entirely
+  - Step 4 (apply tags): Shows `[DRY RUN] Would tag N file(s)` instead of calling `Set-AudioTags`; still counts files for summary
+  - Step 5 (cover art): Shows what would happen (`Would download cover art from <source>` or `Cover art already exists`) without calling `Get-CoverArt`
+  - Step 6 (rename): Shows each proposed rename (`current -> new`) without calling `Rename-Item`; counts files that would change
+  - Summary banners prefixed with `[DRY RUN]` in both single and recurse modes
+  - `DryRun` logged at session start alongside other parameters
+  - README.md updated with `-DryRun` in parameter table, usage line, and two examples
+  - Roadmap.md updated to mark dry run flag as completed
+
+**Technical Notes:**
+- No new functions needed — just conditional guards around existing write operations (`Set-AudioTags`, `Get-CoverArt`, `Rename-Item`)
+- `Show-MetadataComparison` still displays the full comparison table in dry run mode (that's the preview)
+- In recurse mode, `-DryRunMode:$DryRun` is passed through alongside `-ForceMode:$true` and `-BatchMode`
+- Dry run step 6 replicates the rename logic from `Rename-AudioFiles` inline to show proposed renames without calling the function
+
+**Session Verified Clean:**
+- PR #34 squash-merged to master
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+
+**Priority for Next Session:**
+1. All roadmap items are complete — no pending development work remains
+2. Consider end-to-end testing of `search-metadata.ps1 -DryRun` against a real music library to verify no files are modified
+3. Consider end-to-end testing of `search-metadata.ps1 -Recurse -DryRun` to validate batch dry run output
+4. Consider end-to-end testing of `rip-audio.ps1` with a real disc to validate AccurateRip regex parsing against live cyanrip output
