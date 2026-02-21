@@ -18,6 +18,9 @@ param(
     [switch]$RequireMusicBrainz,
 
     [Parameter()]
+    [int]$Quality = 0,
+
+    [Parameter()]
     [switch]$Queue,
 
     [Parameter()]
@@ -316,13 +319,15 @@ function Add-ToQueue {
     param(
         [string]$Album,
         [string]$Artist,
-        [string]$Format
+        [string]$Format,
+        [int]$Bitrate = 0
     )
 
     $entry = @{
         Album = $Album
         Artist = $Artist
         Format = $Format
+        Quality = $Bitrate
         QueuedAt = (Get-Date -Format "o")
     }
 
@@ -440,6 +445,19 @@ if (-not $ProcessQueue -and $format -notin $validFormats) {
     exit 1
 }
 
+# Validate quality parameter
+$lossyFormats = @("mp3", "opus", "aac")
+if ($Quality -gt 0) {
+    if (-not $ProcessQueue -and $format -notin $lossyFormats) {
+        Write-Host "ERROR: -Quality only applies to lossy formats ($($lossyFormats -join ', ')), not '$format'" -ForegroundColor Red
+        exit 1
+    }
+    if ($Quality -lt 32 -or $Quality -gt 320) {
+        Write-Host "ERROR: -Quality must be between 32 and 320 (kbps)" -ForegroundColor Red
+        exit 1
+    }
+}
+
 # ========== QUEUE MODE: ADD TO QUEUE ==========
 if ($Queue) {
     if ($format -notin $validFormats) {
@@ -450,7 +468,7 @@ if ($Queue) {
     $queueDir = Split-Path $script:QueueFilePath -Parent
     if (!(Test-Path $queueDir)) { New-Item -ItemType Directory -Path $queueDir -Force | Out-Null }
 
-    $totalJobs = Add-ToQueue -Album $album -Artist $artist -Format $format
+    $totalJobs = Add-ToQueue -Album $album -Artist $artist -Format $format -Bitrate $Quality
 
     $queueLabel = if ($artist) { "$artist - $album" } else { $album }
     Write-Host "`n========================================" -ForegroundColor Magenta
@@ -460,7 +478,9 @@ if ($Queue) {
     if ($artist) {
         Write-Host "  Artist: $artist" -ForegroundColor White
     }
-    Write-Host "  Format: $format" -ForegroundColor White
+    $formatDisplay = $format
+    if ($Quality -gt 0) { $formatDisplay += " @ ${Quality}kbps" }
+    Write-Host "  Format: $formatDisplay" -ForegroundColor White
     Write-Host "  Total jobs in queue: $totalJobs" -ForegroundColor Cyan
     Write-Host "========================================`n" -ForegroundColor Magenta
     $host.UI.RawUI.WindowTitle = "$queueLabel - QUEUED"
@@ -509,6 +529,7 @@ do {
         $album = $currentEntry.Album
         $artist = $currentEntry.Artist
         $format = if ($currentEntry.Format) { $currentEntry.Format } else { "flac" }
+        $Quality = if ($currentEntry.Quality) { [int]$currentEntry.Quality } else { 0 }
 
         # Validate format from queue entry
         if ($format -notin $validFormats) {
@@ -580,7 +601,9 @@ Write-Host "Ready to rip: $album" -ForegroundColor White
 if ($artist) {
     Write-Host "Artist: $artist" -ForegroundColor White
 }
-Write-Host "Format: $format" -ForegroundColor White
+$bannerFormat = $format
+if ($Quality -gt 0) { $bannerFormat += " @ ${Quality}kbps" }
+Write-Host "Format: $bannerFormat" -ForegroundColor White
 Write-Host "Using drive: $driveLetter" -ForegroundColor Yellow
 Write-Host "Output drive: $outputDriveLetter" -ForegroundColor Yellow
 Write-Host "Output path: $finalOutputDir" -ForegroundColor Yellow
@@ -623,7 +646,7 @@ Write-Log "Album: $album"
 if ($artist) {
     Write-Log "Artist: $artist"
 }
-Write-Log "Format: $format"
+Write-Log "Format: $bannerFormat"
 Write-Log "Drive: $driveLetter"
 Write-Log "Output Drive: $outputDriveLetter"
 Write-Log "Final Output: $finalOutputDir"
@@ -700,7 +723,7 @@ Write-Host "Album: $album" -ForegroundColor White
 if ($artist) {
     Write-Host "Artist: $artist" -ForegroundColor White
 }
-Write-Host "Format: $format" -ForegroundColor White
+Write-Host "Format: $bannerFormat" -ForegroundColor White
 Write-Host "Drive: $driveLetter" -ForegroundColor White
 Write-Host "Output Drive: $outputDriveLetter" -ForegroundColor White
 Write-Host "Final Output: $finalOutputDir" -ForegroundColor White
@@ -868,12 +891,18 @@ $cyanripArgs = @(
     "-s", "0"
 )
 
+# Add bitrate flag for lossy formats
+if ($Quality -gt 0 -and $format -in $lossyFormats) {
+    $cyanripArgs += @("-b", "$Quality")
+}
+
 # Add -N flag if user chose to skip MusicBrainz
 if ($skipMusicBrainz) {
     $cyanripArgs += @("-N")
 }
 
-$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$(if ($skipMusicBrainz) { ' -N' })"
+$qualityFlag = if ($Quality -gt 0 -and $format -in $lossyFormats) { " -b $Quality" } else { "" }
+$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$qualityFlag$(if ($skipMusicBrainz) { ' -N' })"
 Write-Host "Working directory: $parentDir" -ForegroundColor Gray
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip working directory: $parentDir"
@@ -1547,7 +1576,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 
 # Show summary
 Write-Host "`nProcessed: $(Get-AlbumSummary)" -ForegroundColor White
-Write-Host "Format: $format" -ForegroundColor White
+Write-Host "Format: $bannerFormat" -ForegroundColor White
 Write-Host "Final location: $finalOutputDir" -ForegroundColor White
 
 # Show completed steps

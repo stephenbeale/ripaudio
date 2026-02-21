@@ -64,6 +64,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 | `-Drive` | No | E: | CD drive letter |
 | `-OutputDrive` | No | E: | Output drive letter |
 | `-format` | No | flac | Output format (flac, mp3, opus, aac, wav, alac) |
+| `-Quality` | No | 0 | Bitrate in kbps for lossy formats (32-320, e.g. 320 for mp3) |
 | `-RequireMusicBrainz` | No | - | Stop if disc not found in MusicBrainz (no fallback to generic names) |
 
 ### Examples
@@ -96,6 +97,16 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 **Rip compilation/various artists (no artist folder):**
 ```powershell
 .\rip-audio.ps1 -album "Now That's What I Call Music 100"
+```
+
+**Rip to MP3 at 320kbps:**
+```powershell
+.\rip-audio.ps1 -album "Thriller" -artist "Michael Jackson" -format mp3 -Quality 320
+```
+
+**Rip to Opus at 128kbps:**
+```powershell
+.\rip-audio.ps1 -album "OK Computer" -artist "Radiohead" -format opus -Quality 128
 ```
 
 **Require MusicBrainz metadata (stop if not found):**
