@@ -6,19 +6,12 @@
 - [x] Add `-N` flag to cyanrip for discs not in MusicBrainz (PR #3)
 - [x] Cover art handling - sequential fallback: Cover Art Archive, MusicBrainz search + CAA, iTunes, Deezer (PR #20)
 - [x] Multi-source metadata search - `search-metadata.ps1` scans folder, searches MusicBrainz + iTunes + Deezer, applies tags + cover art + renames
+- [x] Optional MusicBrainz requirement - `-RequireMusicBrainz` switch stops the rip if disc not found in MusicBrainz
 
 ## Planned Features
 
-### Optional MusicBrainz Requirement
-Add `-RequireMusicBrainz` switch parameter that, when specified, removes the `-N` flag from cyanrip. Default behavior continues without MusicBrainz metadata (current behavior), but users can require it for discs they expect to be in the database.
-
-```powershell
-# Default: continues without MusicBrainz (uses -N)
-.\rip-audio.ps1 -album "My Album" -Drive E:
-
-# Require MusicBrainz metadata (fails if not found)
-.\rip-audio.ps1 -album "My Album" -Drive E: -RequireMusicBrainz
-```
+### ~~Optional MusicBrainz Requirement~~ (Done)
+Moved to Completed section.
 
 ### Path Length Validation
 Check all output paths against Windows MAX_PATH (260 chars) before starting rip. Warn user and offer to abort if path would be too long, allowing them to input a shorter title. Consider all subdirectories and filename patterns.

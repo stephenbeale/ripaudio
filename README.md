@@ -64,6 +64,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 | `-Drive` | No | E: | CD drive letter |
 | `-OutputDrive` | No | E: | Output drive letter |
 | `-format` | No | flac | Output format (flac, mp3, opus, aac, wav, alac) |
+| `-RequireMusicBrainz` | No | - | Stop if disc not found in MusicBrainz (no fallback to generic names) |
 
 ### Examples
 
@@ -95,6 +96,11 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 **Rip compilation/various artists (no artist folder):**
 ```powershell
 .\rip-audio.ps1 -album "Now That's What I Call Music 100"
+```
+
+**Require MusicBrainz metadata (stop if not found):**
+```powershell
+.\rip-audio.ps1 -album "Abbey Road" -artist "The Beatles" -RequireMusicBrainz
 ```
 
 ## Directory Structure

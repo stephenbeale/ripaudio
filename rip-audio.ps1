@@ -12,7 +12,10 @@ param(
     [string]$OutputDrive = "E:",
 
     [Parameter()]
-    [string]$format = "flac"
+    [string]$format = "flac",
+
+    [Parameter()]
+    [switch]$RequireMusicBrainz
 )
 
 # ========== STEP TRACKING ==========
@@ -171,6 +174,9 @@ Write-Host "Format: $format" -ForegroundColor White
 Write-Host "Using drive: $driveLetter" -ForegroundColor Yellow
 Write-Host "Output drive: $outputDriveLetter" -ForegroundColor Yellow
 Write-Host "Output path: $finalOutputDir" -ForegroundColor Yellow
+if ($RequireMusicBrainz) {
+    Write-Host "MusicBrainz: REQUIRED" -ForegroundColor Yellow
+}
 Write-Host "========================================" -ForegroundColor Cyan
 $host.UI.RawUI.WindowTitle = "rip-audio - INPUT"
 $response = Read-Host "Press Enter to continue, or Ctrl+C to abort"
@@ -209,6 +215,7 @@ Write-Log "Format: $format"
 Write-Log "Drive: $driveLetter"
 Write-Log "Output Drive: $outputDriveLetter"
 Write-Log "Final Output: $finalOutputDir"
+Write-Log "RequireMusicBrainz: $RequireMusicBrainz"
 Write-Log "Log file: $($script:LogFile)"
 
 function Stop-WithError {
@@ -357,35 +364,65 @@ try {
 } catch {
     Write-Host "MusicBrainz API: UNREACHABLE" -ForegroundColor Red
     Write-Host "  (API may be down, rate-limited, or blocked)" -ForegroundColor Gray
-    Write-Host "  [R] Retry connection" -ForegroundColor White
-    Write-Host "  [C] Continue without metadata (generic track names)" -ForegroundColor White
-    Write-Host "  [Q] Quit" -ForegroundColor White
-    Write-Host ""
 
-    $resolved = $false
-    while (-not $resolved) {
-        $mbChoice = Read-Host "Choice (R/c/q)"
-        if ($mbChoice -eq "" -or $mbChoice -match "^[Rr]") {
-            Write-Host "Retrying..." -ForegroundColor Yellow
-            try {
-                $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
-                Write-Host "MusicBrainz API: OK" -ForegroundColor Green
-                $resolved = $true
-            } catch {
-                Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
-                Write-Host "  [R] Retry | [C] Continue without metadata | [Q] Quit" -ForegroundColor White
+    if ($RequireMusicBrainz) {
+        Write-Host "`n  -RequireMusicBrainz is set, cannot continue without MusicBrainz." -ForegroundColor Red
+        Write-Host "  [R] Retry connection" -ForegroundColor White
+        Write-Host "  [Q] Quit" -ForegroundColor White
+        Write-Host ""
+
+        $resolved = $false
+        while (-not $resolved) {
+            $mbChoice = Read-Host "Choice (R/q)"
+            if ($mbChoice -eq "" -or $mbChoice -match "^[Rr]") {
+                Write-Host "Retrying..." -ForegroundColor Yellow
+                try {
+                    $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+                    Write-Host "MusicBrainz API: OK" -ForegroundColor Green
+                    $resolved = $true
+                } catch {
+                    Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
+                    Write-Host "  [R] Retry | [Q] Quit" -ForegroundColor White
+                }
+            } elseif ($mbChoice -match "^[Qq]") {
+                Write-Host "Aborted by user." -ForegroundColor Yellow
+                Enable-ConsoleClose
+                exit 0
+            } else {
+                Write-Host "Invalid choice. Enter R or Q" -ForegroundColor Yellow
             }
-        } elseif ($mbChoice -match "^[Cc]") {
-            Write-Host "Will continue without MusicBrainz metadata" -ForegroundColor Yellow
-            Write-Log "MusicBrainz API unreachable - user chose to continue without metadata"
-            $skipMusicBrainz = $true
-            $resolved = $true
-        } elseif ($mbChoice -match "^[Qq]") {
-            Write-Host "Aborted by user." -ForegroundColor Yellow
-            Enable-ConsoleClose
-            exit 0
-        } else {
-            Write-Host "Invalid choice. Enter R, C, or Q" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  [R] Retry connection" -ForegroundColor White
+        Write-Host "  [C] Continue without metadata (generic track names)" -ForegroundColor White
+        Write-Host "  [Q] Quit" -ForegroundColor White
+        Write-Host ""
+
+        $resolved = $false
+        while (-not $resolved) {
+            $mbChoice = Read-Host "Choice (R/c/q)"
+            if ($mbChoice -eq "" -or $mbChoice -match "^[Rr]") {
+                Write-Host "Retrying..." -ForegroundColor Yellow
+                try {
+                    $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+                    Write-Host "MusicBrainz API: OK" -ForegroundColor Green
+                    $resolved = $true
+                } catch {
+                    Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
+                    Write-Host "  [R] Retry | [C] Continue without metadata | [Q] Quit" -ForegroundColor White
+                }
+            } elseif ($mbChoice -match "^[Cc]") {
+                Write-Host "Will continue without MusicBrainz metadata" -ForegroundColor Yellow
+                Write-Log "MusicBrainz API unreachable - user chose to continue without metadata"
+                $skipMusicBrainz = $true
+                $resolved = $true
+            } elseif ($mbChoice -match "^[Qq]") {
+                Write-Host "Aborted by user." -ForegroundColor Yellow
+                Enable-ConsoleClose
+                exit 0
+            } else {
+                Write-Host "Invalid choice. Enter R, C, or Q" -ForegroundColor Yellow
+            }
         }
     }
 }
@@ -491,6 +528,11 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
 # Check if MusicBrainz connection failed - offer retry or continue without
 if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query failed" -or $cyanripOutputText -match "Connection failed")) {
     Write-Host "`nMusicBrainz connection failed." -ForegroundColor Yellow
+
+    if ($RequireMusicBrainz) {
+        Stop-WithError -Step "STEP 1/4: cyanrip" -Message "MusicBrainz connection failed and -RequireMusicBrainz is set"
+    }
+
     Write-Host "  [R] Retry connection" -ForegroundColor White
     Write-Host "  [C] Continue without metadata (generic track names)" -ForegroundColor White
     Write-Host "  [Q] Quit" -ForegroundColor White
@@ -555,6 +597,11 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
 # Check if disc not found in MusicBrainz - offer to continue without metadata
 if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find release info") {
     Write-Host "`nDisc not found in MusicBrainz database." -ForegroundColor Yellow
+
+    if ($RequireMusicBrainz) {
+        Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Disc not found in MusicBrainz and -RequireMusicBrainz is set"
+    }
+
     Write-Host "Track names will be generic (01 - Track 01, etc.)" -ForegroundColor Yellow
     Write-Host ""
 
