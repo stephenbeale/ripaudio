@@ -438,17 +438,25 @@ if (-not $ProcessQueue -and -not $album) {
 $driveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
 $outputDriveLetter = if ($OutputDrive -match ':$') { $OutputDrive } else { "${OutputDrive}:" }
 
-# Validate format parameter (for non-ProcessQueue modes where format comes from param)
+# Validate format parameter (supports comma-separated for multiple formats, e.g. "flac,mp3")
 $validFormats = @("flac", "mp3", "opus", "aac", "wav", "alac")
-if (-not $ProcessQueue -and $format -notin $validFormats) {
-    Write-Host "ERROR: Invalid format '$format'. Valid formats: $($validFormats -join ', ')" -ForegroundColor Red
-    exit 1
+$lossyFormats = @("mp3", "opus", "aac")
+$formatList = $format -split ',' | ForEach-Object { $_.Trim() }
+$primaryFormat = $formatList[0]
+
+if (-not $ProcessQueue) {
+    foreach ($f in $formatList) {
+        if ($f -notin $validFormats) {
+            Write-Host "ERROR: Invalid format '$f'. Valid formats: $($validFormats -join ', ')" -ForegroundColor Red
+            exit 1
+        }
+    }
 }
 
 # Validate quality parameter
-$lossyFormats = @("mp3", "opus", "aac")
 if ($Quality -gt 0) {
-    if (-not $ProcessQueue -and $format -notin $lossyFormats) {
+    $hasLossy = ($formatList | Where-Object { $_ -in $lossyFormats }).Count -gt 0
+    if (-not $ProcessQueue -and -not $hasLossy) {
         Write-Host "ERROR: -Quality only applies to lossy formats ($($lossyFormats -join ', ')), not '$format'" -ForegroundColor Red
         exit 1
     }
@@ -460,9 +468,11 @@ if ($Quality -gt 0) {
 
 # ========== QUEUE MODE: ADD TO QUEUE ==========
 if ($Queue) {
-    if ($format -notin $validFormats) {
-        Write-Host "ERROR: Invalid format '$format'. Valid formats: $($validFormats -join ', ')" -ForegroundColor Red
-        exit 1
+    foreach ($f in $formatList) {
+        if ($f -notin $validFormats) {
+            Write-Host "ERROR: Invalid format '$f'. Valid formats: $($validFormats -join ', ')" -ForegroundColor Red
+            exit 1
+        }
     }
 
     $queueDir = Split-Path $script:QueueFilePath -Parent
@@ -530,10 +540,13 @@ do {
         $artist = $currentEntry.Artist
         $format = if ($currentEntry.Format) { $currentEntry.Format } else { "flac" }
         $Quality = if ($currentEntry.Quality) { [int]$currentEntry.Quality } else { 0 }
+        $formatList = $format -split ',' | ForEach-Object { $_.Trim() }
+        $primaryFormat = $formatList[0]
 
         # Validate format from queue entry
-        if ($format -notin $validFormats) {
-            Write-Host "ERROR: Invalid format '$format' in queue entry for $entryLabel. Skipping." -ForegroundColor Red
+        $invalidQueueFormat = $formatList | Where-Object { $_ -notin $validFormats } | Select-Object -First 1
+        if ($invalidQueueFormat) {
+            Write-Host "ERROR: Invalid format '$invalidQueueFormat' in queue entry for $entryLabel. Skipping." -ForegroundColor Red
             Remove-FromQueue -Entry $currentEntry
             $queueStats.Failed++
             continue
@@ -553,7 +566,7 @@ if ($artist) {
 # ========== PATH LENGTH VALIDATION ==========
 # Check worst-case output path against Windows MAX_PATH (260 chars) before starting
 $MAX_PATH = 260
-$worstCaseFilename = "01 - $(if ($artist) { $artist } else { 'Unknown Artist' }) - $album.$format"
+$worstCaseFilename = "01 - $(if ($artist) { $artist } else { 'Unknown Artist' }) - $album.$primaryFormat"
 # Sanitize the same way the rename logic does
 $worstCaseFilename = $worstCaseFilename -replace '[\\/:*?"<>|]', '_'
 $worstCasePath = Join-Path $finalOutputDir $worstCaseFilename
@@ -892,7 +905,8 @@ $cyanripArgs = @(
 )
 
 # Add bitrate flag for lossy formats
-if ($Quality -gt 0 -and $format -in $lossyFormats) {
+$hasLossy = ($formatList | Where-Object { $_ -in $lossyFormats }).Count -gt 0
+if ($Quality -gt 0 -and $hasLossy) {
     $cyanripArgs += @("-b", "$Quality")
 }
 
@@ -901,7 +915,7 @@ if ($skipMusicBrainz) {
     $cyanripArgs += @("-N")
 }
 
-$qualityFlag = if ($Quality -gt 0 -and $format -in $lossyFormats) { " -b $Quality" } else { "" }
+$qualityFlag = if ($Quality -gt 0 -and $hasLossy) { " -b $Quality" } else { "" }
 $cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$qualityFlag$(if ($skipMusicBrainz) { ' -N' })"
 Write-Host "Working directory: $parentDir" -ForegroundColor Gray
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
@@ -1341,19 +1355,18 @@ Set-CurrentStep -StepNumber 2
 Write-Log "STEP 2/4: Verifying output..."
 Write-Host "`n[STEP 2/4] Verifying output..." -ForegroundColor Green
 
-# Check for ripped files based on format
-$fileExtension = switch ($format) {
-    "flac" { "*.flac" }
-    "mp3" { "*.mp3" }
-    "opus" { "*.opus" }
-    "aac" { "*.m4a" }
-    "wav" { "*.wav" }
-    "alac" { "*.m4a" }
-    default { "*.*" }
+# Check for ripped files based on format(s)
+$formatExtMap = @{ "flac" = "*.flac"; "mp3" = "*.mp3"; "opus" = "*.opus"; "aac" = "*.m4a"; "wav" = "*.wav"; "alac" = "*.m4a" }
+$rippedFiles = @()
+foreach ($f in $formatList) {
+    $ext = $formatExtMap[$f]
+    if ($ext) {
+        $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -Recurse -ErrorAction SilentlyContinue
+        if ($files) { $rippedFiles += $files }
+    }
 }
 
-$rippedFiles = Get-ChildItem -Path $finalOutputDir -Filter $fileExtension -Recurse -ErrorAction SilentlyContinue
-if ($null -eq $rippedFiles -or $rippedFiles.Count -eq 0) {
+if ($rippedFiles.Count -eq 0) {
     # Try to find any audio files
     $anyAudioFiles = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav" -Recurse -ErrorAction SilentlyContinue
     if ($anyAudioFiles -and $anyAudioFiles.Count -gt 0) {

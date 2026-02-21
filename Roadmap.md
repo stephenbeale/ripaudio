@@ -11,6 +11,7 @@
 - [x] Queue mode - `-Queue` adds albums to `C:\Music\rip-queue.json`, `-ProcessQueue` processes them sequentially with file locking for concurrency
 - [x] CDDB fallback - when MusicBrainz has no match, queries gnudb.org (CDDB protocol) for track names via TOC-based disc ID lookup, with text search fallback
 - [x] Quality parameter - `-Quality` for lossy format bitrate control (mp3, opus, aac), passed to cyanrip as `-b`
+- [x] Multiple output formats - comma-separated `-format "flac,mp3"` for parallel encoding in a single pass
 
 ## Planned Features
 
@@ -23,12 +24,8 @@ Moved to Completed section.
 ### ~~Quality Parameter~~ (Done)
 Moved to Completed section.
 
-### Multiple Output Formats
-Support ripping to multiple formats in a single pass.
-
-```powershell
-.\rip-audio.ps1 -album "My Album" -format "flac,mp3"
-```
+### ~~Multiple Output Formats~~ (Done)
+Moved to Completed section.
 
 ### AccurateRip Verification
 Add AccurateRip verification reporting to confirm rip accuracy.

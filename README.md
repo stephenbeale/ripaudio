@@ -63,7 +63,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 | `-artist` | No | - | Artist name (affects output directory structure) |
 | `-Drive` | No | E: | CD drive letter |
 | `-OutputDrive` | No | E: | Output drive letter |
-| `-format` | No | flac | Output format (flac, mp3, opus, aac, wav, alac) |
+| `-format` | No | flac | Output format(s), comma-separated (flac, mp3, opus, aac, wav, alac) |
 | `-Quality` | No | 0 | Bitrate in kbps for lossy formats (32-320, e.g. 320 for mp3) |
 | `-RequireMusicBrainz` | No | - | Stop if disc not found in MusicBrainz (no fallback to generic names) |
 
@@ -107,6 +107,16 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 **Rip to Opus at 128kbps:**
 ```powershell
 .\rip-audio.ps1 -album "OK Computer" -artist "Radiohead" -format opus -Quality 128
+```
+
+**Rip to FLAC and MP3 simultaneously:**
+```powershell
+.\rip-audio.ps1 -album "Rumours" -artist "Fleetwood Mac" -format "flac,mp3"
+```
+
+**Rip to FLAC and MP3 at 320kbps simultaneously:**
+```powershell
+.\rip-audio.ps1 -album "Rumours" -artist "Fleetwood Mac" -format "flac,mp3" -Quality 320
 ```
 
 **Require MusicBrainz metadata (stop if not found):**
