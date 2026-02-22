@@ -17,3 +17,4 @@
 - [x] Dry run flag for search-metadata.ps1 - `-DryRun` previews all tag, cover art, and rename changes without writing to disk
 - [x] Audit metadata script - `audit-metadata.ps1` scans album folders for missing/generic tags and cover art, copies flagged albums to staging directory
 - [x] Rename confirmation timeout - search-metadata.ps1 confirmation prompt auto-proceeds after 30 seconds with no input
+- [x] Combined audit + fix pipeline - audit-metadata.ps1 now runs a 4-step pipeline (discover, audit, copy, process) with continue/exit prompts between stages
