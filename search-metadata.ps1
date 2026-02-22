@@ -39,6 +39,7 @@ $script:AllSteps = @(
 $script:CompletedSteps = @()
 $script:CurrentStep = $null
 $script:TotalSteps = 6
+$script:LastMetaflacError = $null
 
 function Set-CurrentStep {
     param([int]$StepNumber)
@@ -605,12 +606,23 @@ function Set-CoverArt {
     $tempImg = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "ripaudio_cover$ext")
     Copy-Item $ImagePath $tempImg -Force
 
+    if (-not (Test-Path $tempImg)) {
+        Write-Log "  Set-CoverArt: temp copy failed for $([System.IO.Path]::GetFileName($FilePath))"
+        return $false
+    }
+
     # Remove existing pictures first, then import
     # Use just the filename -- type defaults to 3 (Front Cover), MIME auto-detected
     # Avoids specification format (TYPE|MIME|DESC|WxH|FILE) which mis-parses Windows backslash paths
     & metaflac --remove --block-type=PICTURE $FilePath 2>$null
-    & metaflac "--import-picture-from=$tempImg" $FilePath 2>$null
+    $importOutput = & metaflac "--import-picture-from=$tempImg" $FilePath 2>&1
     $exitCode = $LASTEXITCODE
+
+    if ($exitCode -ne 0) {
+        $errMsg = ($importOutput | Where-Object { "$_".Trim() }) -join " | "
+        Write-Log "  metaflac embed failed (exit $exitCode) for $([System.IO.Path]::GetFileName($FilePath)): $errMsg"
+        $script:LastMetaflacError = $errMsg
+    }
 
     Remove-Item $tempImg -ErrorAction SilentlyContinue
     return $exitCode -eq 0
@@ -635,9 +647,24 @@ function Get-CoverArt {
             Invoke-WebRequest -Uri $ArtworkUrl -OutFile $outputFile -Headers $headers -TimeoutSec 30
 
             if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
-                Write-Host "    Downloaded: Front.jpg (from $ArtworkSource)" -ForegroundColor Green
-                Write-Log "  Downloaded cover art from $ArtworkSource"
-                return $outputFile
+                # Validate magic bytes -- reject HTML/redirect responses masquerading as images
+                try {
+                    $stream = [System.IO.File]::OpenRead($outputFile)
+                    $header = New-Object byte[] 8
+                    $read = $stream.Read($header, 0, 8)
+                    $stream.Close()
+                    $isJpeg = ($read -ge 3 -and $header[0] -eq 0xFF -and $header[1] -eq 0xD8 -and $header[2] -eq 0xFF)
+                    $isPng  = ($read -ge 8 -and $header[0] -eq 0x89 -and $header[1] -eq 0x50 -and $header[2] -eq 0x4E -and $header[3] -eq 0x47)
+                } catch { $isJpeg = $false; $isPng = $false }
+
+                if ($isJpeg -or $isPng) {
+                    Write-Host "    Downloaded: Front.jpg (from $ArtworkSource)" -ForegroundColor Green
+                    Write-Log "  Downloaded cover art from $ArtworkSource"
+                    return $outputFile
+                } else {
+                    Write-Host "    $ArtworkSource: download was not a valid image (URL may point to a webpage)" -ForegroundColor Yellow
+                    Write-Log "  $ArtworkSource download invalid (not JPEG/PNG) -- removed"
+                }
             }
             Remove-Item $outputFile -ErrorAction SilentlyContinue
         } catch {
@@ -989,12 +1016,20 @@ function Process-AlbumFolder {
             }
         } elseif ($imageFile) {
             $embedCount = 0
+            $script:LastMetaflacError = $null
             foreach ($track in $existingTracks) {
                 if (Set-CoverArt -FilePath $track.File.FullName -ImagePath $imageFile) {
                     $embedCount++
                 }
             }
-            Write-Host "    Embedded cover art in $embedCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
+            if ($embedCount -eq $existingTracks.Count) {
+                Write-Host "    Embedded cover art in $embedCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
+            } else {
+                Write-Host "    Embedded cover art in $embedCount/$($existingTracks.Count) file(s)" -ForegroundColor Yellow
+                if ($script:LastMetaflacError) {
+                    Write-Host "    metaflac error: $($script:LastMetaflacError)" -ForegroundColor Red
+                }
+            }
             Write-Log "  Embedded cover art in $embedCount files"
             $albumResult.EmbedCount = $embedCount
         } else {
