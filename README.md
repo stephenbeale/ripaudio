@@ -287,7 +287,7 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 
 ## audit-metadata.ps1
 
-Scans album folders for missing or incomplete metadata and copies flagged albums to a staging directory for later processing with `search-metadata.ps1`.
+Scans album folders for missing or incomplete metadata, copies flagged albums to a staging directory, and optionally processes them with `search-metadata.ps1` — all in a single pipeline with continue/exit checkpoints between stages.
 
 ### Usage
 
@@ -301,7 +301,18 @@ Scans album folders for missing or incomplete metadata and copies flagged albums
 |-----------|----------|---------|-------------|
 | `-Path` | Yes | - | Root music folder to scan (e.g. `C:\Music`) |
 | `-OutputPath` | No | `C:\Music\needs-update` | Staging directory for flagged albums |
-| `-ReportOnly` | No | - | Print report and write CSV log without copying files |
+| `-ReportOnly` | No | - | Print report and write CSV log without copying or processing |
+
+### 4-Step Pipeline
+
+1. **Discover album folders** — find all directories containing FLAC files
+2. **Audit metadata** — check each album for missing tags and cover art
+3. **Copy flagged albums to staging** — prompted: `N albums flagged. Copy to staging? [Y/n]` (auto-Yes in 30s)
+4. **Search & apply metadata** — prompted: `Search & apply metadata to N flagged albums? [Y/n]` (auto-Yes in 30s), then runs `search-metadata.ps1 -Path <staging> -Recurse`
+
+Prompts auto-proceed after 30 seconds with no input. Press `N` at any prompt to stop the pipeline at that point.
+
+With `-ReportOnly`: only steps 1-2 run, a CSV is written, no prompts or processing.
 
 ### Checks Performed
 
@@ -312,17 +323,14 @@ Scans album folders for missing or incomplete metadata and copies flagged albums
 ### Examples
 
 ```powershell
-# Report only — see what needs attention without copying
+# Report only — see what needs attention without copying or processing
 .\audit-metadata.ps1 -Path "C:\Music" -ReportOnly
 
-# Copy flagged albums to default staging directory
+# Full pipeline — audit, copy, then search & apply metadata
 .\audit-metadata.ps1 -Path "C:\Music"
 
 # Copy to a custom staging directory
 .\audit-metadata.ps1 -Path "C:\Music" -OutputPath "D:\staging"
-
-# Then process the flagged albums with search-metadata
-.\search-metadata.ps1 -Path "C:\Music\needs-update" -Recurse
 ```
 
 ## Related Projects

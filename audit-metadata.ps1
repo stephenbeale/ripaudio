@@ -39,6 +39,32 @@ function Stop-WithError {
     exit 1
 }
 
+function Read-TimedConfirmation {
+    param([string]$Prompt, [int]$TimeoutSeconds = 30)
+
+    Write-Host ""
+    Write-Host "  $Prompt " -NoNewline -ForegroundColor White
+    $confirm = $null
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            $confirm = $key.KeyChar
+            Write-Host $confirm
+            break
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    $stopwatch.Stop()
+    if ($null -eq $confirm) {
+        Write-Host "Y (auto)" -ForegroundColor Gray
+    }
+    if ($confirm -and "$confirm".ToUpper() -eq "N") {
+        return $false
+    }
+    return $true
+}
+
 function Read-ExistingTags {
     param([string]$FolderPath)
 
@@ -108,8 +134,8 @@ Write-Log "ReportOnly: $ReportOnly"
 $host.UI.RawUI.WindowTitle = "audit-metadata - $Path"
 
 # ========== STEP 1: DISCOVER ALBUM FOLDERS ==========
-Write-Host "`n[STEP 1/3] Discovering album folders..." -ForegroundColor Green
-Write-Log "STEP 1/3: Discovering album folders"
+Write-Host "`n[STEP 1/4] Discovering album folders..." -ForegroundColor Green
+Write-Log "STEP 1/4: Discovering album folders"
 
 $allFlacFiles = Get-ChildItem -Path $Path -Filter "*.flac" -Recurse -ErrorAction SilentlyContinue
 $albumFolders = @()
@@ -131,7 +157,7 @@ $albumFolders = $albumFolders | Where-Object {
 }
 
 if ($albumFolders.Count -eq 0) {
-    Stop-WithError -Step "STEP 1/3: Discover albums" -Message "No FLAC files found under: $Path"
+    Stop-WithError -Step "STEP 1/4: Discover albums" -Message "No FLAC files found under: $Path"
 }
 
 Write-Host "  Found $($albumFolders.Count) album folder(s)" -ForegroundColor White
@@ -145,8 +171,8 @@ foreach ($folder in $albumFolders) {
 }
 
 # ========== STEP 2: AUDIT EACH FOLDER ==========
-Write-Host "`n[STEP 2/3] Auditing metadata..." -ForegroundColor Green
-Write-Log "STEP 2/3: Auditing metadata"
+Write-Host "`n[STEP 2/4] Auditing metadata..." -ForegroundColor Green
+Write-Log "STEP 2/4: Auditing metadata"
 
 $auditResults = @()
 $folderNum = 0
@@ -220,8 +246,8 @@ $flaggedResults = $auditResults | Where-Object { $_.NeedsUpdate }
 $okCount = ($auditResults | Where-Object { -not $_.NeedsUpdate }).Count
 
 if ($ReportOnly) {
-    Write-Host "`n[STEP 3/3] Report (no copies)" -ForegroundColor Green
-    Write-Log "STEP 3/3: Report only mode"
+    Write-Host "`n[STEP 3/4] Report (no copies)" -ForegroundColor Green
+    Write-Log "STEP 3/4: Report only mode"
 
     # Write CSV report
     $csvPath = Join-Path $logDir "audit-metadata_${logTimestamp}.csv"
@@ -234,40 +260,86 @@ if ($ReportOnly) {
     Write-Host "  CSV report: $csvPath" -ForegroundColor White
     Write-Log "CSV report written to $csvPath"
 } else {
-    Write-Host "`n[STEP 3/3] Copying flagged albums to staging..." -ForegroundColor Green
-    Write-Log "STEP 3/3: Copying flagged albums"
-
     if ($flaggedResults.Count -eq 0) {
-        Write-Host "  No albums need updating - nothing to copy" -ForegroundColor Green
-        Write-Log "No albums flagged - nothing to copy"
+        Write-Host "`n[STEP 3/4] No albums need updating - nothing to copy" -ForegroundColor Green
+        Write-Log "STEP 3/4: No albums flagged - nothing to copy"
     } else {
-        if (!(Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
+        # Prompt before copying
+        $copyConfirm = Read-TimedConfirmation -Prompt "$($flaggedResults.Count) albums flagged. Copy to staging? [Y/n] (auto-Yes in 30s)"
+        Write-Log "Copy prompt: $(if ($copyConfirm) { 'Yes' } else { 'No' })"
 
-        $copiedCount = 0
-        foreach ($r in $flaggedResults) {
-            # Preserve Artist\Album structure
-            $destPath = Join-Path $OutputPath $r.RelPath
+        if (-not $copyConfirm) {
+            Write-Host "`n  Stopped by user after audit." -ForegroundColor Yellow
+            Write-Log "User declined copy - stopping after audit"
+        } else {
+            Write-Host "`n[STEP 3/4] Copying flagged albums to staging..." -ForegroundColor Green
+            Write-Log "STEP 3/4: Copying flagged albums"
 
-            try {
-                if (Test-Path $destPath) {
-                    Write-Host "  [--] $($r.RelPath) (already in staging)" -ForegroundColor Gray
-                    Write-Log "Skipped copy (already exists): $($r.RelPath)"
-                } else {
-                    $destParent = Split-Path -Parent $destPath
-                    if (!(Test-Path $destParent)) { New-Item -ItemType Directory -Path $destParent -Force | Out-Null }
-                    Copy-Item -Path $r.Path -Destination $destPath -Recurse -ErrorAction Stop
-                    Write-Host "  [>>] $($r.RelPath)" -ForegroundColor Cyan
-                    Write-Log "Copied: $($r.RelPath) -> $destPath"
-                    $copiedCount++
+            if (!(Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
+
+            $copiedCount = 0
+            foreach ($r in $flaggedResults) {
+                # Preserve Artist\Album structure
+                $destPath = Join-Path $OutputPath $r.RelPath
+
+                try {
+                    if (Test-Path $destPath) {
+                        Write-Host "  [--] $($r.RelPath) (already in staging)" -ForegroundColor Gray
+                        Write-Log "Skipped copy (already exists): $($r.RelPath)"
+                    } else {
+                        $destParent = Split-Path -Parent $destPath
+                        if (!(Test-Path $destParent)) { New-Item -ItemType Directory -Path $destParent -Force | Out-Null }
+                        Copy-Item -Path $r.Path -Destination $destPath -Recurse -ErrorAction Stop
+                        Write-Host "  [>>] $($r.RelPath)" -ForegroundColor Cyan
+                        Write-Log "Copied: $($r.RelPath) -> $destPath"
+                        $copiedCount++
+                    }
+                } catch {
+                    Write-Host "  [!!] Failed to copy $($r.RelPath): $_" -ForegroundColor Red
+                    Write-Log "ERROR copying $($r.RelPath): $_"
                 }
-            } catch {
-                Write-Host "  [!!] Failed to copy $($r.RelPath): $_" -ForegroundColor Red
-                Write-Log "ERROR copying $($r.RelPath): $_"
+            }
+
+            Write-Host "`n  Copied $copiedCount album(s) to $OutputPath" -ForegroundColor White
+            Write-Log "Copied $copiedCount albums to $OutputPath"
+
+            # ========== STEP 4: PROCESS FLAGGED ALBUMS ==========
+            $processConfirm = Read-TimedConfirmation -Prompt "Search & apply metadata to $($flaggedResults.Count) flagged albums? [Y/n] (auto-Yes in 30s)"
+            Write-Log "Process prompt: $(if ($processConfirm) { 'Yes' } else { 'No' })"
+
+            $processExitCode = $null
+            if (-not $processConfirm) {
+                Write-Host "`n  Stopped by user after copy." -ForegroundColor Yellow
+                Write-Log "User declined processing - stopping after copy"
+            } else {
+                Write-Host "`n[STEP 4/4] Processing flagged albums with search-metadata..." -ForegroundColor Green
+                Write-Log "STEP 4/4: Processing flagged albums"
+
+                $searchScript = Join-Path $PSScriptRoot "search-metadata.ps1"
+                if (-not (Test-Path $searchScript)) {
+                    Write-Host "  ERROR: search-metadata.ps1 not found at $searchScript" -ForegroundColor Red
+                    Write-Log "ERROR: search-metadata.ps1 not found at $searchScript"
+                    $processExitCode = 1
+                } else {
+                    Write-Host "  Running: search-metadata.ps1 -Path `"$OutputPath`" -Recurse" -ForegroundColor Gray
+                    Write-Log "Running: $searchScript -Path `"$OutputPath`" -Recurse"
+
+                    $proc = Start-Process powershell.exe -ArgumentList @(
+                        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $searchScript,
+                        "-Path", $OutputPath, "-Recurse"
+                    ) -Wait -PassThru -NoNewWindow
+
+                    $processExitCode = $proc.ExitCode
+                    Write-Log "search-metadata.ps1 exited with code $processExitCode"
+
+                    if ($processExitCode -eq 0) {
+                        Write-Host "`n  search-metadata completed successfully" -ForegroundColor Green
+                    } else {
+                        Write-Host "`n  search-metadata exited with code $processExitCode" -ForegroundColor Yellow
+                    }
+                }
             }
         }
-
-        Write-Host "`n  Copied $copiedCount album(s) to $OutputPath" -ForegroundColor White
-        Write-Log "Copied $copiedCount albums to $OutputPath"
     }
 }
 
@@ -280,8 +352,13 @@ Write-Host "`n--- SUMMARY ---" -ForegroundColor Cyan
 Write-Host "  Albums scanned: $($auditResults.Count)" -ForegroundColor White
 Write-Host "  OK: $okCount" -ForegroundColor Green
 Write-Host "  Flagged: $($flaggedResults.Count)" -ForegroundColor $(if ($flaggedResults.Count -gt 0) { "Yellow" } else { "Green" })
-if (-not $ReportOnly -and $flaggedResults.Count -gt 0) {
+if (-not $ReportOnly -and $flaggedResults.Count -gt 0 -and $copyConfirm) {
     Write-Host "  Copied to: $OutputPath" -ForegroundColor White
+}
+if ($null -ne $processExitCode) {
+    $processColor = if ($processExitCode -eq 0) { "Green" } else { "Yellow" }
+    $processStatus = if ($processExitCode -eq 0) { "Success" } else { "Exited with code $processExitCode" }
+    Write-Host "  Metadata processing: $processStatus" -ForegroundColor $processColor
 }
 Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
 
