@@ -856,6 +856,22 @@ function Process-AlbumFolder {
                 $albumOk = (-not $folderAlbum) -or (-not $foundAlbum) -or
                     ($foundAlbum -like "*$folderAlbum*") -or ($folderAlbum -like "*$foundAlbum*")
 
+                # Also check leading-word prefix overlap: handles folder names like
+                # "The Best Of-Once in a Lifetime" matching "The Best of Talking Heads"
+                # where punctuation splits the title but the opening words are shared
+                if (-not $albumOk -and $folderAlbum -and $foundAlbum) {
+                    $folderWords = ($folderAlbum -replace '[^a-zA-Z0-9\s]', ' ' -split '\s+').Where({ $_ }) |
+                        ForEach-Object { $_.ToLower() }
+                    $foundWords  = ($foundAlbum  -replace '[^a-zA-Z0-9\s]', ' ' -split '\s+').Where({ $_ }) |
+                        ForEach-Object { $_.ToLower() }
+                    $prefixMatch = 0
+                    $minLen = [Math]::Min($folderWords.Count, $foundWords.Count)
+                    for ($i = 0; $i -lt $minLen; $i++) {
+                        if ($folderWords[$i] -eq $foundWords[$i]) { $prefixMatch++ } else { break }
+                    }
+                    $albumOk = $prefixMatch -ge 2
+                }
+
                 if ($artistOk -and $albumOk) {
                     # Good match -- auto-proceed
                     Write-Host "    Matched: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Green
