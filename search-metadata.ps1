@@ -850,10 +850,10 @@ function Process-AlbumFolder {
             if ($merged -and $merged.ArtworkUrl) {
                 $foundArtist = $merged.Artist
                 $foundAlbum = $merged.Album
-                Write-Host "    Found: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor White
+                Write-Host "    No exact match. Best result: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Yellow
                 if ($BatchMode) {
                     Write-Host "    Skipping -- cannot confirm in batch mode" -ForegroundColor Yellow
-                    Write-Log "  Found `"$foundAlbum`" by `"$foundArtist`" -- auto-skipped (batch mode, cannot confirm)"
+                    Write-Log "  No exact match. Best result: `"$foundAlbum`" by `"$foundArtist`" -- auto-skipped (batch)"
                 } elseif ($DryRunMode) {
                     Write-Host "    [DRY RUN] Would prompt to confirm" -ForegroundColor Cyan
                     $artworkValid = $true
