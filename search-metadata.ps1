@@ -599,12 +599,21 @@ function Set-CoverArt {
     $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
     if (-not $metaflacPath) { return $false }
 
+    # metaflac --import-picture-from= fails on Windows when the path contains spaces.
+    # Copy to a temp path (no spaces) before importing, then clean up.
+    $ext = [System.IO.Path]::GetExtension($ImagePath)
+    $tempImg = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "ripaudio_cover$ext")
+    Copy-Item $ImagePath $tempImg -Force
+
     # Remove existing pictures first, then import
     # Use just the filename -- type defaults to 3 (Front Cover), MIME auto-detected
     # Avoids specification format (TYPE|MIME|DESC|WxH|FILE) which mis-parses Windows backslash paths
     & metaflac --remove --block-type=PICTURE $FilePath 2>$null
-    & metaflac "--import-picture-from=$ImagePath" $FilePath 2>$null
-    return $LASTEXITCODE -eq 0
+    & metaflac "--import-picture-from=$tempImg" $FilePath 2>$null
+    $exitCode = $LASTEXITCODE
+
+    Remove-Item $tempImg -ErrorAction SilentlyContinue
+    return $exitCode -eq 0
 }
 
 function Get-CoverArt {
@@ -894,28 +903,59 @@ function Process-AlbumFolder {
                     } elseif ($DryRunMode) {
                         Write-Host "    [DRY RUN] Would prompt to confirm" -ForegroundColor Cyan
                     } else {
-                        Write-Host "    Use this artwork? [y/N] (auto-No in 30s) " -NoNewline -ForegroundColor White
-                        $artConfirm = $null
-                        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                        while ($sw.Elapsed.TotalSeconds -lt 30) {
-                            if ([Console]::KeyAvailable) {
-                                $artKey = [Console]::ReadKey($true)
-                                $artConfirm = $artKey.KeyChar
-                                Write-Host $artConfirm
-                                break
+                        # Show the artwork URL so the user can preview before deciding
+                        $previewUrl = $merged.ArtworkUrl
+                        if ($previewUrl -like "CAA:*") {
+                            $previewUrl = "https://coverartarchive.org/release/$($previewUrl.Substring(4))"
+                        }
+                        Write-Host "    Artwork: $previewUrl" -ForegroundColor Gray
+                        $artworkDecided = $false
+                        while (-not $artworkDecided) {
+                            Write-Host "    [Y]es / [N]o / [O]pen in browser / [C]ustom URL (auto-No in 30s): " -NoNewline -ForegroundColor White
+                            $artKey = $null
+                            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                            while ($sw.Elapsed.TotalSeconds -lt 30) {
+                                if ([Console]::KeyAvailable) {
+                                    $artKey = [Console]::ReadKey($true)
+                                    break
+                                }
+                                Start-Sleep -Milliseconds 200
                             }
-                            Start-Sleep -Milliseconds 200
-                        }
-                        $sw.Stop()
-                        if ($null -eq $artConfirm) {
-                            Write-Host "N (auto)" -ForegroundColor Gray
-                        }
-                        if ($artConfirm -and "$artConfirm".ToUpper() -eq "Y") {
-                            $artworkValid = $true
-                            Write-Log "  User approved artwork: `"$foundAlbum`" by `"$foundArtist`""
-                        } else {
-                            Write-Host "    Skipped" -ForegroundColor Yellow
-                            Write-Log "  No match: `"$foundAlbum`" by `"$foundArtist`" -- user skipped"
+                            $sw.Stop()
+                            $artConfirm = if ($artKey) { "$($artKey.KeyChar)".ToUpper() } else { $null }
+                            if ($null -eq $artConfirm) {
+                                Write-Host "N (auto)" -ForegroundColor Gray
+                                Write-Host "    Skipped" -ForegroundColor Yellow
+                                Write-Log "  No match: `"$foundAlbum`" by `"$foundArtist`" -- auto-skipped (timeout)"
+                                $artworkDecided = $true
+                            } elseif ($artConfirm -eq "Y") {
+                                Write-Host "Y" -ForegroundColor Green
+                                $artworkValid = $true
+                                Write-Log "  User approved artwork: `"$foundAlbum`" by `"$foundArtist`""
+                                $artworkDecided = $true
+                            } elseif ($artConfirm -eq "O") {
+                                Write-Host "O" -ForegroundColor Cyan
+                                Write-Host "    Opening in browser..." -ForegroundColor Cyan
+                                Start-Process $previewUrl
+                            } elseif ($artConfirm -eq "C") {
+                                Write-Host "C"
+                                $customUrl = Read-Host "    Enter custom artwork URL"
+                                if ($customUrl -and $customUrl.Trim()) {
+                                    $merged.ArtworkUrl = $customUrl.Trim()
+                                    $merged.ArtworkSource = "custom"
+                                    $artworkValid = $true
+                                    Write-Log "  User provided custom artwork URL: $($customUrl.Trim())"
+                                } else {
+                                    Write-Host "    No URL entered, skipping" -ForegroundColor Yellow
+                                    Write-Log "  User provided no custom URL -- skipped"
+                                }
+                                $artworkDecided = $true
+                            } else {
+                                Write-Host "N" -ForegroundColor Yellow
+                                Write-Host "    Skipped" -ForegroundColor Yellow
+                                Write-Log "  No match: `"$foundAlbum`" by `"$foundArtist`" -- user skipped"
+                                $artworkDecided = $true
+                            }
                         }
                     }
                 }
