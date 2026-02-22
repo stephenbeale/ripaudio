@@ -502,3 +502,58 @@ These branches have no commits ahead of master and were pruned from local tracki
 2. Test with a disc that has multiple MusicBrainz releases to validate the `-R` passthrough and track count fix
 3. Test resume mode with a real disc to confirm the `-R` flag is preserved in the resumed rip
 4. Continue the audit-metadata.ps1 end-to-end pipeline testing noted from the previous session
+
+---
+
+### 2026-02-22 - Windows Path Sanitisation, Progress Spam Filter, and EmbedOnly Prefix Match
+
+**Work Completed:**
+
+- PR #57 merged: `fix(rip): sanitize album/artist for directory names`
+  - Album and artist names from MusicBrainz can contain characters illegal in Windows file paths (e.g. `?`, `*`, `:`, `"`, `<`, `>`, `|`, `\`, `/`)
+  - Added `Sanitize-PathComponent` function to `rip-audio.ps1` that strips these characters before constructing the output directory path
+  - Prevents `New-Item` from failing with an "illegal path character" error when MusicBrainz returns titles containing `?` or similar characters
+
+- PR #58 merged: `fix(rip): filter cyanrip progress spam from console output`
+  - cyanrip emits `progress - XX.XX%` lines at high frequency during ripping; these filled the console with noise
+  - Added a filter in the StreamReader output loop: lines matching `^progress\s*-\s*[\d.]+%` are suppressed from console display
+  - Lines are still captured internally (they are needed to detect rip completion); they are simply not printed to the terminal
+  - Ripping progress is no longer drowned out by percentage spam in the streaming output
+
+- PR #59 merged: `fix(metadata): match album by leading-word prefix in EmbedOnly batch mode`
+  - `search-metadata.ps1` `-Recurse` (EmbedOnly) batch mode was failing to match albums whose MusicBrainz title differed by a long subtitle suffix
+  - Example: local folder `The Best Of-Once in a Lifetime` should match MusicBrainz result `The Best of Talking Heads`
+  - Added leading-word prefix matching: if the candidate album title starts with the same two or more words as the local album name (case-insensitive), it is accepted as a prefix match
+  - Prefix match threshold is 2 leading words (a single-word prefix is too ambiguous to be reliable)
+
+- PR #60 merged: `fix(metadata): prefix-only matches now always prompt user, even in batch mode`
+  - Prefix matches (from PR #59) are inherently less certain than strong substring matches
+  - Changed behaviour: prefix-only matches always show a `Partial match:` label and a `[y/N]` prompt requiring explicit user confirmation, even when running with `-Recurse` (which normally auto-proceeds on good matches)
+  - Strong substring matches (where the local name is fully contained in the candidate title) continue to auto-proceed in batch mode as before
+  - This gives users visibility and control over partial matches without slowing down batch processing for high-confidence matches
+
+**Technical Notes:**
+- `Sanitize-PathComponent` uses a simple `-replace` with `[\\/:*?"<>|]` character class; applied to both artist and album before joining the output path
+- Progress spam filter uses `$line -match '^progress\s*-\s*[\d.]+%'` check in the queue-drain loop; suppressed lines are not written to the log file either
+- Prefix match logic in `search-metadata.ps1`: splits both strings on whitespace, zips leading words, compares case-insensitively; prefix match flag is set separately from the strong-match flag
+- Prompt-on-prefix-match guard: `if ($isPrefixMatch -and -not $isStrongMatch)` wraps the auto-proceed path and diverts to the `[y/N]` prompt instead
+
+**PRs Merged This Session:**
+- PR #57 - `fix(rip): sanitize album/artist for directory names`
+- PR #58 - `fix(rip): filter cyanrip progress spam from console output`
+- PR #59 - `fix(metadata): match album by leading-word prefix in EmbedOnly batch mode`
+- PR #60 - `fix(metadata): prefix-only matches now always prompt user in batch mode`
+
+**Session Verified Clean:**
+- All 4 PRs squash-merged to master
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+- Branches: only `master` local; all feature branches deleted locally and remotely
+- Stash list: empty
+
+**Priority for Next Session:**
+1. Test PR #57 fix: rip a disc whose MusicBrainz title contains `?` or other illegal Windows path characters and confirm the output directory is created successfully
+2. Test PR #58 fix: confirm the console no longer shows `progress - XX.XX%` noise during a real rip while still completing normally
+3. Test PR #59/#60 fix: run `search-metadata.ps1 -Recurse` against a folder where an album name is a partial prefix of the MusicBrainz result and confirm the `Partial match:` prompt appears and requires `y` to proceed
+4. Continue end-to-end testing of the full rip workflow with a real disc (AccurateRip regex validation)
