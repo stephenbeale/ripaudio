@@ -427,3 +427,40 @@ These branches have no commits ahead of master and were pruned from local tracki
 2. Test `audit-metadata.ps1` (without -ReportOnly) to validate copy-to-staging workflow
 3. Test `search-metadata.ps1` single-album mode to validate 30-second auto-proceed timeout
 4. Consider end-to-end pipeline: `audit-metadata.ps1 -Path "C:\Music"` then `search-metadata.ps1 -Path "C:\Music\needs-update" -Recurse`
+
+---
+
+### 2026-02-22 - Combined Audit + Fix Pipeline
+
+**Work Completed:**
+
+- PR #41 merged: Extended `audit-metadata.ps1` from a 3-step to a 4-step pipeline
+  - Step 1/4: Discover album folders (unchanged)
+  - Step 2/4: Audit metadata (unchanged)
+  - Step 3/4: Copy flagged albums to staging — now preceded by a continue/exit prompt: `N albums flagged. Copy to staging? [Y/n] (auto-Yes in 30s)`
+  - Step 4/4: Search & apply metadata (new) — preceded by prompt: `Search & apply metadata to N flagged albums? [Y/n] (auto-Yes in 30s)`, then invokes `search-metadata.ps1 -Path <staging> -Recurse`
+  - Added `Read-TimedConfirmation` helper function — reusable `[Console]::KeyAvailable` + `Stopwatch` polling loop with configurable timeout, returns `$true` to continue or `$false` on N
+  - Step 4 runs `search-metadata.ps1` as a subprocess via `Start-Process powershell.exe -NoProfile -ExecutionPolicy Bypass -File` to isolate `exit` calls in the child script
+  - Checks `$proc.ExitCode` and reports success/failure in the summary
+  - `-ReportOnly` behaviour unchanged — steps 1-2 only, CSV written, no prompts, no copy, no processing
+  - Summary updated with metadata processing result line (success or exit code)
+  - README.md updated: audit-metadata section now describes the 4-step pipeline with prompt details
+  - Roadmap.md updated: added combined audit + fix pipeline as completed item
+
+**Technical Notes:**
+- `Read-TimedConfirmation` extracted as a helper (not inline) to avoid repeating the polling loop for both prompts
+- `Start-Process` with `-Wait -PassThru -NoNewWindow` keeps console output flowing to the terminal while isolating the subprocess
+- `$copyConfirm` and `$processExitCode` variables scoped to the else branch; summary conditionally checks them with `-and $copyConfirm` and `$null -ne $processExitCode`
+- When user presses N at the copy prompt, neither copy nor processing occurs; when N at the process prompt, copy completes but processing is skipped
+
+**Session Verified Clean:**
+- PR #41 squash-merged to master
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+
+**Priority for Next Session:**
+1. Test full 4-step pipeline: `.\audit-metadata.ps1 -Path "C:\Music"` — let both prompts auto-proceed to validate end-to-end flow
+2. Test pressing N at first prompt (should stop after audit results) and N at second prompt (should copy but not process)
+3. Test `-ReportOnly` still works as before (no prompts, no copy, no processing)
+4. Consider end-to-end testing of `rip-audio.ps1` with a real disc to validate AccurateRip regex parsing against live cyanrip output
