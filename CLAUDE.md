@@ -20,6 +20,7 @@ ripaudio/
     rip-audio.ps1        # Main CD ripping script (cyanrip)
     get-metadata.ps1     # MusicBrainz metadata lookup and CUE file generation
     search-metadata.ps1  # Multi-source metadata search, tag, rename (MB + iTunes + Deezer)
+    audit-metadata.ps1   # Scan for missing/incomplete metadata, copy flagged albums to staging
     README.md            # User documentation
     CLAUDE.md            # This file - development notes
     Roadmap.md           # Planned features
@@ -379,3 +380,50 @@ These branches have no commits ahead of master and were pruned from local tracki
 2. Consider end-to-end testing of `search-metadata.ps1 -DryRun` against a real music library to verify no files are modified
 3. Consider end-to-end testing of `search-metadata.ps1 -Recurse -DryRun` to validate batch dry run output
 4. Consider end-to-end testing of `rip-audio.ps1` with a real disc to validate AccurateRip regex parsing against live cyanrip output
+
+---
+
+### 2026-02-22 - audit-metadata.ps1 + Rename Confirmation Timeout
+
+**Work Completed:**
+
+- PR #38 merged: Created `audit-metadata.ps1` — standalone script to scan album folders for incomplete metadata
+  - 3-step workflow: discover album folders, audit each folder, copy flagged albums (or report)
+  - Check 1: Track titles — flags albums with `Unknown track`, `Track N`, or empty titles
+  - Check 2: Album-level tags — flags if Artist, Album, Date, or Genre are missing across all tracks
+  - Check 3: Cover art — flags if no `Front.*`, `Cover.*`, or `Folder.*` image exists
+  - Parameters: `-Path` (root music folder), `-OutputPath` (staging dir, default `C:\Music\needs-update`), `-ReportOnly` (CSV report without copying)
+  - Copies flagged albums to staging directory preserving `Artist\Album` folder structure
+  - Skips `logs` and `needs-update` directories during discovery
+  - `-ReportOnly` writes CSV to `C:\Music\logs\audit-metadata_{timestamp}.csv`
+  - Reuses `Write-Log`, `Stop-WithError`, `Read-ExistingTags` functions (copied from search-metadata.ps1)
+  - Coloured output: `[OK]` green, `[!!]` yellow for flagged, `[>>]` cyan for copied, `[--]` gray for already-staged
+  - README.md updated with audit-metadata section (params, checks, examples)
+  - Roadmap.md updated to mark audit metadata as completed
+
+- PR #39 merged: Added 30-second auto-proceed timeout to `search-metadata.ps1` confirmation prompt
+  - Replaced `Read-Host "Apply these changes? [Y/n]"` with `[Console]::KeyAvailable` polling loop
+  - Polls every 200ms for 30 seconds; shows `(auto-Yes in 30s)` hint
+  - If no key pressed within 30s, prints `Y (auto)` and proceeds
+  - If user presses N, cancels as before
+  - Any other key (or timeout) proceeds with changes
+  - Existing behaviour preserved: `-Force` skips prompt entirely, `-DryRun` shows banner
+  - Roadmap.md updated to mark rename confirmation timeout as completed
+
+**Technical Notes:**
+- `audit-metadata.ps1` uses the same `Read-ExistingTags` function as `search-metadata.ps1` (copied, not shared) — reads ARTIST, ALBUM, TITLE, DATE, GENRE via metaflac per-field
+- Cover art check uses `Get-ChildItem -Include "Front.*","Cover.*","Folder.*"` — same pattern as search-metadata.ps1 Step 5
+- Staging directory skip uses both `Resolve-Path` (for existing paths) and regex fallback `\\needs-update(\\|$)` (for not-yet-created paths)
+- Rename timeout uses `[System.Diagnostics.Stopwatch]` for precise timing, `[Console]::ReadKey($true)` for non-echoing key capture
+
+**Session Verified Clean:**
+- PR #38 and #39 squash-merged to master (initially combined as PR #37, then reverted and split into separate PRs per user request)
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+
+**Priority for Next Session:**
+1. Test `audit-metadata.ps1 -ReportOnly` against `C:\Music` to validate discovery and auditing
+2. Test `audit-metadata.ps1` (without -ReportOnly) to validate copy-to-staging workflow
+3. Test `search-metadata.ps1` single-album mode to validate 30-second auto-proceed timeout
+4. Consider end-to-end pipeline: `audit-metadata.ps1 -Path "C:\Music"` then `search-metadata.ps1 -Path "C:\Music\needs-update" -Recurse`
