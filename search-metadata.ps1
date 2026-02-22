@@ -929,7 +929,11 @@ function Process-AlbumFolder {
 
         $albumResult.Artist = $folderArtist
         $albumResult.Album = $folderAlbum
-        $albumResult.Status = "success"
+        if ($albumResult.EmbedCount -gt 0) {
+            $albumResult.Status = "success"
+        } else {
+            $albumResult.Status = "skipped"
+        }
 
         return $albumResult
     }
@@ -1299,7 +1303,11 @@ if ($Recurse) {
 
     Write-Host "`n--- ${dryRunLabel}BATCH SUMMARY ---" -ForegroundColor Cyan
     Write-Host "  Albums processed: $($albumFolders.Count)" -ForegroundColor White
-    Write-Host "  Successful: $successCount" -ForegroundColor Green
+    if ($EmbedOnly) {
+        Write-Host "  Embedded: $successCount" -ForegroundColor Green
+    } else {
+        Write-Host "  Successful: $successCount" -ForegroundColor Green
+    }
     if ($failedCount -gt 0) {
         Write-Host "  Failed: $failedCount" -ForegroundColor Red
     }
