@@ -113,6 +113,40 @@ function Enable-ConsoleClose {
 Add-Type -AssemblyName System.Web
 
 # ========== HELPER FUNCTIONS ==========
+function Test-TrackIntegrity {
+    param([string]$FilePath)
+    $ext = [System.IO.Path]::GetExtension($FilePath).ToLower()
+    if ($ext -eq ".flac") {
+        $metaflac = Get-Command metaflac -ErrorAction SilentlyContinue
+        if ($metaflac) {
+            & metaflac --test $FilePath 2>$null
+            return $LASTEXITCODE -eq 0
+        }
+    }
+    # For non-FLAC or no metaflac: check file size > 10KB
+    return (Get-Item $FilePath).Length -gt 10240
+}
+
+function Get-DiscTrackCount {
+    param([string]$OutputDir, [string]$DriveLetter)
+    # Try cue file first (avoids disc query and multiple-release prompts)
+    $cueFile = Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cueFile) {
+        $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
+        $trackMatches = [regex]::Matches($cueContent, 'TRACK (\d+) AUDIO')
+        if ($trackMatches.Count -gt 0) {
+            return $trackMatches.Count
+        }
+    }
+    # Fallback: query disc (may fail if multiple releases)
+    $output = & cyanrip -I -d $DriveLetter -s 0 2>&1
+    $outputText = $output -join "`n"
+    if ($outputText -match 'Disc tracks:\s+(\d+)') {
+        return [int]$Matches[1]
+    }
+    return $null
+}
+
 function Test-DriveReady {
     param([string]$Path)
 
@@ -562,6 +596,8 @@ do {
     $script:CompletedSteps = @()
     $script:CurrentStep = $null
     $script:CddbResult = $null
+    $script:ResumeTrackList = $null
+    $script:SkipRip = $false
     $itemFailed = $false
 
     if ($script:IsProcessingQueue) {
@@ -829,28 +865,200 @@ if (!(Test-Path $finalOutputDir)) {
             Write-Host "  ... and $($existingFiles.Count - 5) more" -ForegroundColor Gray
         }
 
-        if ($script:IsProcessingQueue) {
-            Write-Host "ProcessQueue mode: auto-continuing with existing directory..." -ForegroundColor Yellow
-        } else {
-            Write-Host "`nChoose an option:" -ForegroundColor Cyan
-            Write-Host "  [1] Continue (may overwrite existing files)" -ForegroundColor Yellow
-            Write-Host "  [2] Abort" -ForegroundColor Yellow
+        # Check for existing audio files and attempt resume logic
+        $formatExtMap = @{ "flac" = "*.flac"; "mp3" = "*.mp3"; "opus" = "*.opus"; "aac" = "*.m4a"; "wav" = "*.wav"; "alac" = "*.m4a" }
+        $existingAudioFiles = @()
+        $primaryExt = $formatExtMap[$primaryFormat]
+        if ($primaryExt) {
+            $existingAudioFiles = @(Get-ChildItem -Path $finalOutputDir -Filter $primaryExt -ErrorAction SilentlyContinue)
+        }
+        # If no files in primary format, check all audio formats
+        if ($existingAudioFiles.Count -eq 0) {
+            foreach ($fmt in $formatList) {
+                $ext = $formatExtMap[$fmt]
+                if ($ext) {
+                    $existingAudioFiles = @(Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue)
+                    if ($existingAudioFiles.Count -gt 0) { break }
+                }
+            }
+        }
 
-            $choice = $null
-            while ($choice -ne '1' -and $choice -ne '2') {
-                $choice = Read-Host "Enter 1 or 2"
-                if ($choice -ne '1' -and $choice -ne '2') {
-                    Write-Host "Invalid choice. Please enter 1 or 2." -ForegroundColor Red
+        $totalTrackCount = $null
+        $script:ResumeTrackList = $null
+
+        if ($existingAudioFiles.Count -gt 0) {
+            # Try to determine total track count from cue file or disc
+            $totalTrackCount = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter
+        }
+
+        if ($totalTrackCount -and $existingAudioFiles.Count -gt 0) {
+            # Parse track numbers from existing filenames and validate integrity
+            $validTracks = @()
+            $invalidTracks = @()
+            foreach ($af in $existingAudioFiles) {
+                $trackNum = $null
+                # Handle both "01 - Title.flac" and "1.01 - Title.flac" (multi-disc) formats
+                if ($af.BaseName -match '^(\d+)\.(\d+)\s*-') {
+                    # Multi-disc format: disc.track -- use the track part
+                    $trackNum = [int]$Matches[2]
+                } elseif ($af.BaseName -match '^(\d+)\s*-') {
+                    $trackNum = [int]$Matches[1]
+                }
+
+                if ($trackNum) {
+                    if (Test-TrackIntegrity -FilePath $af.FullName) {
+                        $validTracks += $trackNum
+                    } else {
+                        $invalidTracks += $trackNum
+                    }
                 }
             }
 
-            if ($choice -eq '2') {
-                Write-Host "Aborted by user." -ForegroundColor Yellow
-                Enable-ConsoleClose
-                exit 0
+            $validTracks = $validTracks | Sort-Object -Unique
+            $allDiscTracks = 1..$totalTrackCount
+            $missingTracks = @($allDiscTracks | Where-Object { $_ -notin $validTracks })
+
+            if ($missingTracks.Count -eq 0) {
+                # All tracks already ripped and valid
+                Write-Host "`nAll $totalTrackCount tracks already ripped and valid." -ForegroundColor Green
+                if ($invalidTracks.Count -gt 0) {
+                    Write-Host "  ($($invalidTracks.Count) invalid file(s) will be overwritten)" -ForegroundColor Yellow
+                }
+
+                if ($script:IsProcessingQueue) {
+                    Write-Host "ProcessQueue mode: all tracks valid, skipping rip." -ForegroundColor Yellow
+                    Write-Log "All $totalTrackCount tracks already valid - skipping rip (ProcessQueue)"
+                    # Skip straight to step 2 (verify) by jumping past the rip
+                    $script:ResumeTrackList = $null
+                    $script:SkipRip = $true
+                } else {
+                    Write-Host "`nSkip rip? (all tracks present)" -ForegroundColor Cyan
+                    Write-Host "  [1] Skip (keep existing files)" -ForegroundColor Yellow
+                    Write-Host "  [2] Re-rip all tracks from scratch" -ForegroundColor Yellow
+                    Write-Host "  [3] Abort" -ForegroundColor Yellow
+
+                    $choice = $null
+                    while ($choice -ne '1' -and $choice -ne '2' -and $choice -ne '3') {
+                        $choice = Read-Host "Enter 1, 2, or 3"
+                        if ($choice -ne '1' -and $choice -ne '2' -and $choice -ne '3') {
+                            Write-Host "Invalid choice. Please enter 1, 2, or 3." -ForegroundColor Red
+                        }
+                    }
+
+                    if ($choice -eq '1') {
+                        Write-Host "Skipping rip - using existing files." -ForegroundColor Green
+                        Write-Log "All $totalTrackCount tracks valid - user chose to skip rip"
+                        $script:SkipRip = $true
+                    } elseif ($choice -eq '3') {
+                        Write-Host "Aborted by user." -ForegroundColor Yellow
+                        Enable-ConsoleClose
+                        exit 0
+                    } else {
+                        Write-Host "Re-ripping all tracks from scratch." -ForegroundColor Yellow
+                        Write-Log "User chose to re-rip all tracks"
+                    }
+                }
+            } elseif ($validTracks.Count -eq 0) {
+                # No valid tracks -- fall back to simple menu (nothing to resume from)
+                Write-Host "`nNo valid tracks found (0/$totalTrackCount)." -ForegroundColor Yellow
+                if ($invalidTracks.Count -gt 0) {
+                    Write-Host "  $($invalidTracks.Count) file(s) found but failed integrity check." -ForegroundColor Yellow
+                }
+
+                if ($script:IsProcessingQueue) {
+                    Write-Host "ProcessQueue mode: auto-continuing (full rip)..." -ForegroundColor Yellow
+                } else {
+                    Write-Host "`nChoose an option:" -ForegroundColor Cyan
+                    Write-Host "  [1] Continue (rip all tracks)" -ForegroundColor Yellow
+                    Write-Host "  [2] Abort" -ForegroundColor Yellow
+
+                    $choice = $null
+                    while ($choice -ne '1' -and $choice -ne '2') {
+                        $choice = Read-Host "Enter 1 or 2"
+                        if ($choice -ne '1' -and $choice -ne '2') {
+                            Write-Host "Invalid choice. Please enter 1 or 2." -ForegroundColor Red
+                        }
+                    }
+
+                    if ($choice -eq '2') {
+                        Write-Host "Aborted by user." -ForegroundColor Yellow
+                        Enable-ConsoleClose
+                        exit 0
+                    }
+                }
+                Write-Log "No valid tracks found - continuing with full rip"
+            } else {
+                # Partial rip -- offer resume
+                $validList = ($validTracks | ForEach-Object { $_.ToString() }) -join ", "
+                $missingList = ($missingTracks | ForEach-Object { $_.ToString() }) -join ", "
+                Write-Host "`nValid: $($validTracks.Count)/$totalTrackCount tracks ($validList)" -ForegroundColor Green
+                Write-Host "Missing: $($missingTracks.Count) tracks ($missingList)" -ForegroundColor Yellow
+                if ($invalidTracks.Count -gt 0) {
+                    $invalidList = ($invalidTracks | ForEach-Object { $_.ToString() }) -join ", "
+                    Write-Host "Invalid (will re-rip): $($invalidTracks.Count) tracks ($invalidList)" -ForegroundColor Yellow
+                    # Add invalid tracks to missing list for re-rip
+                    $missingTracks = @($missingTracks + $invalidTracks | Sort-Object -Unique)
+                    $missingList = ($missingTracks | ForEach-Object { $_.ToString() }) -join ", "
+                }
+
+                if ($script:IsProcessingQueue) {
+                    # Auto-resume in ProcessQueue mode
+                    Write-Host "ProcessQueue mode: auto-resuming (ripping tracks $missingList)..." -ForegroundColor Yellow
+                    $script:ResumeTrackList = ($missingTracks | ForEach-Object { $_.ToString() }) -join ","
+                    Write-Log "Auto-resuming: ripping tracks $missingList ($($missingTracks.Count) of $totalTrackCount)"
+                } else {
+                    Write-Host "`nChoose an option:" -ForegroundColor Cyan
+                    Write-Host "  [1] Resume (rip tracks $missingList only)" -ForegroundColor Yellow
+                    Write-Host "  [2] Re-rip all tracks from scratch" -ForegroundColor Yellow
+                    Write-Host "  [3] Abort" -ForegroundColor Yellow
+
+                    $choice = $null
+                    while ($choice -ne '1' -and $choice -ne '2' -and $choice -ne '3') {
+                        $choice = Read-Host "Enter 1, 2, or 3"
+                        if ($choice -ne '1' -and $choice -ne '2' -and $choice -ne '3') {
+                            Write-Host "Invalid choice. Please enter 1, 2, or 3." -ForegroundColor Red
+                        }
+                    }
+
+                    if ($choice -eq '1') {
+                        $script:ResumeTrackList = ($missingTracks | ForEach-Object { $_.ToString() }) -join ","
+                        Write-Host "Resuming: will rip tracks $missingList only." -ForegroundColor Green
+                        Write-Log "Resuming: ripping tracks $missingList ($($missingTracks.Count) of $totalTrackCount)"
+                    } elseif ($choice -eq '3') {
+                        Write-Host "Aborted by user." -ForegroundColor Yellow
+                        Enable-ConsoleClose
+                        exit 0
+                    } else {
+                        Write-Host "Re-ripping all tracks from scratch." -ForegroundColor Yellow
+                        Write-Log "User chose to re-rip all tracks"
+                    }
+                }
             }
+        } else {
+            # Could not determine track count -- fall back to original 2-option menu
+            if ($script:IsProcessingQueue) {
+                Write-Host "ProcessQueue mode: auto-continuing with existing directory..." -ForegroundColor Yellow
+            } else {
+                Write-Host "`nChoose an option:" -ForegroundColor Cyan
+                Write-Host "  [1] Continue (may overwrite existing files)" -ForegroundColor Yellow
+                Write-Host "  [2] Abort" -ForegroundColor Yellow
+
+                $choice = $null
+                while ($choice -ne '1' -and $choice -ne '2') {
+                    $choice = Read-Host "Enter 1 or 2"
+                    if ($choice -ne '1' -and $choice -ne '2') {
+                        Write-Host "Invalid choice. Please enter 1 or 2." -ForegroundColor Red
+                    }
+                }
+
+                if ($choice -eq '2') {
+                    Write-Host "Aborted by user." -ForegroundColor Yellow
+                    Enable-ConsoleClose
+                    exit 0
+                }
+            }
+            Write-Log "User chose to continue with existing directory"
         }
-        Write-Log "User chose to continue with existing directory"
     } else {
         Write-Host "Directory already exists (empty)" -ForegroundColor Gray
     }
@@ -863,6 +1071,11 @@ if (!(Test-Path $finalOutputDir)) {
 #   -d <dev>  : CD drive device (e.g., D:)
 #   MusicBrainz lookup is automatic
 
+if ($script:SkipRip) {
+    Write-Host "`nSkipping rip - all tracks already present." -ForegroundColor Green
+    Write-Log "STEP 1/4: Skipped (all tracks already valid)"
+    Complete-CurrentStep
+} else {
 # Test MusicBrainz API connectivity before starting
 # Note: The API (musicbrainz.org/ws/2/) is different from the website and requires User-Agent
 Write-Host "`nChecking MusicBrainz API connectivity..." -ForegroundColor Yellow
@@ -970,8 +1183,14 @@ if ($skipMusicBrainz) {
     $cyanripArgs += @("-N")
 }
 
+# Add -l flag for resume mode (rip only missing tracks)
+if ($script:ResumeTrackList) {
+    $cyanripArgs += @("-l", $script:ResumeTrackList)
+}
+
 $qualityFlag = if ($Quality -gt 0 -and $hasLossy) { " -b $Quality" } else { "" }
-$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$qualityFlag$(if ($skipMusicBrainz) { ' -N' })"
+$resumeFlag = if ($script:ResumeTrackList) { " -l $($script:ResumeTrackList)" } else { "" }
+$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$qualityFlag$(if ($skipMusicBrainz) { ' -N' })$resumeFlag"
 Write-Host "Working directory: $parentDir" -ForegroundColor Gray
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip working directory: $parentDir"
@@ -1433,6 +1652,8 @@ try {
     Write-Host "Could not eject disc automatically" -ForegroundColor Yellow
     Write-Log "WARNING: Could not eject disc: $_"
 }
+
+} # end if (-not $script:SkipRip)
 
 # ========== STEP 2: VERIFY OUTPUT ==========
 Set-CurrentStep -StepNumber 2

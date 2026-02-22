@@ -22,6 +22,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 - **Drive readiness checks** before operations
 - **Interactive prompts** for confirmation and conflict resolution
 - **Window title management** for tracking concurrent operations
+- **Resume interrupted rips** - detects completed tracks and offers to rip only missing ones
 - **Automatic disc ejection** after successful rip
 - **Console close protection** during rip to prevent accidental closure
 
@@ -235,6 +236,25 @@ After ripping, the script parses cyanrip's AccurateRip output and reports:
 
 Results are displayed in green (all verified) or yellow (partial), logged to the session log, and appended to the window title (`- AR PARTIAL` if not all tracks verified).
 
+## Resuming Interrupted Rips
+
+If cyanrip crashes mid-rip (e.g., access violation), re-running the script with the same parameters will detect the partial rip and offer to resume:
+
+1. The script checks existing audio files against the disc's total track count (from the `.cue` file or `cyanrip -I`)
+2. Each existing track is validated (FLAC: `metaflac --test`, others: file size > 10KB)
+3. A summary shows which tracks are valid and which are missing
+
+**3-option menu:**
+- **Resume** - rip only the missing/invalid tracks (passes `-l` to cyanrip)
+- **Re-rip** - rip all tracks from scratch
+- **Abort** - cancel
+
+**Edge cases:**
+- **All tracks valid** - offers to skip the rip entirely or re-rip
+- **No valid tracks** - falls back to the standard Continue/Abort menu
+- **Can't determine track count** (no cue file, disc query fails) - falls back to Continue/Abort
+- **Queue mode** - auto-resumes when missing tracks are detected
+
 ## MusicBrainz Release Selection
 
 When multiple MusicBrainz releases match a disc, the script prompts you to select the correct one:
@@ -302,6 +322,8 @@ This script uses [cyanrip](https://github.com/cyanreg/cyanrip), a feature-rich a
 - `-s` : Drive read offset (default: 0)
 - `-b` : Bitrate for lossy formats (kbps)
 - `-R` : Release selection index (for multiple MusicBrainz matches)
+- `-l` : Track list to rip (comma-separated, used for resume)
+- `-I` : Print disc info without ripping (used to detect track count)
 
 ## search-metadata.ps1
 
