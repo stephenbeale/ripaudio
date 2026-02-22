@@ -285,6 +285,46 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 - **Cover art**: Deezer (1000x1000) > iTunes (600x600) > Cover Art Archive
 - **Track titles**: MusicBrainz > Deezer
 
+## audit-metadata.ps1
+
+Scans album folders for missing or incomplete metadata and copies flagged albums to a staging directory for later processing with `search-metadata.ps1`.
+
+### Usage
+
+```
+.\audit-metadata.ps1 -Path <folder> [-OutputPath <folder>] [-ReportOnly]
+```
+
+### Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `-Path` | Yes | - | Root music folder to scan (e.g. `C:\Music`) |
+| `-OutputPath` | No | `C:\Music\needs-update` | Staging directory for flagged albums |
+| `-ReportOnly` | No | - | Print report and write CSV log without copying files |
+
+### Checks Performed
+
+1. **Track titles** — flags albums with `Unknown track`, `Track N`, or empty titles
+2. **Album-level tags** — flags if Artist, Album, Date, or Genre are missing across all tracks
+3. **Cover art** — flags if no `Front.*`, `Cover.*`, or `Folder.*` image exists
+
+### Examples
+
+```powershell
+# Report only — see what needs attention without copying
+.\audit-metadata.ps1 -Path "C:\Music" -ReportOnly
+
+# Copy flagged albums to default staging directory
+.\audit-metadata.ps1 -Path "C:\Music"
+
+# Copy to a custom staging directory
+.\audit-metadata.ps1 -Path "C:\Music" -OutputPath "D:\staging"
+
+# Then process the flagged albums with search-metadata
+.\search-metadata.ps1 -Path "C:\Music\needs-update" -Recurse
+```
+
 ## Related Projects
 
 - [ripdisc](https://github.com/stephenbeale/ripdisc) - DVD/Blu-ray ripping toolkit using MakeMKV and HandBrake

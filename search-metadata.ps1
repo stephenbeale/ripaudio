@@ -821,8 +821,24 @@ function Process-AlbumFolder {
         Write-Host "`n  [DRY RUN] No changes will be made." -ForegroundColor Cyan
     } elseif (-not $ForceMode) {
         Write-Host ""
-        $confirm = Read-Host "  Apply these changes? [Y/n]"
-        if ($confirm -and $confirm.ToUpper() -ne "Y") {
+        Write-Host "  Apply these changes? [Y/n] (auto-Yes in 30s) " -NoNewline -ForegroundColor White
+        $confirm = $null
+        $timeout = 30
+        $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($stopwatch.Elapsed.TotalSeconds -lt $timeout) {
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                $confirm = $key.KeyChar
+                Write-Host $confirm
+                break
+            }
+            Start-Sleep -Milliseconds 200
+        }
+        $stopwatch.Stop()
+        if ($null -eq $confirm) {
+            Write-Host "Y (auto)" -ForegroundColor Gray
+        }
+        if ($confirm -and "$confirm".ToUpper() -eq "N") {
             Write-Host "`n  Cancelled by user." -ForegroundColor Yellow
             Write-Log "User cancelled"
             $albumResult.Artist = $merged.Artist
