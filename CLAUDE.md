@@ -464,3 +464,41 @@ These branches have no commits ahead of master and were pruned from local tracki
 2. Test pressing N at first prompt (should stop after audit results) and N at second prompt (should copy but not process)
 3. Test `-ReportOnly` still works as before (no prompts, no copy, no processing)
 4. Consider end-to-end testing of `rip-audio.ps1` with a real disc to validate AccurateRip regex parsing against live cyanrip output
+
+---
+
+### 2026-02-22 - Auto-Discover Disc Metadata + Streaming cyanrip Output
+
+**Work Completed:**
+
+- PR #56 merged: `feature/auto-discover-metadata` — auto-discover disc metadata before ripping and stream all cyanrip output in real time
+  - New `Get-DiscMetadata` function: runs cyanrip in discovery mode (`-M` flag) before any directory is created, captures stdout/stderr via StreamReader threads, extracts artist, album, release ID, track count, and the `-R <n>` release index flag for multi-release discs
+  - `-album` parameter made optional (was previously mandatory) — album name is now populated from MusicBrainz metadata during the discovery phase
+  - Directory creation moved after discovery so the output folder name reflects the actual album title from MusicBrainz
+  - `-R` flag from discovery automatically passed through to all subsequent cyanrip invocations (single-format, multi-format, resume-mode) so the same release is used throughout
+  - All 6 cyanrip invocations (initial rip, resume-mode continuation, plus all format variants of both) converted from `Start-Process -Wait` to real-time streaming via `StreamReader` background threads — live output displayed in the console as cyanrip runs
+  - `Get-DiscTrackCount` fixed: now correctly handles multi-release discs by extracting track count from the selected release (the one at index `-R <n>`) rather than always using release index 0
+  - README.md updated: `-album` marked as optional, `Get-DiscMetadata` discovery phase documented, `-R` flag passthrough noted, streaming output behaviour noted
+  - Roadmap.md updated: auto-discover disc metadata marked as completed
+
+**Technical Notes:**
+- Discovery mode uses `cyanrip -M` (metadata-only, no rip) with the drive and offset parameters
+- StreamReader threads (`BeginRead`/async pattern not used — two `System.Threading.Thread` objects reading stdout and stderr to thread-safe `System.Collections.Concurrent.ConcurrentQueue[string]`) collect output while the main thread drains and prints the queue
+- Artist/album extracted from `Artist: ...` / `Title: ...` lines in cyanrip discovery output; release ID from `Release: ...` line; `-R <n>` from `Selecting release <n>` line
+- Track count fix: `Get-DiscTrackCount` now skips forward `$releaseIndex` release blocks (each starting with `Release N:`) before counting tracks in the target block
+- If discovery finds no MusicBrainz match, the script falls back to requiring `-album` from the caller (unchanged behaviour)
+
+**PRs Merged This Session:**
+- PR #56 - `feat(rip): auto-discover disc metadata + stream cyanrip output`
+
+**Session Verified Clean:**
+- Branch `feature/auto-discover-metadata` merged and deleted (local and remote)
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+
+**Priority for Next Session:**
+1. Test full auto-discover workflow with a real disc: run `.\rip-audio.ps1` without `-album` and verify that the folder is created with the MusicBrainz album name, the correct `-R` index is passed through, and track count is accurate
+2. Test with a disc that has multiple MusicBrainz releases to validate the `-R` passthrough and track count fix
+3. Test resume mode with a real disc to confirm the `-R` flag is preserved in the resumed rip
+4. Continue the audit-metadata.ps1 end-to-end pipeline testing noted from the previous session
