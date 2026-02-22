@@ -21,7 +21,10 @@ param(
     [switch]$Recurse,
 
     [Parameter()]
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    [Parameter()]
+    [switch]$EmbedOnly
 )
 
 # ========== STEP TRACKING ==========
@@ -719,7 +722,8 @@ function Process-AlbumFolder {
         [switch]$SkipRenameMode,
         [switch]$SkipCoverArtMode,
         [switch]$BatchMode,
-        [switch]$DryRunMode
+        [switch]$DryRunMode,
+        [switch]$EmbedOnlyMode
     )
 
     # Reset step tracking for each album
@@ -732,7 +736,27 @@ function Process-AlbumFolder {
         Status = "failed"  # default, updated on success
         TagCount = 0
         RenameCount = 0
+        EmbedCount = 0
         Error = ""
+    }
+
+    # Override step tracking for EmbedOnly mode, or restore defaults
+    if ($EmbedOnlyMode) {
+        $script:AllSteps = @(
+            @{ Number = 1; Name = "Scan files"; Description = "Read existing tags and identify files" }
+            @{ Number = 2; Name = "Cover art"; Description = "Find or download cover art and embed into FLAC files" }
+        )
+        $script:TotalSteps = 2
+    } else {
+        $script:AllSteps = @(
+            @{ Number = 1; Name = "Scan files"; Description = "Read existing tags and identify gaps" }
+            @{ Number = 2; Name = "Search metadata"; Description = "Query MusicBrainz, iTunes, Deezer" }
+            @{ Number = 3; Name = "Confirm changes"; Description = "Show comparison and get approval" }
+            @{ Number = 4; Name = "Apply tags"; Description = "Write metadata to audio files" }
+            @{ Number = 5; Name = "Cover art"; Description = "Download album cover art" }
+            @{ Number = 6; Name = "Rename files"; Description = "Rename files to standard format" }
+        )
+        $script:TotalSteps = 6
     }
 
     $folderArtist = $ArtistHint
@@ -786,21 +810,94 @@ function Process-AlbumFolder {
         }
     }
 
-    Write-Host "  Searching for: `"$folderAlbum`"" -ForegroundColor White
-    if ($folderArtist) { Write-Host "  by: `"$folderArtist`"" -ForegroundColor White }
+    if (-not $EmbedOnlyMode) {
+        Write-Host "  Searching for: `"$folderAlbum`"" -ForegroundColor White
+        if ($folderArtist) { Write-Host "  by: `"$folderArtist`"" -ForegroundColor White }
+    }
 
-    # Check for gaps
+    # Check for gaps (skip display in EmbedOnly mode since we're not touching tags)
     $gapCount = 0
     foreach ($track in $existingTracks) {
         if (-not $track.Title -or $track.Title -match '^Track \d+$') { $gapCount++ }
     }
-    if ($gapCount -gt 0) {
+    if ($gapCount -gt 0 -and -not $EmbedOnlyMode) {
         Write-Host "  Tracks with missing/generic titles: $gapCount" -ForegroundColor Yellow
     }
 
     Write-Log "  Artist: $folderArtist, Album: $folderAlbum, Tracks: $($existingTracks.Count), Gaps: $gapCount"
 
     Complete-CurrentStep
+
+    # ========== EMBED ONLY MODE ==========
+    if ($EmbedOnlyMode) {
+        Set-CurrentStep -StepNumber 2
+        Write-Host "`n[STEP 2/$script:TotalSteps] Cover art..." -ForegroundColor Green
+        Write-Log "STEP 2/$($script:TotalSteps): Cover art (embed only)"
+
+        # Check for existing art files
+        $existingArt = Get-ChildItem -Path $FolderPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+        $imageFile = $null
+
+        if ($existingArt) {
+            $imageFile = $existingArt[0].FullName
+            Write-Host "    Found: $($existingArt[0].Name)" -ForegroundColor Gray
+            Write-Log "  Found existing art: $($existingArt[0].Name)"
+        } else {
+            # No art on disk — search metadata sources for artwork URL, then download
+            Write-Host "    No cover art on disk, searching online..." -ForegroundColor Yellow
+            Write-Log "  No cover art on disk, searching online"
+
+            $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+
+            if ($merged -and $merged.ArtworkUrl) {
+                if ($DryRunMode) {
+                    Write-Host "    [DRY RUN] Would download cover art from $($merged.ArtworkSource)" -ForegroundColor Cyan
+                    Write-Log "  [DRY RUN] Would download cover art from $($merged.ArtworkSource)"
+                } else {
+                    $artFile = Get-CoverArt -ArtworkUrl $merged.ArtworkUrl -ArtworkSource $merged.ArtworkSource `
+                        -OutputPath $FolderPath -ReleaseId $merged.ReleaseId
+                    if ($artFile) { $imageFile = $artFile }
+                }
+            } else {
+                Write-Host "    No cover art found from any source" -ForegroundColor Yellow
+                Write-Log "  No cover art found from any source"
+            }
+        }
+
+        # Embed into FLAC files
+        if ($DryRunMode) {
+            if ($imageFile -or ($existingArt)) {
+                $artName = if ($imageFile) { Split-Path -Leaf $imageFile } else { $existingArt[0].Name }
+                Write-Host "    [DRY RUN] Would embed $artName in $($existingTracks.Count) file(s)" -ForegroundColor Cyan
+                Write-Log "  [DRY RUN] Would embed cover art in $($existingTracks.Count) files"
+                $albumResult.EmbedCount = $existingTracks.Count
+            } else {
+                Write-Host "    [DRY RUN] No cover art available to embed" -ForegroundColor Cyan
+                Write-Log "  [DRY RUN] No cover art available"
+            }
+        } elseif ($imageFile) {
+            $embedCount = 0
+            foreach ($track in $existingTracks) {
+                if (Set-CoverArt -FilePath $track.File.FullName -ImagePath $imageFile) {
+                    $embedCount++
+                }
+            }
+            Write-Host "    Embedded cover art in $embedCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
+            Write-Log "  Embedded cover art in $embedCount files"
+            $albumResult.EmbedCount = $embedCount
+        } else {
+            Write-Host "    No cover art available to embed" -ForegroundColor Yellow
+            Write-Log "  No cover art available to embed"
+        }
+
+        Complete-CurrentStep
+
+        $albumResult.Artist = $folderArtist
+        $albumResult.Album = $folderAlbum
+        $albumResult.Status = "success"
+
+        return $albumResult
+    }
 
     # ========== STEP 2: SEARCH METADATA ==========
     Set-CurrentStep -StepNumber 2
@@ -1038,8 +1135,9 @@ function Process-AlbumFolder {
 # Load System.Web for URL encoding
 Add-Type -AssemblyName System.Web
 
+$bannerText = if ($EmbedOnly) { "Embed Cover Art" } else { "Search & Apply Audio Metadata" }
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "Search & Apply Audio Metadata" -ForegroundColor Cyan
+Write-Host $bannerText -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Validate path
@@ -1068,6 +1166,7 @@ Write-Log "SkipCoverArt: $SkipCoverArt"
 Write-Log "Force: $Force"
 Write-Log "Recurse: $Recurse"
 Write-Log "DryRun: $DryRun"
+Write-Log "EmbedOnly: $EmbedOnly"
 
 # Window title
 $host.UI.RawUI.WindowTitle = "search-metadata - $Path"
@@ -1118,7 +1217,7 @@ if ($Recurse) {
         try {
             $result = Process-AlbumFolder -FolderPath $folder `
                 -ForceMode:$true -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
-                -BatchMode -DryRunMode:$DryRun
+                -BatchMode -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly
 
             $batchResults += $result
 
@@ -1139,6 +1238,7 @@ if ($Recurse) {
                 Status = "failed"
                 TagCount = 0
                 RenameCount = 0
+                EmbedCount = 0
                 Error = "$_"
             }
         }
@@ -1150,6 +1250,7 @@ if ($Recurse) {
     $skippedCount = ($batchResults | Where-Object { $_.Status -eq "skipped" }).Count
     $totalTagged = ($batchResults | ForEach-Object { $_.TagCount } | Measure-Object -Sum).Sum
     $totalRenamed = ($batchResults | ForEach-Object { $_.RenameCount } | Measure-Object -Sum).Sum
+    $totalEmbedded = ($batchResults | ForEach-Object { $_.EmbedCount } | Measure-Object -Sum).Sum
 
     $dryRunLabel = if ($DryRun) { "[DRY RUN] " } else { "" }
 
@@ -1166,9 +1267,13 @@ if ($Recurse) {
     if ($skippedCount -gt 0) {
         Write-Host "  Skipped: $skippedCount" -ForegroundColor Yellow
     }
-    Write-Host "  Total files tagged: $totalTagged" -ForegroundColor White
-    if (-not $SkipRename) {
-        Write-Host "  Total files renamed: $totalRenamed" -ForegroundColor White
+    if ($EmbedOnly) {
+        Write-Host "  Total files embedded: $totalEmbedded" -ForegroundColor White
+    } else {
+        Write-Host "  Total files tagged: $totalTagged" -ForegroundColor White
+        if (-not $SkipRename) {
+            Write-Host "  Total files renamed: $totalRenamed" -ForegroundColor White
+        }
     }
 
     # Per-album breakdown
@@ -1194,14 +1299,18 @@ if ($Recurse) {
 
     Write-Log "========== BATCH COMPLETE =========="
     Write-Log "Albums: $($albumFolders.Count), Success: $successCount, Failed: $failedCount, Skipped: $skippedCount"
-    Write-Log "Total tagged: $totalTagged, Total renamed: $totalRenamed"
+    if ($EmbedOnly) {
+        Write-Log "Total embedded: $totalEmbedded"
+    } else {
+        Write-Log "Total tagged: $totalTagged, Total renamed: $totalRenamed"
+    }
 
 } else {
     # ========== SINGLE FOLDER MODE ==========
     $result = Process-AlbumFolder -FolderPath $Path `
         -ArtistHint $Artist -AlbumHint $Album `
         -ForceMode:$Force -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
-        -DryRunMode:$DryRun
+        -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly
 
     # ========== SUMMARY ==========
     $dryRunLabel = if ($DryRun) { "[DRY RUN] " } else { "" }
@@ -1213,9 +1322,13 @@ if ($Recurse) {
     Write-Host "`n--- ${dryRunLabel}SUMMARY ---" -ForegroundColor Cyan
     Write-Host "  Album: $($result.Album)" -ForegroundColor White
     Write-Host "  Artist: $($result.Artist)" -ForegroundColor White
-    Write-Host "  Files tagged: $($result.TagCount)" -ForegroundColor White
-    if (-not $SkipRename) {
-        Write-Host "  Files renamed: $($result.RenameCount)" -ForegroundColor White
+    if ($EmbedOnly) {
+        Write-Host "  Files embedded: $($result.EmbedCount)" -ForegroundColor White
+    } else {
+        Write-Host "  Files tagged: $($result.TagCount)" -ForegroundColor White
+        if (-not $SkipRename) {
+            Write-Host "  Files renamed: $($result.RenameCount)" -ForegroundColor White
+        }
     }
     Write-Host "  Path: $Path" -ForegroundColor White
     Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
@@ -1228,8 +1341,12 @@ if ($Recurse) {
 
     Write-Log "========== SESSION COMPLETE =========="
     Write-Log "Album: $($result.Album) by $($result.Artist)"
-    Write-Log "Files tagged: $($result.TagCount)"
-    if (-not $SkipRename) { Write-Log "Files renamed: $($result.RenameCount)" }
+    if ($EmbedOnly) {
+        Write-Log "Files embedded: $($result.EmbedCount)"
+    } else {
+        Write-Log "Files tagged: $($result.TagCount)"
+        if (-not $SkipRename) { Write-Log "Files renamed: $($result.RenameCount)" }
+    }
 
     # Open the folder in Explorer
     Invoke-Item $Path

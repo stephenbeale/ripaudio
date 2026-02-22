@@ -19,3 +19,4 @@
 - [x] Rename confirmation timeout - search-metadata.ps1 confirmation prompt auto-proceeds after 30 seconds with no input
 - [x] Combined audit + fix pipeline - audit-metadata.ps1 now runs a 4-step pipeline (discover, audit, copy, process) with continue/exit prompts between stages
 - [x] Embed cover art into FLAC files - search-metadata.ps1 Step 5 now embeds downloaded/existing cover art into FLAC metadata using metaflac --import-picture-from
+- [x] Embed-only mode - `-EmbedOnly` flag runs a reduced 2-step workflow (scan + cover art) to embed existing or downloaded artwork without metadata search, tagging, or renaming

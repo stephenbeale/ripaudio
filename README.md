@@ -225,7 +225,7 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 ### Usage
 
 ```
-.\search-metadata.ps1 -Path <folder> [-Artist <string>] [-Album <string>] [-SkipRename] [-SkipCoverArt] [-Force] [-Recurse] [-DryRun]
+.\search-metadata.ps1 -Path <folder> [-Artist <string>] [-Album <string>] [-SkipRename] [-SkipCoverArt] [-Force] [-Recurse] [-DryRun] [-EmbedOnly]
 ```
 
 ### Parameters
@@ -240,6 +240,7 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 | `-Force` | No | - | Skip confirmation prompt (implied with `-Recurse`) |
 | `-Recurse` | No | - | Process all subdirectories containing FLAC files |
 | `-DryRun` | No | - | Preview all changes without writing to disk |
+| `-EmbedOnly` | No | - | Only embed cover art into FLAC files (skip metadata search, tagging, renaming) |
 
 ### Examples
 
@@ -267,6 +268,15 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 
 # Dry run across all album folders
 .\search-metadata.ps1 -Path "C:\Music" -Recurse -DryRun
+
+# Embed existing cover art into FLAC files (skip metadata search/tagging/renaming)
+.\search-metadata.ps1 -Path "C:\Music\Tracy Chapman\Tracy Chapman" -EmbedOnly
+
+# Embed art across entire library
+.\search-metadata.ps1 -Path "C:\Music" -Recurse -EmbedOnly
+
+# Dry run — see what would be embedded
+.\search-metadata.ps1 -Path "C:\Music\Tracy Chapman\Tracy Chapman" -EmbedOnly -DryRun
 ```
 
 ### 6-Step Workflow
