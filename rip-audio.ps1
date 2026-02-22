@@ -133,9 +133,11 @@ function Get-DiscTrackCount {
     $cueFile = Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cueFile) {
         $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
-        $trackMatches = [regex]::Matches($cueContent, 'TRACK (\d+) AUDIO')
-        if ($trackMatches.Count -gt 0) {
-            return $trackMatches.Count
+        if ($cueContent) {
+            $trackMatches = [regex]::Matches($cueContent, 'TRACK (\d+) AUDIO')
+            if ($trackMatches.Count -gt 0) {
+                return $trackMatches.Count
+            }
         }
     }
     # Fallback: query disc (may fail if multiple releases)
