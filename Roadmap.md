@@ -21,3 +21,5 @@
 - [x] Embed cover art into FLAC files - search-metadata.ps1 Step 5 now embeds downloaded/existing cover art into FLAC metadata using metaflac --import-picture-from
 - [x] Embed-only mode - `-EmbedOnly` flag runs a reduced 2-step workflow (scan + cover art) to embed existing or downloaded artwork without metadata search, tagging, or renaming
 - [x] Resume interrupted rips - detects completed tracks via cue file/disc query, validates integrity (metaflac --test / file size), offers 3-option menu (Resume/Re-rip/Abort), passes `-l` to cyanrip for selective track ripping
+- [x] Auto-discover disc metadata - `-album` now optional; queries disc ID via `cyanrip -I`, looks up MusicBrainz API for artist/album/disc position, handles multi-disc albums (appends "Disc N"), prompts on failure
+- [x] Real-time cyanrip output - streams cyanrip stdout/stderr to console during rip instead of buffering until completion

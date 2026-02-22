@@ -8,6 +8,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 
 ## Features
 
+- **Auto-discovery** of album and artist from disc via MusicBrainz API (no arguments needed)
 - **Automated ripping** using cyanrip with MusicBrainz integration
 - **4-step processing workflow** with progress tracking (rip, verify, cover art, open)
 - **Multiple output formats** (FLAC, MP3, Opus, AAC, WAV, ALAC) with simultaneous encoding
@@ -22,6 +23,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 - **Drive readiness checks** before operations
 - **Interactive prompts** for confirmation and conflict resolution
 - **Window title management** for tracking concurrent operations
+- **Real-time output** from cyanrip (streamed to console during rip, not buffered)
 - **Resume interrupted rips** - detects completed tracks and offers to rip only missing ones
 - **Automatic disc ejection** after successful rip
 - **Console close protection** during rip to prevent accidental closure
@@ -29,7 +31,10 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 ## Quick Start
 
 ```powershell
-# Rip an album (will use MusicBrainz for metadata)
+# Insert disc and rip — album and artist auto-detected from MusicBrainz
+.\rip-audio.ps1
+
+# Override with specific album name
 .\rip-audio.ps1 -album "Abbey Road"
 
 # Rip with artist specified
@@ -59,14 +64,14 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 ## Usage
 
 ```
-.\rip-audio.ps1 -album <string> [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue]
+.\rip-audio.ps1 [-album <string>] [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue]
 ```
 
 ### Parameters
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `-album` | Yes* | - | Album name (*not required with `-ProcessQueue`) |
+| `-album` | No | - | Album name (auto-detected from disc if omitted) |
 | `-artist` | No | - | Artist name (affects output directory structure) |
 | `-Drive` | No | D: | CD drive letter |
 | `-OutputDrive` | No | E: | Output drive letter |
@@ -77,6 +82,12 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 | `-ProcessQueue` | No | - | Process all entries in the rip queue sequentially |
 
 ### Examples
+
+**Rip a CD with auto-discovery (no arguments needed):**
+```powershell
+.\rip-audio.ps1
+# Queries disc, detects artist/album from MusicBrainz, prompts if multiple releases found
+```
 
 **Rip a CD to FLAC (default):**
 ```powershell
@@ -135,10 +146,12 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 
 **Rip a double album (one disc at a time):**
 ```powershell
-# Disc 1
-.\rip-audio.ps1 -album "Mothership Disc 1" -artist "Led Zeppelin" -Drive G:
+# With auto-discovery — disc number detected automatically
+.\rip-audio.ps1 -Drive G:
+# Detects: Led Zeppelin - Mothership Disc 1
 
-# Disc 2
+# Or override manually:
+.\rip-audio.ps1 -album "Mothership Disc 1" -artist "Led Zeppelin" -Drive G:
 .\rip-audio.ps1 -album "Mothership Disc 2" -artist "Led Zeppelin" -Drive G:
 ```
 
@@ -200,6 +213,21 @@ Queue mode lets you line up multiple albums for sequential ripping. The queue is
   - Press **S** to skip an entry, **Q** to quit the queue
   - Interactive prompts (MusicBrainz unreachable, existing directory, multiple releases) auto-continue in queue mode
   - Shows aggregate summary at the end (processed, failed, skipped counts)
+
+## Auto-Discovery
+
+When `-album` is omitted, the script automatically detects disc metadata before ripping:
+
+1. Queries the disc with `cyanrip -I` to get the disc ID
+2. If multiple MusicBrainz releases match, prompts you to select one
+3. Queries the MusicBrainz API for artist, album title, and disc position
+4. For multi-disc albums (e.g. "Mothership"), appends `Disc N` to the album name
+5. Displays: `Detected: Led Zeppelin - Mothership Disc 1`
+6. If discovery fails (API unreachable, no match), prompts for album name manually
+
+Discovery is skipped when:
+- `-album` is provided (user override)
+- `-ProcessQueue` mode (album/artist come from queue entry)
 
 ## Metadata Fallback Chain
 
@@ -272,7 +300,7 @@ Enter release number (1-5): _
 
 This ensures proper track names, album art, and metadata for your specific release (region, pressing date, etc.).
 
-**Double albums:** For multi-disc sets, cyanrip identifies which disc is in the drive from the disc's table of contents. Select the same release for both discs -- cyanrip will match the correct disc automatically. Use different `-album` values for each disc to create separate output folders (e.g. `"Mothership Disc 1"`, `"Mothership Disc 2"`). In queue mode, release 1 is auto-selected.
+**Double albums:** For multi-disc sets, auto-discovery detects the disc position and appends `Disc N` to the album name automatically (e.g. "Mothership Disc 1", "Mothership Disc 2"). If providing `-album` manually, use different values for each disc to create separate output folders. In queue mode, release 1 is auto-selected.
 
 ## Logging
 
