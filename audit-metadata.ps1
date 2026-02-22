@@ -238,7 +238,7 @@ foreach ($folder in $albumFolders) {
         Write-Host "  [OK] $relPath ($($tracks.Count) tracks)" -ForegroundColor Green
     }
 
-    Write-Log "$relPath: $(if ($needsUpdate) { 'FLAGGED' } else { 'OK' }) - $($issues -join ', ')"
+    Write-Log "${relPath}: $(if ($needsUpdate) { 'FLAGGED' } else { 'OK' }) - $($issues -join ', ')"
 }
 
 # ========== STEP 3: COPY OR REPORT ==========
