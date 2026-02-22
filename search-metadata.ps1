@@ -599,16 +599,11 @@ function Set-CoverArt {
     $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
     if (-not $metaflacPath) { return $false }
 
-    $mimeType = switch ([System.IO.Path]::GetExtension($ImagePath).ToLower()) {
-        ".jpg"  { "image/jpeg" }
-        ".jpeg" { "image/jpeg" }
-        ".png"  { "image/png" }
-        default { "image/jpeg" }
-    }
-
     # Remove existing pictures first, then import
+    # Use just the filename — type defaults to 3 (Front Cover), MIME auto-detected
+    # Avoids specification format (TYPE|MIME|DESC|WxH|FILE) which mis-parses Windows backslash paths
     & metaflac --remove --block-type=PICTURE $FilePath 2>$null
-    & metaflac "--import-picture-from=3|$mimeType|Front Cover||$ImagePath" $FilePath 2>$null
+    & metaflac "--import-picture-from=$ImagePath" $FilePath 2>$null
     return $LASTEXITCODE -eq 0
 }
 
@@ -849,7 +844,20 @@ function Process-AlbumFolder {
 
             $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
 
+            # Validate artist match before downloading — no confirmation step in EmbedOnly mode
+            $artworkValid = $false
             if ($merged -and $merged.ArtworkUrl) {
+                $foundArtist = $merged.Artist
+                if ($folderArtist -and $foundArtist -and
+                    $foundArtist -notlike "*$folderArtist*" -and $folderArtist -notlike "*$foundArtist*") {
+                    Write-Host "    Search returned `"$foundArtist`" — doesn't match `"$folderArtist`", skipping" -ForegroundColor Yellow
+                    Write-Log "  Artist mismatch: expected `"$folderArtist`", got `"$foundArtist`" — skipping artwork download"
+                } else {
+                    $artworkValid = $true
+                }
+            }
+
+            if ($artworkValid) {
                 if ($DryRunMode) {
                     Write-Host "    [DRY RUN] Would download cover art from $($merged.ArtworkSource)" -ForegroundColor Cyan
                     Write-Log "  [DRY RUN] Would download cover art from $($merged.ArtworkSource)"
