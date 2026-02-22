@@ -844,42 +844,55 @@ function Process-AlbumFolder {
 
             $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
 
-            # Always confirm before downloading -- search results may be wrong
-            # (same album name could be a different film/release, various artists, etc.)
+            # Check if search result matches -- auto-proceed on match, prompt on mismatch
             $artworkValid = $false
             if ($merged -and $merged.ArtworkUrl) {
                 $foundArtist = $merged.Artist
                 $foundAlbum = $merged.Album
-                Write-Host "    No exact match. Best result: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Yellow
-                if ($BatchMode) {
-                    Write-Host "    Skipping -- cannot confirm in batch mode" -ForegroundColor Yellow
-                    Write-Log "  No exact match. Best result: `"$foundAlbum`" by `"$foundArtist`" -- auto-skipped (batch)"
-                } elseif ($DryRunMode) {
-                    Write-Host "    [DRY RUN] Would prompt to confirm" -ForegroundColor Cyan
+
+                # Case-insensitive partial match on both artist and album
+                $artistOk = (-not $folderArtist) -or (-not $foundArtist) -or
+                    ($foundArtist -like "*$folderArtist*") -or ($folderArtist -like "*$foundArtist*")
+                $albumOk = (-not $folderAlbum) -or (-not $foundAlbum) -or
+                    ($foundAlbum -like "*$folderAlbum*") -or ($folderAlbum -like "*$foundAlbum*")
+
+                if ($artistOk -and $albumOk) {
+                    # Good match -- auto-proceed
+                    Write-Host "    Matched: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Green
+                    Write-Log "  Matched: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))"
                     $artworkValid = $true
                 } else {
-                    Write-Host "    Use this artwork? [y/N] (auto-No in 30s) " -NoNewline -ForegroundColor White
-                    $artConfirm = $null
-                    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                    while ($sw.Elapsed.TotalSeconds -lt 30) {
-                        if ([Console]::KeyAvailable) {
-                            $artKey = [Console]::ReadKey($true)
-                            $artConfirm = $artKey.KeyChar
-                            Write-Host $artConfirm
-                            break
-                        }
-                        Start-Sleep -Milliseconds 200
-                    }
-                    $sw.Stop()
-                    if ($null -eq $artConfirm) {
-                        Write-Host "N (auto)" -ForegroundColor Gray
-                    }
-                    if ($artConfirm -and "$artConfirm".ToUpper() -eq "Y") {
-                        $artworkValid = $true
-                        Write-Log "  User approved artwork: `"$foundAlbum`" by `"$foundArtist`""
+                    # Mismatch -- prompt in single mode, skip in batch mode
+                    Write-Host "    No exact match. Best result: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Yellow
+                    if ($BatchMode) {
+                        Write-Host "    Skipping -- cannot confirm in batch mode" -ForegroundColor Yellow
+                        Write-Log "  No match: expected `"$folderAlbum`" by `"$folderArtist`", got `"$foundAlbum`" by `"$foundArtist`" -- auto-skipped (batch)"
+                    } elseif ($DryRunMode) {
+                        Write-Host "    [DRY RUN] Would prompt to confirm" -ForegroundColor Cyan
                     } else {
-                        Write-Host "    Skipped" -ForegroundColor Yellow
-                        Write-Log "  Found `"$foundAlbum`" by `"$foundArtist`" -- user skipped"
+                        Write-Host "    Use this artwork? [y/N] (auto-No in 30s) " -NoNewline -ForegroundColor White
+                        $artConfirm = $null
+                        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                        while ($sw.Elapsed.TotalSeconds -lt 30) {
+                            if ([Console]::KeyAvailable) {
+                                $artKey = [Console]::ReadKey($true)
+                                $artConfirm = $artKey.KeyChar
+                                Write-Host $artConfirm
+                                break
+                            }
+                            Start-Sleep -Milliseconds 200
+                        }
+                        $sw.Stop()
+                        if ($null -eq $artConfirm) {
+                            Write-Host "N (auto)" -ForegroundColor Gray
+                        }
+                        if ($artConfirm -and "$artConfirm".ToUpper() -eq "Y") {
+                            $artworkValid = $true
+                            Write-Log "  User approved artwork: `"$foundAlbum`" by `"$foundArtist`""
+                        } else {
+                            Write-Host "    Skipped" -ForegroundColor Yellow
+                            Write-Log "  No match: `"$foundAlbum`" by `"$foundArtist`" -- user skipped"
+                        }
                     }
                 }
             }
