@@ -600,7 +600,7 @@ function Set-CoverArt {
     if (-not $metaflacPath) { return $false }
 
     # Remove existing pictures first, then import
-    # Use just the filename — type defaults to 3 (Front Cover), MIME auto-detected
+    # Use just the filename -- type defaults to 3 (Front Cover), MIME auto-detected
     # Avoids specification format (TYPE|MIME|DESC|WxH|FILE) which mis-parses Windows backslash paths
     & metaflac --remove --block-type=PICTURE $FilePath 2>$null
     & metaflac "--import-picture-from=$ImagePath" $FilePath 2>$null
@@ -838,20 +838,20 @@ function Process-AlbumFolder {
             Write-Host "    Found: $($existingArt[0].Name)" -ForegroundColor Gray
             Write-Log "  Found existing art: $($existingArt[0].Name)"
         } else {
-            # No art on disk — search metadata sources for artwork URL, then download
+            # No art on disk -- search metadata sources for artwork URL, then download
             Write-Host "    No cover art on disk, searching online..." -ForegroundColor Yellow
             Write-Log "  No cover art on disk, searching online"
 
             $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
 
-            # Validate artist match before downloading — no confirmation step in EmbedOnly mode
+            # Validate artist match before downloading -- no confirmation step in EmbedOnly mode
             $artworkValid = $false
             if ($merged -and $merged.ArtworkUrl) {
                 $foundArtist = $merged.Artist
                 if ($folderArtist -and $foundArtist -and
                     $foundArtist -notlike "*$folderArtist*" -and $folderArtist -notlike "*$foundArtist*") {
-                    Write-Host "    Search returned `"$foundArtist`" — doesn't match `"$folderArtist`", skipping" -ForegroundColor Yellow
-                    Write-Log "  Artist mismatch: expected `"$folderArtist`", got `"$foundArtist`" — skipping artwork download"
+                    Write-Host "    Search returned `"$foundArtist`" -- doesn't match `"$folderArtist`", skipping" -ForegroundColor Yellow
+                    Write-Log "  Artist mismatch: expected `"$folderArtist`", got `"$foundArtist`" -- skipping artwork download"
                 } else {
                     $artworkValid = $true
                 }
@@ -875,7 +875,7 @@ function Process-AlbumFolder {
         # Embed into FLAC files
         if ($DryRunMode) {
             if ($imageFile -or ($existingArt)) {
-                $artName = if ($imageFile) { Split-Path -Leaf $imageFile } else { $existingArt[0].Name }
+                if ($imageFile) { $artName = Split-Path -Leaf $imageFile } else { $artName = $existingArt[0].Name }
                 Write-Host "    [DRY RUN] Would embed $artName in $($existingTracks.Count) file(s)" -ForegroundColor Cyan
                 Write-Log "  [DRY RUN] Would embed cover art in $($existingTracks.Count) files"
                 $albumResult.EmbedCount = $existingTracks.Count
@@ -1143,7 +1143,11 @@ function Process-AlbumFolder {
 # Load System.Web for URL encoding
 Add-Type -AssemblyName System.Web
 
-$bannerText = if ($EmbedOnly) { "Embed Cover Art" } else { "Search & Apply Audio Metadata" }
+if ($EmbedOnly) {
+    $bannerText = "Embed Cover Art"
+} else {
+    $bannerText = "Search & Apply Audio Metadata"
+}
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host $bannerText -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
