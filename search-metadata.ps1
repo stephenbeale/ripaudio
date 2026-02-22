@@ -467,8 +467,8 @@ function Show-MetadataComparison {
     $currentGenre = ($ExistingTracks | Where-Object { $_.Genre } | Select-Object -First 1).Genre
 
     Write-Host "`n  --- Album Metadata ---" -ForegroundColor Cyan
-    Write-Host "  {0,-15} {1,-35} {2,-35}" -f "Field", "Current", "Proposed" -ForegroundColor White
-    Write-Host "  {0,-15} {1,-35} {2,-35}" -f "-----", "-------", "--------" -ForegroundColor Gray
+    Write-Host ("  {0,-15} {1,-35} {2,-35}" -f "Field", "Current", "Proposed") -ForegroundColor White
+    Write-Host ("  {0,-15} {1,-35} {2,-35}" -f "-----", "-------", "--------") -ForegroundColor Gray
 
     $fields = @(
         @{ Name = "Artist"; Current = $currentArtist; New = $Proposed.Artist }
@@ -481,13 +481,13 @@ function Show-MetadataComparison {
         $cur = if ($field.Current) { $field.Current } else { "(empty)" }
         $new = if ($field.New) { $field.New } else { "(empty)" }
         $color = if ($cur -ne $new -and $field.New) { "Yellow" } else { "Gray" }
-        Write-Host "  {0,-15} {1,-35} {2,-35}" -f $field.Name, $cur, $new -ForegroundColor $color
+        Write-Host ("  {0,-15} {1,-35} {2,-35}" -f $field.Name, $cur, $new) -ForegroundColor $color
     }
 
     # Track-level comparison
     Write-Host "`n  --- Track Listing ---" -ForegroundColor Cyan
-    Write-Host "  {0,-4} {1,-35} {2,-35}" -f "#", "Current Title", "Proposed Title" -ForegroundColor White
-    Write-Host "  {0,-4} {1,-35} {2,-35}" -f "--", "-------------", "--------------" -ForegroundColor Gray
+    Write-Host ("  {0,-4} {1,-35} {2,-35}" -f "#", "Current Title", "Proposed Title") -ForegroundColor White
+    Write-Host ("  {0,-4} {1,-35} {2,-35}" -f "--", "-------------", "--------------") -ForegroundColor Gray
 
     for ($i = 0; $i -lt $ExistingTracks.Count; $i++) {
         $existing = $ExistingTracks[$i]
@@ -501,14 +501,14 @@ function Show-MetadataComparison {
         $num = '{0:D2}' -f ($i + 1)
         $isGeneric = $curTitle -match '^Track \d+$' -or $curTitle -eq "(empty)"
         $color = if ($isGeneric -and $newTitle -ne "(empty)") { "Yellow" } elseif ($curTitle -ne $newTitle -and $newTitle -ne "(empty)") { "Yellow" } else { "Gray" }
-        Write-Host "  {0,-4} {1,-35} {2,-35}" -f $num, $curTitle, $newTitle -ForegroundColor $color
+        Write-Host ("  {0,-4} {1,-35} {2,-35}" -f $num, $curTitle, $newTitle) -ForegroundColor $color
     }
 
     # Rename preview
     if (-not $SkipRename) {
         Write-Host "`n  --- Rename Preview ---" -ForegroundColor Cyan
-        Write-Host "  {0,-40} {1,-40}" -f "Current Filename", "New Filename" -ForegroundColor White
-        Write-Host "  {0,-40} {1,-40}" -f "----------------", "------------" -ForegroundColor Gray
+        Write-Host ("  {0,-40} {1,-40}" -f "Current Filename", "New Filename") -ForegroundColor White
+        Write-Host ("  {0,-40} {1,-40}" -f "----------------", "------------") -ForegroundColor Gray
 
         for ($i = 0; $i -lt $ExistingTracks.Count; $i++) {
             $existing = $ExistingTracks[$i]
@@ -523,7 +523,7 @@ function Show-MetadataComparison {
             $newName = "$num - $sanitizedTitle$ext"
 
             $color = if ($currentName -ne $newName) { "Yellow" } else { "Gray" }
-            Write-Host "  {0,-40} {1,-40}" -f $currentName, $newName -ForegroundColor $color
+            Write-Host ("  {0,-40} {1,-40}" -f $currentName, $newName) -ForegroundColor $color
         }
     }
 
@@ -1174,4 +1174,7 @@ if ($Recurse) {
     Write-Log "Album: $($result.Album) by $($result.Artist)"
     Write-Log "Files tagged: $($result.TagCount)"
     if (-not $SkipRename) { Write-Log "Files renamed: $($result.RenameCount)" }
+
+    # Open the folder in Explorer
+    Invoke-Item $Path
 }
