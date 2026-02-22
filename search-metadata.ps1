@@ -844,16 +844,49 @@ function Process-AlbumFolder {
 
             $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
 
-            # Validate artist match before downloading -- no confirmation step in EmbedOnly mode
+            # Validate match before downloading -- no confirmation step in EmbedOnly mode
             $artworkValid = $false
             if ($merged -and $merged.ArtworkUrl) {
                 $foundArtist = $merged.Artist
-                if ($folderArtist -and $foundArtist -and
-                    $foundArtist -notlike "*$folderArtist*" -and $folderArtist -notlike "*$foundArtist*") {
-                    Write-Host "    Search returned `"$foundArtist`" -- doesn't match `"$folderArtist`", skipping" -ForegroundColor Yellow
-                    Write-Log "  Artist mismatch: expected `"$folderArtist`", got `"$foundArtist`" -- skipping artwork download"
-                } else {
+                $foundAlbum = $merged.Album
+                $artistMatch = (-not $folderArtist) -or (-not $foundArtist) -or
+                    ($foundArtist -like "*$folderArtist*") -or ($folderArtist -like "*$foundArtist*")
+                $albumMatch = (-not $folderAlbum) -or (-not $foundAlbum) -or
+                    ($foundAlbum -like "*$folderAlbum*") -or ($folderAlbum -like "*$foundAlbum*")
+
+                if ($artistMatch -and $albumMatch) {
                     $artworkValid = $true
+                } else {
+                    # Mismatch -- prompt user (default No, auto-skip in batch/30s)
+                    Write-Host "    Found: `"$foundAlbum`" by `"$foundArtist`"" -ForegroundColor Yellow
+                    Write-Host "    Expected: `"$folderAlbum`" by `"$folderArtist`"" -ForegroundColor Yellow
+                    if ($BatchMode) {
+                        Write-Host "    Skipping (batch mode)" -ForegroundColor Yellow
+                        Write-Log "  Mismatch: expected `"$folderAlbum`" by `"$folderArtist`", got `"$foundAlbum`" by `"$foundArtist`" -- auto-skipped (batch)"
+                    } else {
+                        Write-Host "    Use this artwork? [y/N] (auto-No in 30s) " -NoNewline -ForegroundColor White
+                        $artConfirm = $null
+                        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                        while ($sw.Elapsed.TotalSeconds -lt 30) {
+                            if ([Console]::KeyAvailable) {
+                                $artKey = [Console]::ReadKey($true)
+                                $artConfirm = $artKey.KeyChar
+                                Write-Host $artConfirm
+                                break
+                            }
+                            Start-Sleep -Milliseconds 200
+                        }
+                        $sw.Stop()
+                        if ($null -eq $artConfirm) {
+                            Write-Host "N (auto)" -ForegroundColor Gray
+                        }
+                        if ($artConfirm -and "$artConfirm".ToUpper() -eq "Y") {
+                            $artworkValid = $true
+                        } else {
+                            Write-Host "    Skipped" -ForegroundColor Yellow
+                            Write-Log "  Mismatch: expected `"$folderAlbum`" by `"$folderArtist`", got `"$foundAlbum`" by `"$foundArtist`" -- user skipped"
+                        }
+                    }
                 }
             }
 
