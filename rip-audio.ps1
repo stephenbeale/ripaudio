@@ -1373,8 +1373,12 @@ Push-Location $parentDir
 try {
     $outputLines = [System.Collections.ArrayList]::new()
     & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-        Write-Host $_
-        [void]$outputLines.Add([string]$_)
+        $line = [string]$_
+        # Show non-progress lines (track completions, errors, metadata) but suppress per-% progress spam
+        if ($line -notmatch 'progress - \d+\.\d+%') {
+            Write-Host $line
+        }
+        [void]$outputLines.Add($line)
     }
     $cyanripExitCode = $LASTEXITCODE
     $cyanripOutput = $outputLines.ToArray()
@@ -1437,8 +1441,11 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
         try {
             $outputLines = [System.Collections.ArrayList]::new()
             & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                Write-Host $_
-                [void]$outputLines.Add([string]$_)
+                $line = [string]$_
+                if ($line -notmatch 'progress - \d+\.\d+%') {
+                    Write-Host $line
+                }
+                [void]$outputLines.Add($line)
             }
             $cyanripExitCode = $LASTEXITCODE
             $cyanripOutput = $outputLines.ToArray()
@@ -1477,8 +1484,11 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             try {
                 $outputLines = [System.Collections.ArrayList]::new()
                 & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                    Write-Host $_
-                    [void]$outputLines.Add([string]$_)
+                    $line = [string]$_
+                    if ($line -notmatch 'progress - \d+\.\d+%') {
+                        Write-Host $line
+                    }
+                    [void]$outputLines.Add($line)
                 }
                 $cyanripExitCode = $LASTEXITCODE
                 $cyanripOutput = $outputLines.ToArray()
@@ -1509,8 +1519,11 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             try {
                 $outputLines = [System.Collections.ArrayList]::new()
                 & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                    Write-Host $_
-                    [void]$outputLines.Add([string]$_)
+                    $line = [string]$_
+                    if ($line -notmatch 'progress - \d+\.\d+%') {
+                        Write-Host $line
+                    }
+                    [void]$outputLines.Add($line)
                 }
                 $cyanripExitCode = $LASTEXITCODE
                 $cyanripOutput = $outputLines.ToArray()
@@ -1567,8 +1580,11 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
         try {
             $outputLines = [System.Collections.ArrayList]::new()
             & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                Write-Host $_
-                [void]$outputLines.Add([string]$_)
+                $line = [string]$_
+                if ($line -notmatch 'progress - \d+\.\d+%') {
+                    Write-Host $line
+                }
+                [void]$outputLines.Add($line)
             }
             $cyanripExitCode = $LASTEXITCODE
             $cyanripOutput = $outputLines.ToArray()
@@ -1606,8 +1622,11 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
             try {
                 $outputLines = [System.Collections.ArrayList]::new()
                 & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                    Write-Host $_
-                    [void]$outputLines.Add([string]$_)
+                    $line = [string]$_
+                    if ($line -notmatch 'progress - \d+\.\d+%') {
+                        Write-Host $line
+                    }
+                    [void]$outputLines.Add($line)
                 }
                 $cyanripExitCode = $LASTEXITCODE
                 $cyanripOutput = $outputLines.ToArray()
