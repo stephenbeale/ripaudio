@@ -9,15 +9,21 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 ## Features
 
 - **Automated ripping** using cyanrip with MusicBrainz integration
-- **3-step processing workflow** with progress tracking
-- **Multiple output formats** (FLAC, MP3, Opus, AAC, WAV, ALAC)
+- **4-step processing workflow** with progress tracking (rip, verify, cover art, open)
+- **Multiple output formats** (FLAC, MP3, Opus, AAC, WAV, ALAC) with simultaneous encoding
+- **Queue mode** for batch ripping multiple discs sequentially
+- **CDDB fallback** when MusicBrainz has no match (gnudb.org)
+- **AccurateRip verification** with per-track reporting
+- **Cover art** from 4 sources: Cover Art Archive, MusicBrainz+CAA, iTunes, Deezer
 - **Artist/Album organization** with flexible directory structure
+- **Path length validation** against Windows MAX_PATH (260 chars)
 - **Comprehensive error handling** with recovery guidance
 - **Session logging** for debugging and recovery
 - **Drive readiness checks** before operations
 - **Interactive prompts** for confirmation and conflict resolution
 - **Window title management** for tracking concurrent operations
 - **Automatic disc ejection** after successful rip
+- **Console close protection** during rip to prevent accidental closure
 
 ## Quick Start
 
@@ -52,20 +58,22 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 ## Usage
 
 ```
-.\rip-audio.ps1 -album <string> [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>]
+.\rip-audio.ps1 -album <string> [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue]
 ```
 
 ### Parameters
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `-album` | Yes | - | Album name |
+| `-album` | Yes* | - | Album name (*not required with `-ProcessQueue`) |
 | `-artist` | No | - | Artist name (affects output directory structure) |
-| `-Drive` | No | E: | CD drive letter |
+| `-Drive` | No | D: | CD drive letter |
 | `-OutputDrive` | No | E: | Output drive letter |
 | `-format` | No | flac | Output format(s), comma-separated (flac, mp3, opus, aac, wav, alac) |
 | `-Quality` | No | 0 | Bitrate in kbps for lossy formats (32-320, e.g. 320 for mp3) |
 | `-RequireMusicBrainz` | No | - | Stop if disc not found in MusicBrainz (no fallback to generic names) |
+| `-Queue` | No | - | Add album to rip queue instead of ripping immediately |
+| `-ProcessQueue` | No | - | Process all entries in the rip queue sequentially |
 
 ### Examples
 
@@ -124,6 +132,31 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 .\rip-audio.ps1 -album "Abbey Road" -artist "The Beatles" -RequireMusicBrainz
 ```
 
+**Rip a double album (one disc at a time):**
+```powershell
+# Disc 1
+.\rip-audio.ps1 -album "Mothership Disc 1" -artist "Led Zeppelin" -Drive G:
+
+# Disc 2
+.\rip-audio.ps1 -album "Mothership Disc 2" -artist "Led Zeppelin" -Drive G:
+```
+
+**Queue multiple albums then rip them all:**
+```powershell
+# Add albums to the queue
+.\rip-audio.ps1 -album "Rumours" -artist "Fleetwood Mac" -Queue
+.\rip-audio.ps1 -album "Abbey Road" -artist "The Beatles" -Queue
+.\rip-audio.ps1 -album "Kind of Blue" -artist "Miles Davis" -Queue
+
+# Process the queue -- prompts to insert each disc
+.\rip-audio.ps1 -ProcessQueue
+```
+
+**Queue with specific format and quality:**
+```powershell
+.\rip-audio.ps1 -album "Thriller" -artist "Michael Jackson" -format mp3 -Quality 320 -Queue
+```
+
 ## Directory Structure
 
 ### With Artist
@@ -147,13 +180,60 @@ E:\Music\Now That's What I Call Music 100\
 
 ## Processing Steps
 
-The script executes a 3-step workflow:
+The script executes a 4-step workflow:
 
 1. **cyanrip Rip** - Rip audio CD using cyanrip with MusicBrainz lookup
 2. **Verify Output** - Check that audio files were created successfully
-3. **Open Directory** - Open output folder for verification
+3. **Cover Art** - Download album cover art (CAA > MusicBrainz+CAA > iTunes > Deezer) and embed into FLAC files
+4. **Open Directory** - Open output folder for verification
 
 Each step is tracked, and the system shows completion status and provides recovery guidance if errors occur.
+
+## Queue Mode
+
+Queue mode lets you line up multiple albums for sequential ripping. The queue is stored in `C:\Music\rip-queue.json` with file locking for concurrent safety.
+
+- **`-Queue`** adds an entry (album, artist, format, quality) to the queue file
+- **`-ProcessQueue`** reads the queue and processes each entry one at a time
+  - Prompts to insert each disc: `Insert disc for [artist - album], press Enter to continue (S to skip, Q to quit)`
+  - Press **S** to skip an entry, **Q** to quit the queue
+  - Interactive prompts (MusicBrainz unreachable, existing directory, multiple releases) auto-continue in queue mode
+  - Shows aggregate summary at the end (processed, failed, skipped counts)
+
+## Metadata Fallback Chain
+
+When ripping, the script uses multiple sources to ensure track names and metadata:
+
+1. **MusicBrainz** (via cyanrip) - Primary source, automatic lookup by disc ID
+2. **CDDB** (gnudb.org) - Fallback when MusicBrainz has no match; uses TOC-based disc ID lookup, then text search
+3. **Generic names** - Last resort: tracks named `01 - Track 01`, `02 - Track 02`, etc.
+
+If a disc is not found in MusicBrainz, the script will:
+- Search CDDB by disc ID (computed from the disc's table of contents)
+- If that fails, search CDDB by album name
+- Show a preview of the CDDB results (artist, album, first 5 tracks) before proceeding
+- Use `-RequireMusicBrainz` to stop instead of falling back
+
+## Cover Art Sources
+
+Cover art is downloaded using a sequential fallback chain:
+
+1. **Cover Art Archive** - Direct lookup using release ID from the MusicBrainz cue file
+2. **MusicBrainz + CAA** - Search MusicBrainz by artist/album, then fetch from Cover Art Archive
+3. **iTunes Search API** - 600x600 artwork
+4. **Deezer API** - Up to 1000x1000 artwork
+
+Downloaded art is saved as `Front.jpg` in the album folder and embedded into FLAC files via metaflac.
+
+## AccurateRip Verification
+
+After ripping, the script parses cyanrip's AccurateRip output and reports:
+
+- **Disc-level status**: found, not found, error, mismatch, or disabled
+- **Per-track results**: v1/v2 checksums and confidence levels
+- **Summary**: "N/M tracks ripped accurately" and "N/M tracks ripped partially accurately"
+
+Results are displayed in green (all verified) or yellow (partial), logged to the session log, and appended to the window title (`- AR PARTIAL` if not all tracks verified).
 
 ## MusicBrainz Release Selection
 
@@ -171,6 +251,8 @@ Enter release number (1-5): _
 ```
 
 This ensures proper track names, album art, and metadata for your specific release (region, pressing date, etc.).
+
+**Double albums:** For multi-disc sets, cyanrip identifies which disc is in the drive from the disc's table of contents. Select the same release for both discs -- cyanrip will match the correct disc automatically. Use different `-album` values for each disc to create separate output folders (e.g. `"Mothership Disc 1"`, `"Mothership Disc 2"`). In queue mode, release 1 is auto-selected.
 
 ## Logging
 
@@ -217,6 +299,9 @@ This script uses [cyanrip](https://github.com/cyanreg/cyanrip), a feature-rich a
 - `-D` : Output directory
 - `-o` : Output format(s)
 - `-d` : Drive specification
+- `-s` : Drive read offset (default: 0)
+- `-b` : Bitrate for lossy formats (kbps)
+- `-R` : Release selection index (for multiple MusicBrainz matches)
 
 ## search-metadata.ps1
 
@@ -279,14 +364,21 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 .\search-metadata.ps1 -Path "C:\Music\Tracy Chapman\Tracy Chapman" -EmbedOnly -DryRun
 ```
 
-### 6-Step Workflow
+### 6-Step Workflow (default)
 
 1. **Scan files** - Read existing tags via metaflac, identify gaps
 2. **Search metadata** - Query MusicBrainz, iTunes, Deezer; merge best results
-3. **Confirm changes** - Show side-by-side comparison, user approves or declines
+3. **Confirm changes** - Show side-by-side comparison, user approves or declines (auto-Yes in 30s)
 4. **Apply tags** - Write ARTIST, ALBUM, TITLE, TRACKNUMBER, DATE, GENRE via metaflac
 5. **Cover art** - Download best artwork (Deezer 1000x1000 > iTunes 600x600 > CAA) and embed into FLAC files
 6. **Rename files** - Rename to `## - Title.flac` format
+
+### 2-Step Workflow (`-EmbedOnly`)
+
+1. **Scan files** - Read existing tags, identify FLAC files
+2. **Cover art** - Find existing art on disk, or search online and prompt to confirm, then embed into all FLACs
+
+With `-EmbedOnly`, if no art exists on disk the script searches MusicBrainz/iTunes/Deezer for artwork. Matching results auto-proceed; mismatches prompt for confirmation (default No). In batch/recurse mode, mismatches are auto-skipped.
 
 ### Metadata Source Priority
 
