@@ -808,12 +808,16 @@ if (-not $album -and -not $script:IsProcessingQueue) {
     }
 }
 
+# Sanitize album and artist for use as directory names (remove illegal Windows path characters)
+$safeAlbum = $album -replace '[\\/:*?"<>|]', '_'
+$safeArtist = if ($artist) { $artist -replace '[\\/:*?"<>|]', '_' } else { "" }
+
 # Build output directory path
 # Format: E:\Music\{Artist}\{Album}\ or E:\Music\{Album}\ if no artist
-if ($artist) {
-    $finalOutputDir = "$outputDriveLetter\Music\$artist\$album"
+if ($safeArtist) {
+    $finalOutputDir = "$outputDriveLetter\Music\$safeArtist\$safeAlbum"
 } else {
-    $finalOutputDir = "$outputDriveLetter\Music\$album"
+    $finalOutputDir = "$outputDriveLetter\Music\$safeAlbum"
 }
 
 # ========== PATH LENGTH VALIDATION ==========
