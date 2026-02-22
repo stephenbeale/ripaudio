@@ -275,7 +275,7 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 2. **Search metadata** - Query MusicBrainz, iTunes, Deezer; merge best results
 3. **Confirm changes** - Show side-by-side comparison, user approves or declines
 4. **Apply tags** - Write ARTIST, ALBUM, TITLE, TRACKNUMBER, DATE, GENRE via metaflac
-5. **Cover art** - Download best artwork (Deezer 1000x1000 > iTunes 600x600 > CAA)
+5. **Cover art** - Download best artwork (Deezer 1000x1000 > iTunes 600x600 > CAA) and embed into FLAC files
 6. **Rename files** - Rename to `## - Title.flac` format
 
 ### Metadata Source Priority

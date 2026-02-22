@@ -590,6 +590,25 @@ function Set-AudioTags {
     return $LASTEXITCODE -eq 0
 }
 
+function Set-CoverArt {
+    param([string]$FilePath, [string]$ImagePath)
+
+    $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
+    if (-not $metaflacPath) { return $false }
+
+    $mimeType = switch ([System.IO.Path]::GetExtension($ImagePath).ToLower()) {
+        ".jpg"  { "image/jpeg" }
+        ".jpeg" { "image/jpeg" }
+        ".png"  { "image/png" }
+        default { "image/jpeg" }
+    }
+
+    # Remove existing pictures first, then import
+    & metaflac --remove --block-type=PICTURE $FilePath 2>$null
+    & metaflac "--import-picture-from=3|$mimeType|Front Cover||$ImagePath" $FilePath 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
 function Get-CoverArt {
     param(
         [string]$ArtworkUrl,
@@ -906,9 +925,13 @@ function Process-AlbumFolder {
         if ($existingArt) {
             Write-Host "  [DRY RUN] Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Cyan
             Write-Log "  [DRY RUN] Cover art already exists"
+            Write-Host "  [DRY RUN] Would embed cover art in $($existingTracks.Count) file(s)" -ForegroundColor Cyan
+            Write-Log "  [DRY RUN] Would embed cover art in $($existingTracks.Count) files"
         } elseif ($merged.ArtworkUrl) {
             Write-Host "  [DRY RUN] Would download cover art from $($merged.ArtworkSource)" -ForegroundColor Cyan
             Write-Log "  [DRY RUN] Would download cover art from $($merged.ArtworkSource)"
+            Write-Host "  [DRY RUN] Would embed cover art in $($existingTracks.Count) file(s)" -ForegroundColor Cyan
+            Write-Log "  [DRY RUN] Would embed cover art in $($existingTracks.Count) files"
         } else {
             Write-Host "  [DRY RUN] No cover art available" -ForegroundColor Cyan
             Write-Log "  [DRY RUN] No cover art available"
@@ -928,6 +951,23 @@ function Process-AlbumFolder {
             if (-not $artFile) {
                 Write-Log "  No cover art downloaded"
             }
+        }
+
+        # Embed cover art into FLAC files
+        $imageFile = $artFile
+        if (-not $imageFile) {
+            $existingArt = Get-ChildItem -Path $FolderPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+            if ($existingArt) { $imageFile = $existingArt[0].FullName }
+        }
+        if ($imageFile) {
+            $embedCount = 0
+            foreach ($track in $existingTracks) {
+                if (Set-CoverArt -FilePath $track.File.FullName -ImagePath $imageFile) {
+                    $embedCount++
+                }
+            }
+            Write-Host "    Embedded cover art in $embedCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
+            Write-Log "  Embedded cover art in $embedCount files"
         }
     }
 
