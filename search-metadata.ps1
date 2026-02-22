@@ -662,8 +662,8 @@ function Get-CoverArt {
                     Write-Log "  Downloaded cover art from $ArtworkSource"
                     return $outputFile
                 } else {
-                    Write-Host "    $ArtworkSource: download was not a valid image (URL may point to a webpage)" -ForegroundColor Yellow
-                    Write-Log "  $ArtworkSource download invalid (not JPEG/PNG) -- removed"
+                    Write-Host "    ${ArtworkSource}: download was not a valid image (URL may point to a webpage)" -ForegroundColor Yellow
+                    Write-Log "  ${ArtworkSource} download invalid (not JPEG/PNG) -- removed"
                 }
             }
             Remove-Item $outputFile -ErrorAction SilentlyContinue
