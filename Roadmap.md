@@ -15,3 +15,5 @@
 - [x] AccurateRip verification reporting - parses cyanrip AR output (disc status, per-track v1/v2 checksums, confidence levels), displays in banner/summary, logs results
 - [x] Recurse flag for search-metadata.ps1 - `-Recurse` processes all subdirectories containing FLAC files, with per-album error handling and batch summary
 - [x] Dry run flag for search-metadata.ps1 - `-DryRun` previews all tag, cover art, and rename changes without writing to disk
+- [x] Audit metadata script - `audit-metadata.ps1` scans album folders for missing/generic tags and cover art, copies flagged albums to staging directory
+- [x] Rename confirmation timeout - search-metadata.ps1 confirmation prompt auto-proceeds after 30 seconds with no input
