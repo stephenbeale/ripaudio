@@ -856,9 +856,10 @@ function Process-AlbumFolder {
                 $albumOk = (-not $folderAlbum) -or (-not $foundAlbum) -or
                     ($foundAlbum -like "*$folderAlbum*") -or ($folderAlbum -like "*$foundAlbum*")
 
-                # Also check leading-word prefix overlap: handles folder names like
-                # "The Best Of-Once in a Lifetime" matching "The Best of Talking Heads"
-                # where punctuation splits the title but the opening words are shared
+                # Leading-word prefix overlap: handles folder names where punctuation splits a
+                # longer title (e.g. "The Best Of-Once in a Lifetime" vs "The Best of Talking Heads").
+                # Treated as a soft match — always prompts, even in batch mode.
+                $prefixOnlyMatch = $false
                 if (-not $albumOk -and $folderAlbum -and $foundAlbum) {
                     $folderWords = ($folderAlbum -replace '[^a-zA-Z0-9\s]', ' ' -split '\s+').Where({ $_ }) |
                         ForEach-Object { $_.ToLower() }
@@ -869,18 +870,25 @@ function Process-AlbumFolder {
                     for ($i = 0; $i -lt $minLen; $i++) {
                         if ($folderWords[$i] -eq $foundWords[$i]) { $prefixMatch++ } else { break }
                     }
-                    $albumOk = $prefixMatch -ge 2
+                    if ($prefixMatch -ge 2) {
+                        $albumOk = $true
+                        $prefixOnlyMatch = $true
+                    }
                 }
 
-                if ($artistOk -and $albumOk) {
-                    # Good match -- auto-proceed
+                if ($artistOk -and $albumOk -and -not $prefixOnlyMatch) {
+                    # Strong match -- auto-proceed
                     Write-Host "    Matched: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Green
                     Write-Log "  Matched: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))"
                     $artworkValid = $true
                 } else {
-                    # Mismatch -- prompt in single mode, skip in batch mode
-                    Write-Host "    No exact match. Best result: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Yellow
-                    if ($BatchMode) {
+                    # Soft match (prefix only) or mismatch -- always prompt
+                    if ($artistOk -and $prefixOnlyMatch) {
+                        Write-Host "    Partial match: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Yellow
+                    } else {
+                        Write-Host "    No exact match. Best result: `"$foundAlbum`" by `"$foundArtist`" ($($merged.ArtworkSource))" -ForegroundColor Yellow
+                    }
+                    if ($BatchMode -and -not ($artistOk -and $prefixOnlyMatch)) {
                         Write-Host "    Skipping -- cannot confirm in batch mode" -ForegroundColor Yellow
                         Write-Log "  No match: expected `"$folderAlbum`" by `"$folderArtist`", got `"$foundAlbum`" by `"$foundArtist`" -- auto-skipped (batch)"
                     } elseif ($DryRunMode) {
