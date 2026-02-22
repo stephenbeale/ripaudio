@@ -146,7 +146,125 @@ function Get-DiscTrackCount {
     if ($outputText -match 'Disc tracks:\s+(\d+)') {
         return [int]$Matches[1]
     }
+    # If multiple releases found, cyanrip doesn't show track count — retry with -R 1
+    if ($outputText -match "Multiple releases found") {
+        $output2 = & cyanrip -I -d $DriveLetter -s 0 -R 1 2>&1
+        $outputText2 = $output2 -join "`n"
+        if ($outputText2 -match 'Disc tracks:\s+(\d+)') {
+            return [int]$Matches[1]
+        }
+    }
     return $null
+}
+
+function Get-DiscMetadata {
+    param([string]$DriveLetter)
+
+    Write-Host "Querying disc in drive $DriveLetter..." -ForegroundColor Yellow
+
+    $outputLines = [System.Collections.ArrayList]::new()
+    & cyanrip -I -d $DriveLetter -s 0 2>&1 | ForEach-Object {
+        Write-Host $_ -ForegroundColor Gray
+        [void]$outputLines.Add([string]$_)
+    }
+    $output = $outputLines.ToArray()
+    $outputText = $output -join "`n"
+
+    $result = @{ Album = $null; Artist = $null; DiscNum = $null; TotalDiscs = $null; ReleaseChoice = $null }
+
+    # Parse disc ID - try "for DiscID <id>:" (multi-release) first, then "DiscID <id>" (single)
+    $discId = $null
+    if ($outputText -match 'for DiscID\s+(\S+?):') {
+        $discId = $Matches[1]
+    } elseif ($outputText -match 'DiscID\s+(\S+)') {
+        $discId = $Matches[1]
+    }
+
+    if (-not $discId) {
+        Write-Host "Could not determine disc ID" -ForegroundColor Yellow
+        return $null
+    }
+    Write-Host "Disc ID: $discId" -ForegroundColor Gray
+
+    # Check for multiple releases
+    $releaseUuid = $null
+    if ($outputText -match "Multiple releases found") {
+        $releases = @()
+        foreach ($line in $output) {
+            if ($line -match '^\s*(\d+)\s+\(ID:\s*([a-f0-9-]+)\):\s*(.+)$') {
+                $releases += @{ Index = $Matches[1]; UUID = $Matches[2]; Description = $Matches[3].Trim() }
+            }
+        }
+        if ($releases.Count -gt 0) {
+            Write-Host "`nMultiple releases found. Select one:" -ForegroundColor Cyan
+            foreach ($rel in $releases) {
+                Write-Host "  $($rel.Index): $($rel.Description)" -ForegroundColor White
+            }
+            Write-Host ""
+
+            $validChoice = $false
+            while (-not $validChoice) {
+                $choice = Read-Host "Enter release number (1-$($releases.Count))"
+                if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $releases.Count) {
+                    $validChoice = $true
+                } else {
+                    Write-Host "Invalid choice. Please enter a number between 1 and $($releases.Count)" -ForegroundColor Yellow
+                }
+            }
+
+            $selectedIdx = [int]$choice - 1
+            $result.ReleaseChoice = $choice
+            $releaseUuid = $releases[$selectedIdx].UUID
+            Write-Host "Selected release $choice" -ForegroundColor Green
+        }
+    }
+
+    # Query MusicBrainz API for full metadata
+    Write-Host "Querying MusicBrainz for release details..." -ForegroundColor Yellow
+    $mbHeaders = @{
+        "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
+        "Accept" = "application/json"
+    }
+    try {
+        if ($releaseUuid) {
+            $url = "https://musicbrainz.org/ws/2/release/$($releaseUuid)?inc=artist-credits+media&fmt=json"
+        } else {
+            $url = "https://musicbrainz.org/ws/2/discid/$($discId)?inc=artist-credits&fmt=json"
+        }
+        $response = Invoke-RestMethod -Uri $url -Headers $mbHeaders -TimeoutSec 10
+
+        # discid lookup returns releases array; direct release lookup returns the release object
+        $release = if ($response.releases) { $response.releases[0] } else { $response }
+
+        $result.Album = $release.title
+        if ($release.'artist-credit' -and $release.'artist-credit'.Count -gt 0) {
+            $result.Artist = ($release.'artist-credit' | ForEach-Object { $_.name }) -join " / "
+        }
+
+        # Disc position for multi-disc albums
+        if ($release.media) {
+            $result.TotalDiscs = $release.media.Count
+            # Find which medium matches our disc ID
+            foreach ($medium in $release.media) {
+                foreach ($disc in $medium.discs) {
+                    if ($disc.id -eq $discId) {
+                        $result.DiscNum = $medium.position
+                        break
+                    }
+                }
+                if ($result.DiscNum) { break }
+            }
+            # Fallback: if only 1 medium, it's disc 1
+            if (-not $result.DiscNum -and $result.TotalDiscs -eq 1) {
+                $result.DiscNum = 1
+            }
+        }
+    } catch {
+        Write-Host "MusicBrainz API query failed: $_" -ForegroundColor Yellow
+        return $null
+    }
+
+    return $result
 }
 
 function Test-DriveReady {
@@ -519,10 +637,7 @@ if ($Queue -and $ProcessQueue) {
     Write-Host "ERROR: -Queue and -ProcessQueue are mutually exclusive" -ForegroundColor Red
     exit 1
 }
-if (-not $ProcessQueue -and -not $album) {
-    Write-Host "ERROR: -album parameter is required (unless using -ProcessQueue)" -ForegroundColor Red
-    exit 1
-}
+# Note: -album is now optional — disc metadata will be auto-discovered if not provided
 
 # ========== CONFIGURATION ==========
 # Normalize drive letters (add colon if missing)
@@ -598,6 +713,7 @@ do {
     $script:CompletedSteps = @()
     $script:CurrentStep = $null
     $script:CddbResult = $null
+    $script:ReleaseChoice = $null
     $script:ResumeTrackList = $null
     $script:SkipRip = $false
     $itemFailed = $false
@@ -647,6 +763,50 @@ do {
     }
 
 try { # try block wraps main processing - catch handles ProcessQueue failures
+
+# ========== DISC METADATA DISCOVERY ==========
+# When -album is not provided and not in ProcessQueue mode, auto-discover from disc
+$script:ReleaseChoice = $null
+if (-not $album -and -not $script:IsProcessingQueue) {
+    $discMeta = Get-DiscMetadata -DriveLetter $driveLetter
+
+    if ($discMeta -and $discMeta.Album) {
+        $album = $discMeta.Album
+
+        # For multi-disc albums with >1 disc, append "Disc N"
+        if ($discMeta.TotalDiscs -and $discMeta.TotalDiscs -gt 1 -and $discMeta.DiscNum) {
+            $album = "$album Disc $($discMeta.DiscNum)"
+        }
+
+        if ($discMeta.Artist) {
+            $artist = $discMeta.Artist
+        }
+
+        if ($discMeta.ReleaseChoice) {
+            $script:ReleaseChoice = $discMeta.ReleaseChoice
+        }
+
+        # Display detected metadata
+        $detectedLabel = if ($artist) { "$artist - $album" } else { $album }
+        if ($discMeta.TotalDiscs -and $discMeta.TotalDiscs -gt 1) {
+            $detectedLabel += " (Disc $($discMeta.DiscNum) of $($discMeta.TotalDiscs))"
+        }
+        Write-Host "Detected: $detectedLabel" -ForegroundColor Green
+    } else {
+        # Discovery failed — prompt user for album name
+        Write-Host "`nCould not auto-detect disc metadata." -ForegroundColor Yellow
+        Write-Host "Please provide album details manually." -ForegroundColor Yellow
+        $album = Read-Host "Album name (required)"
+        if (-not $album) {
+            Write-Host "ERROR: Album name is required." -ForegroundColor Red
+            exit 1
+        }
+        $artistInput = Read-Host "Artist name (optional, press Enter to skip)"
+        if ($artistInput) {
+            $artist = $artistInput
+        }
+    }
+}
 
 # Build output directory path
 # Format: E:\Music\{Artist}\{Album}\ or E:\Music\{Album}\ if no artist
@@ -1185,26 +1345,35 @@ if ($skipMusicBrainz) {
     $cyanripArgs += @("-N")
 }
 
+# Add -R flag if release was pre-selected during discovery
+if ($script:ReleaseChoice) {
+    $cyanripArgs += @("-R", $script:ReleaseChoice)
+}
+
 # Add -l flag for resume mode (rip only missing tracks)
 if ($script:ResumeTrackList) {
     $cyanripArgs += @("-l", $script:ResumeTrackList)
 }
 
 $qualityFlag = if ($Quality -gt 0 -and $hasLossy) { " -b $Quality" } else { "" }
+$releaseFlag = if ($script:ReleaseChoice) { " -R $($script:ReleaseChoice)" } else { "" }
 $resumeFlag = if ($script:ResumeTrackList) { " -l $($script:ResumeTrackList)" } else { "" }
-$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$qualityFlag$(if ($skipMusicBrainz) { ' -N' })$resumeFlag"
+$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$qualityFlag$(if ($skipMusicBrainz) { ' -N' })$releaseFlag$resumeFlag"
 Write-Host "Working directory: $parentDir" -ForegroundColor Gray
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip working directory: $parentDir"
 Write-Log "cyanrip command: $cmdDisplay"
 
-# Execute cyanrip from the parent directory
+# Execute cyanrip from the parent directory (streaming output in real-time)
 Push-Location $parentDir
 try {
-    $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+    $outputLines = [System.Collections.ArrayList]::new()
+    & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
+        Write-Host $_
+        [void]$outputLines.Add([string]$_)
+    }
     $cyanripExitCode = $LASTEXITCODE
-    # Display output to console
-    $cyanripOutput | ForEach-Object { Write-Host $_ }
+    $cyanripOutput = $outputLines.ToArray()
 } catch {
     Pop-Location
     Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1262,9 +1431,13 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
 
         Push-Location $parentDir
         try {
-            $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+            $outputLines = [System.Collections.ArrayList]::new()
+            & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
+                Write-Host $_
+                [void]$outputLines.Add([string]$_)
+            }
             $cyanripExitCode = $LASTEXITCODE
-            $cyanripOutput | ForEach-Object { Write-Host $_ }
+            $cyanripOutput = $outputLines.ToArray()
         } catch {
             Pop-Location
             Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1298,9 +1471,13 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
 
             Push-Location $parentDir
             try {
-                $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+                $outputLines = [System.Collections.ArrayList]::new()
+                & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
+                    Write-Host $_
+                    [void]$outputLines.Add([string]$_)
+                }
                 $cyanripExitCode = $LASTEXITCODE
-                $cyanripOutput | ForEach-Object { Write-Host $_ }
+                $cyanripOutput = $outputLines.ToArray()
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1326,9 +1503,13 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             $cyanripArgs += @("-N")
             Push-Location $parentDir
             try {
-                $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+                $outputLines = [System.Collections.ArrayList]::new()
+                & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
+                    Write-Host $_
+                    [void]$outputLines.Add([string]$_)
+                }
                 $cyanripExitCode = $LASTEXITCODE
-                $cyanripOutput | ForEach-Object { Write-Host $_ }
+                $cyanripOutput = $outputLines.ToArray()
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1380,9 +1561,13 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
 
         Push-Location $parentDir
         try {
-            $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+            $outputLines = [System.Collections.ArrayList]::new()
+            & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
+                Write-Host $_
+                [void]$outputLines.Add([string]$_)
+            }
             $cyanripExitCode = $LASTEXITCODE
-            $cyanripOutput | ForEach-Object { Write-Host $_ }
+            $cyanripOutput = $outputLines.ToArray()
         } catch {
             Pop-Location
             Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1415,9 +1600,13 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
 
             Push-Location $parentDir
             try {
-                $cyanripOutput = & cyanrip @cyanripArgs 2>&1
+                $outputLines = [System.Collections.ArrayList]::new()
+                & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
+                    Write-Host $_
+                    [void]$outputLines.Add([string]$_)
+                }
                 $cyanripExitCode = $LASTEXITCODE
-                $cyanripOutput | ForEach-Object { Write-Host $_ }
+                $cyanripOutput = $outputLines.ToArray()
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
