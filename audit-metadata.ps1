@@ -92,8 +92,9 @@ function Show-CoffeeBadge {
     Write-Host "  $tl$hz$tr" -ForegroundColor DarkGray
     Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "   ) ) )                                             " -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
     Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  (_____)  " -NoNewline -ForegroundColor DarkYellow; Write-Host "Enjoying this app? Buy me a coffee!       " -NoNewline -ForegroundColor White; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  |     |                                            " -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
     Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  |     |  " -NoNewline -ForegroundColor DarkYellow; Write-Host ">> https://buymeacoffee.com/stephenbeale " -NoNewline -ForegroundColor Yellow; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  '-----'" -NoNewline -ForegroundColor DarkYellow; Write-Host "            >>> click here! <<<             " -NoNewline -ForegroundColor Cyan; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  '-----'" -NoNewline -ForegroundColor DarkYellow; Write-Host "            ^^^ click here! ^^^             " -NoNewline -ForegroundColor Cyan; Write-Host "$vt" -ForegroundColor DarkGray
     Write-Host "  $bl$hz$br" -ForegroundColor DarkGray
     Write-Host ""
 }
