@@ -866,7 +866,8 @@ function Process-AlbumFolder {
         Write-Log "STEP 2/$($script:TotalSteps): Cover art (embed only)"
 
         # Check for existing art files
-        $existingArt = Get-ChildItem -Path $FolderPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+        $existingArt = Get-ChildItem -Path $FolderPath -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
         $imageFile = $null
 
         if ($existingArt) {
@@ -1169,7 +1170,8 @@ function Process-AlbumFolder {
         Write-Host "`n[STEP 5/$script:TotalSteps] Cover art (dry run)..." -ForegroundColor Green
         Write-Log "STEP 5/$($script:TotalSteps): Cover art (dry run)"
 
-        $existingArt = Get-ChildItem -Path $FolderPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+        $existingArt = Get-ChildItem -Path $FolderPath -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
         if ($existingArt) {
             Write-Host "  [DRY RUN] Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Cyan
             Write-Log "  [DRY RUN] Cover art already exists"
@@ -1189,7 +1191,8 @@ function Process-AlbumFolder {
         Write-Log "STEP 5/$($script:TotalSteps): Downloading cover art"
 
         # Check if art already exists
-        $existingArt = Get-ChildItem -Path $FolderPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+        $existingArt = Get-ChildItem -Path $FolderPath -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
         if ($existingArt -and -not $ForceMode) {
             Write-Host "    Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Gray
             Write-Log "  Cover art already exists"
@@ -1204,7 +1207,8 @@ function Process-AlbumFolder {
         # Embed cover art into FLAC files
         $imageFile = $artFile
         if (-not $imageFile) {
-            $existingArt = Get-ChildItem -Path $FolderPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+            $existingArt = Get-ChildItem -Path $FolderPath -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
             if ($existingArt) { $imageFile = $existingArt[0].FullName }
         }
         if ($imageFile) {

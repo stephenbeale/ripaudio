@@ -808,9 +808,11 @@ if (-not $album -and -not $script:IsProcessingQueue) {
     }
 }
 
-# Sanitize album and artist for use as directory names (remove illegal Windows path characters)
-$safeAlbum = $album -replace '[\\/:*?"<>|]', '_'
-$safeArtist = if ($artist) { $artist -replace '[\\/:*?"<>|]', '_' } else { "" }
+# Sanitize album and artist for use as directory names.
+# Removes: illegal Windows path characters, dots (trailing dots make NTFS silently rename the folder),
+# and hyphens. Collapses multiple spaces and trims.
+$safeAlbum = (($album  -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' ').Trim()
+$safeArtist = if ($artist) { (($artist -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' ').Trim() } else { "" }
 
 # Build output directory path
 # Format: E:\Music\{Artist}\{Album}\ or E:\Music\{Album}\ if no artist
