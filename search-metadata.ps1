@@ -81,6 +81,61 @@ function Show-StepsSummary {
 }
 
 # ========== HELPER FUNCTIONS ==========
+
+function Assert-MetaflacInstalled {
+    if (Get-Command metaflac -ErrorAction SilentlyContinue) { return }
+
+    Write-Host ""
+    Write-Host "  metaflac is not installed." -ForegroundColor Yellow
+    Write-Host "  It is required to read and write tags and cover art in FLAC files." -ForegroundColor Yellow
+    Write-Host "  It can be installed automatically via winget (Windows Package Manager)." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Install now? [Y/N] (auto-Yes in 30s): " -NoNewline -ForegroundColor White
+
+    $key = $null
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt 30) {
+        if ([Console]::KeyAvailable) { $key = [Console]::ReadKey($true); break }
+        Start-Sleep -Milliseconds 200
+    }
+    $sw.Stop()
+
+    $choice = if ($key) { "$($key.KeyChar)".ToUpper() } else { $null }
+    if ($null -eq $choice) { Write-Host "Y (auto)" -ForegroundColor Gray; $choice = "Y" }
+    else { Write-Host $choice }
+
+    if ($choice -eq "N") {
+        Write-Host ""
+        Write-Host "  To install manually, open a terminal and run:" -ForegroundColor White
+        Write-Host "    winget install xiph.flac" -ForegroundColor Cyan
+        Write-Host ""
+        exit 1
+    }
+
+    Write-Host "  Installing FLAC tools..." -ForegroundColor Cyan
+    & winget install xiph.flac --accept-source-agreements --accept-package-agreements
+
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189) {
+        # -1978335189 = APPINSTALLER_ERROR_ALREADY_INSTALLED (already present, winget still exits non-zero)
+        Write-Host "  Install failed (exit $LASTEXITCODE). Run manually:" -ForegroundColor Red
+        Write-Host "    winget install xiph.flac" -ForegroundColor Cyan
+        exit 1
+    }
+
+    # Refresh PATH from registry so metaflac is available in this session without restarting
+    $machinePath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+    $userPath    = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    $env:PATH    = "$machinePath;$userPath"
+
+    if (Get-Command metaflac -ErrorAction SilentlyContinue) {
+        Write-Host "  metaflac ready." -ForegroundColor Green
+        Write-Host ""
+    } else {
+        Write-Host "  Installed. Please close and reopen this terminal, then run the script again." -ForegroundColor Yellow
+        exit 0
+    }
+}
+
 function Write-Log {
     param([string]$Message)
     if ($script:LogFile) {
@@ -1315,6 +1370,9 @@ if (-not (Test-Path $Path)) {
     Write-Host "`nError: Path not found: $Path" -ForegroundColor Red
     exit 1
 }
+
+# Ensure metaflac is installed (required for all tag and cover art operations)
+Assert-MetaflacInstalled
 
 # Warn if -Artist or -Album used with -Recurse (each folder infers its own)
 if ($Recurse -and ($Artist -or $Album)) {
