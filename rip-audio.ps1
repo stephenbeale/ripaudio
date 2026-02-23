@@ -6,10 +6,10 @@ param(
     [string]$artist = "",
 
     [Parameter()]
-    [string]$Drive = "D:",
+    [string]$Drive = "",
 
     [Parameter()]
-    [string]$OutputDrive = "E:",
+    [string]$OutputDrive = "",
 
     [Parameter()]
     [string]$format = "flac",
@@ -172,11 +172,13 @@ function Get-DiscMetadata {
 
     $result = @{ Album = $null; Artist = $null; DiscNum = $null; TotalDiscs = $null; ReleaseChoice = $null }
 
-    # Parse disc ID - try "for DiscID <id>:" (multi-release) first, then "DiscID <id>" (single)
+    # Parse disc ID - try multiple formats cyanrip may output
     $discId = $null
     if ($outputText -match 'for DiscID\s+(\S+?):') {
         $discId = $Matches[1]
-    } elseif ($outputText -match 'DiscID\s+(\S+)') {
+    } elseif ($outputText -match 'Disc ID:\s*(\S+)') {
+        $discId = $Matches[1]
+    } elseif ($outputText -match 'DiscID\s*[:\s]\s*(\S+)') {
         $discId = $Matches[1]
     }
 
@@ -227,9 +229,9 @@ function Get-DiscMetadata {
     }
     try {
         if ($releaseUuid) {
-            $url = "https://musicbrainz.org/ws/2/release/$($releaseUuid)?inc=artist-credits+media&fmt=json"
+            $url = "https://musicbrainz.org/ws/2/release/$($releaseUuid)?inc=artist-credits+media+discids&fmt=json"
         } else {
-            $url = "https://musicbrainz.org/ws/2/discid/$($discId)?inc=artist-credits&fmt=json"
+            $url = "https://musicbrainz.org/ws/2/discid/$($discId)?inc=artist-credits+media+discids&fmt=json"
         }
         $response = Invoke-RestMethod -Uri $url -Headers $mbHeaders -TimeoutSec 10
 
@@ -640,6 +642,40 @@ if ($Queue -and $ProcessQueue) {
 # Note: -album is now optional — disc metadata will be auto-discovered if not provided
 
 # ========== CONFIGURATION ==========
+
+# Auto-detect CD/optical drive if not specified
+if (-not $Drive) {
+    $opticalDrives = @(Get-CimInstance Win32_CDROMDrive -ErrorAction SilentlyContinue | Where-Object { $_.Drive })
+    if ($opticalDrives.Count -eq 0) {
+        Write-Host "ERROR: No optical drive detected. Use -Drive to specify the drive letter." -ForegroundColor Red
+        exit 1
+    } elseif ($opticalDrives.Count -eq 1) {
+        $Drive = $opticalDrives[0].Drive
+        Write-Host "Detected optical drive: $Drive ($($opticalDrives[0].Name))" -ForegroundColor Gray
+    } else {
+        Write-Host "Multiple optical drives detected:" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $opticalDrives.Count; $i++) {
+            Write-Host "  $($i + 1): $($opticalDrives[$i].Drive) - $($opticalDrives[$i].Name)" -ForegroundColor White
+        }
+        $driveChoice = $null
+        while (-not $driveChoice) {
+            $input = Read-Host "Select drive (1-$($opticalDrives.Count))"
+            if ($input -match '^\d+$' -and [int]$input -ge 1 -and [int]$input -le $opticalDrives.Count) {
+                $Drive = $opticalDrives[[int]$input - 1].Drive
+                $driveChoice = $Drive
+            } else {
+                Write-Host "Invalid selection. Enter a number between 1 and $($opticalDrives.Count)" -ForegroundColor Yellow
+            }
+        }
+    }
+}
+
+# Default output drive to system drive if not specified
+if (-not $OutputDrive) {
+    $OutputDrive = $env:SystemDrive
+    Write-Host "Output drive defaulting to: $OutputDrive" -ForegroundColor Gray
+}
+
 # Normalize drive letters (add colon if missing)
 $driveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
 $outputDriveLetter = if ($OutputDrive -match ':$') { $OutputDrive } else { "${OutputDrive}:" }
@@ -2094,6 +2130,42 @@ if ($existingArt -and $existingArt.Count -gt 0) {
     }
 }
 
+# Embed cover art into FLAC files if art is present
+$script:CoverArtEmbedded = 0
+$artFile = Get-ChildItem -Path $finalOutputDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') } |
+    Select-Object -First 1
+if ($artFile -and (Get-Command metaflac -ErrorAction SilentlyContinue)) {
+    Write-Host "  Embedding cover art into FLAC files..." -ForegroundColor Gray
+    $flacFiles = Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue
+    foreach ($flac in $flacFiles) {
+        try {
+            $tempArt = Join-Path $env:TEMP "ripaudio_embed_$([System.IO.Path]::GetRandomFileName())"
+            Copy-Item -LiteralPath $artFile.FullName -Destination $tempArt -Force
+            $embedOut = & metaflac --remove --block-type=PICTURE --dont-use-padding $flac.FullName 2>&1
+            $embedOut = & metaflac "--import-picture-from=$tempArt" $flac.FullName 2>&1
+            Remove-Item -LiteralPath $tempArt -Force -ErrorAction SilentlyContinue
+            if ($LASTEXITCODE -eq 0) {
+                $script:CoverArtEmbedded++
+            } else {
+                Write-Log "  metaflac embed failed for $($flac.Name): $embedOut"
+            }
+        } catch {
+            Write-Log "  Embed error for $($flac.Name): $_"
+        }
+    }
+    if ($script:CoverArtEmbedded -gt 0) {
+        Write-Host "  Embedded cover art into $($script:CoverArtEmbedded)/$($flacFiles.Count) file(s)" -ForegroundColor Green
+        Write-Log "Embedded cover art into $($script:CoverArtEmbedded)/$($flacFiles.Count) FLAC file(s)"
+    } else {
+        Write-Host "  Cover art embed failed (metaflac error — run search-metadata.ps1 to embed manually)" -ForegroundColor Yellow
+        Write-Log "Cover art embed failed for all tracks"
+    }
+} elseif ($artFile -and -not (Get-Command metaflac -ErrorAction SilentlyContinue)) {
+    Write-Host "  Cover art file exists but metaflac not installed — run search-metadata.ps1 to embed" -ForegroundColor Yellow
+    Write-Log "Cover art embed skipped: metaflac not found"
+}
+
 Complete-CurrentStep
 
 # ========== STEP 4: OPEN DIRECTORY ==========
@@ -2122,6 +2194,16 @@ Write-Host "  Total tracks: $($rippedFiles.Count)" -ForegroundColor White
 Write-Host "  Total size: $totalSizeMB MB" -ForegroundColor White
 $coverArtStatus = if ($script:CoverArtDownloaded) { "Yes" } else { "No" }
 Write-Host "  Cover art: $coverArtStatus" -ForegroundColor White
+if ($script:CoverArtDownloaded) {
+    $totalFlacCount = (Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue).Count
+    if ($script:CoverArtEmbedded -gt 0) {
+        Write-Host "  Cover art embedded: $($script:CoverArtEmbedded)/$totalFlacCount file(s)" -ForegroundColor $(if ($script:CoverArtEmbedded -ge $totalFlacCount) { "Green" } else { "Yellow" })
+    } elseif (Get-Command metaflac -ErrorAction SilentlyContinue) {
+        Write-Host "  Cover art embedded: 0/$totalFlacCount file(s) (embed failed)" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Cover art embedded: not embedded (metaflac not installed)" -ForegroundColor Yellow
+    }
+}
 if ($arResults.DbStatus -eq "found" -and $arResults.TracksVerified -ge 0) {
     Write-Host "  AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) verified" -ForegroundColor White
 } elseif ($arResults.DbStatus -eq "not found") {

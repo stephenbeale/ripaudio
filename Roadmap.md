@@ -23,3 +23,7 @@
 - [x] Resume interrupted rips - detects completed tracks via cue file/disc query, validates integrity (metaflac --test / file size), offers 3-option menu (Resume/Re-rip/Abort), passes `-l` to cyanrip for selective track ripping
 - [x] Auto-discover disc metadata - `-album` now optional; queries disc ID via `cyanrip -I`, looks up MusicBrainz API for artist/album/disc position, handles multi-disc albums (appends "Disc N"), prompts on failure
 - [x] Real-time cyanrip output - streams cyanrip stdout/stderr to console during rip instead of buffering until completion
+
+## Planned
+
+- [ ] Offline/internet-independent operation - if MusicBrainz or internet is unavailable during disc query or cover art download, prompt user to continue without metadata, note the issues in the summary, and complete the rip with generic names rather than aborting
