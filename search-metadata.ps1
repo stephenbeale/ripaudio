@@ -27,6 +27,9 @@ param(
     [switch]$EmbedOnly
 )
 
+# Ensure metaflac (and other external tools) output is read as UTF-8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 # ========== STEP TRACKING ==========
 $script:AllSteps = @(
     @{ Number = 1; Name = "Scan files"; Description = "Read existing tags and identify gaps" }

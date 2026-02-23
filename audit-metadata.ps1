@@ -9,6 +9,9 @@ param(
     [switch]$ReportOnly
 )
 
+# Ensure metaflac (and other external tools) output is read as UTF-8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 # ========== HELPER FUNCTIONS ==========
 
 function Assert-MetaflacInstalled {
