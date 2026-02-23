@@ -898,10 +898,14 @@ function Process-AlbumFolder {
 
     if (-not $folderAlbum) {
         $tagAlbum = ($existingTracks | Where-Object { $_.Album -and $_.Album -ne "" } | Select-Object -First 1).Album
-        if ($tagAlbum) {
+        $isGenericAlbum = $tagAlbum -and ($tagAlbum -match '^Unknown disc' -or $tagAlbum -match '^Unknown track' -or $tagAlbum -match '^Track \d+')
+        if ($tagAlbum -and -not $isGenericAlbum) {
             $folderAlbum = $tagAlbum
             Write-Host "  Album (from tags): $folderAlbum" -ForegroundColor Gray
         } else {
+            if ($isGenericAlbum) {
+                Write-Host "  Album tag is generic ($tagAlbum) — using folder name instead" -ForegroundColor Yellow
+            }
             $folderAlbum = Split-Path -Leaf $FolderPath
             Write-Host "  Album (from folder): $folderAlbum" -ForegroundColor Gray
         }
