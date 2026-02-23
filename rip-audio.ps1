@@ -2158,11 +2158,11 @@ if ($artFile -and (Get-Command metaflac -ErrorAction SilentlyContinue)) {
         Write-Host "  Embedded cover art into $($script:CoverArtEmbedded)/$($flacFiles.Count) file(s)" -ForegroundColor Green
         Write-Log "Embedded cover art into $($script:CoverArtEmbedded)/$($flacFiles.Count) FLAC file(s)"
     } else {
-        Write-Host "  Cover art embed failed (metaflac error — run search-metadata.ps1 to embed manually)" -ForegroundColor Yellow
+        Write-Host "  Cover art embed failed (metaflac error - run search-metadata.ps1 to embed manually)" -ForegroundColor Yellow
         Write-Log "Cover art embed failed for all tracks"
     }
 } elseif ($artFile -and -not (Get-Command metaflac -ErrorAction SilentlyContinue)) {
-    Write-Host "  Cover art file exists but metaflac not installed — run search-metadata.ps1 to embed" -ForegroundColor Yellow
+    Write-Host "  Cover art file exists but metaflac not installed - run search-metadata.ps1 to embed" -ForegroundColor Yellow
     Write-Log "Cover art embed skipped: metaflac not found"
 }
 
