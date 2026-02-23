@@ -598,33 +598,41 @@ function Set-CoverArt {
     param([string]$FilePath, [string]$ImagePath)
 
     $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
-    if (-not $metaflacPath) { return $false }
+    if (-not $metaflacPath) {
+        $script:LastMetaflacError = "metaflac not found in PATH (install flac package)"
+        Write-Log "  Set-CoverArt: metaflac not found in PATH"
+        return $false
+    }
 
-    # metaflac --import-picture-from= fails on Windows when the path contains spaces.
-    # Copy to a temp path (no spaces) before importing, then clean up.
+    # Copy to a temp path (no spaces) before importing -- metaflac --import-picture-from=
+    # can fail on Windows when the path after = contains spaces.
     $ext = [System.IO.Path]::GetExtension($ImagePath)
     $tempImg = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), "ripaudio_cover$ext")
-    Copy-Item $ImagePath $tempImg -Force
+    Copy-Item -LiteralPath $ImagePath -Destination $tempImg -Force
 
-    if (-not (Test-Path $tempImg)) {
+    if (-not (Test-Path -LiteralPath $tempImg)) {
+        $script:LastMetaflacError = "temp copy failed (source: $([System.IO.Path]::GetFileName($ImagePath)))"
         Write-Log "  Set-CoverArt: temp copy failed for $([System.IO.Path]::GetFileName($FilePath))"
         return $false
     }
 
-    # Remove existing pictures first, then import
-    # Use just the filename -- type defaults to 3 (Front Cover), MIME auto-detected
-    # Avoids specification format (TYPE|MIME|DESC|WxH|FILE) which mis-parses Windows backslash paths
-    & metaflac --remove --block-type=PICTURE $FilePath 2>$null
+    # Remove existing pictures first, then import.
+    # Pipe --remove stdout to Out-Null so it doesn't pollute this function's return value.
+    # Use just the filename -- type defaults to 3 (Front Cover), MIME auto-detected.
+    & metaflac --remove --block-type=PICTURE $FilePath 2>$null | Out-Null
     $importOutput = & metaflac "--import-picture-from=$tempImg" $FilePath 2>&1
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0) {
         $errMsg = ($importOutput | Where-Object { "$_".Trim() }) -join " | "
-        Write-Log "  metaflac embed failed (exit $exitCode) for $([System.IO.Path]::GetFileName($FilePath)): $errMsg"
+        if (-not $errMsg) { $errMsg = "exit code $exitCode (no output from metaflac)" }
+        Write-Log "  metaflac embed failed ($errMsg) for $([System.IO.Path]::GetFileName($FilePath))"
         $script:LastMetaflacError = $errMsg
+    } else {
+        Write-Log "  metaflac embed OK: $([System.IO.Path]::GetFileName($FilePath))"
     }
 
-    Remove-Item $tempImg -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $tempImg -ErrorAction SilentlyContinue
     return $exitCode -eq 0
 }
 
@@ -1029,6 +1037,9 @@ function Process-AlbumFolder {
                 Write-Host "    Embedded cover art in $embedCount/$($existingTracks.Count) file(s)" -ForegroundColor Yellow
                 if ($script:LastMetaflacError) {
                     Write-Host "    metaflac error: $($script:LastMetaflacError)" -ForegroundColor Red
+                    Write-Host "    (check log for per-file details: $($script:LogFile))" -ForegroundColor Gray
+                } else {
+                    Write-Host "    (no error captured -- check log: $($script:LogFile))" -ForegroundColor Gray
                 }
             }
             Write-Log "  Embedded cover art in $embedCount files"
