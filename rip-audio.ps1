@@ -2212,6 +2212,9 @@ if ($arResults.DbStatus -eq "found" -and $arResults.TracksVerified -ge 0) {
 Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
 Write-Host "========================================`n" -ForegroundColor Cyan
 
+Write-Host "  If you enjoy this app, consider buying me a coffee to help me continue to improve it!" -ForegroundColor DarkYellow
+Write-Host "  https://buymeacoffee.com/stephenbeale`n" -ForegroundColor DarkYellow
+
 Write-Log "========== RIP SESSION COMPLETE =========="
 Write-Log "Final location: $finalOutputDir"
 Write-Log "Total tracks: $($rippedFiles.Count)"

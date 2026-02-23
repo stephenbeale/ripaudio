@@ -434,6 +434,9 @@ if ($flaggedResults.Count -gt 0) {
 
 Write-Host "`n========================================`n" -ForegroundColor Cyan
 
+Write-Host "  If you enjoy this app, consider buying me a coffee to help me continue to improve it!" -ForegroundColor DarkYellow
+Write-Host "  https://buymeacoffee.com/stephenbeale`n" -ForegroundColor DarkYellow
+
 $host.UI.RawUI.WindowTitle = "audit-metadata - DONE ($($flaggedResults.Count) flagged / $($auditResults.Count) scanned)"
 
 Write-Log "========== AUDIT COMPLETE =========="
