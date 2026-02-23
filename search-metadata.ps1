@@ -88,6 +88,12 @@ function Show-StepsSummary {
 function Assert-MetaflacInstalled {
     if (Get-Command metaflac -ErrorAction SilentlyContinue) { return }
 
+    # Refresh PATH from registry first — metaflac may be installed but not in this session's PATH
+    $machinePath = [System.Environment]::GetEnvironmentVariable("PATH", "Machine")
+    $userPath    = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+    $env:PATH    = "$machinePath;$userPath"
+    if (Get-Command metaflac -ErrorAction SilentlyContinue) { return }
+
     Write-Host ""
     Write-Host "  metaflac is not installed." -ForegroundColor Yellow
     Write-Host "  It is required to read and write tags and cover art in FLAC files." -ForegroundColor Yellow
