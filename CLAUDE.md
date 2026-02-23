@@ -557,3 +557,69 @@ These branches have no commits ahead of master and were pruned from local tracki
 2. Test PR #58 fix: confirm the console no longer shows `progress - XX.XX%` noise during a real rip while still completing normally
 3. Test PR #59/#60 fix: run `search-metadata.ps1 -Recurse` against a folder where an album name is a partial prefix of the MusicBrainz result and confirm the `Partial match:` prompt appears and requires `y` to proceed
 4. Continue end-to-end testing of the full rip workflow with a real disc (AccurateRip regex validation)
+
+---
+
+### 2026-02-23 - Multi-disc, Drive Auto-detect, Cover Art Embedding, Encoding Fixes, Coffee Badge
+
+**PRs Merged:**
+
+- PR #68 - fix(rip): multi-disc detection, drive auto-detect, cover art embedding
+  - Added `+discids` to MusicBrainz URLs in `Get-DiscMetadata` so `medium.discs` array is populated (fixes blank disc number on multi-disc albums)
+  - Added more disc ID regex patterns to handle "Disc ID: X" format from cyanrip on network failure
+  - `-Drive` and `-OutputDrive` now default to `""` — auto-detects optical drive via `Get-CimInstance Win32_CDROMDrive`, defaults output to `$env:SystemDrive`
+  - After cover art download in Step 3, now embeds into all FLAC files using `metaflac`; tracks `$script:CoverArtEmbedded` count; shows "Cover art embedded: N/M file(s)" in FILE SUMMARY
+  - `Roadmap.md`: added Planned section with offline/internet-independent operation item
+
+- PR #69 - fix(metadata): decode metaflac output as UTF-8 to fix smart quotes/accents
+  - Added `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` after param block in `search-metadata.ps1` and `audit-metadata.ps1`
+  - Fixes garbled characters like `ÔÇÖ` when FLAC tags contain smart quotes/accented characters
+
+- PR #70 - feat: add buy me a coffee nudge to all success summaries
+  - Added two-line coffee nudge at end of success summaries in all three scripts
+
+- PR #71 - fix(metadata): skip generic album tags, use folder name instead
+  - When ALBUM tag matches "Unknown disc ...", "Unknown track", or "Track N", fall back to folder name for metadata search
+
+- PR #72 - docs: add resume examples and fix drive parameter defaults in README
+  - Updated Resuming Interrupted Rips section with concrete re-run examples
+  - Fixed `-Drive` and `-OutputDrive` defaults in parameters table (was D:/E:, now auto-detect/system drive)
+
+- PR #73 - fix: replace em dashes in string literals to fix PS5.1 parse error
+  - Em dash (—) in `Write-Host` string literals caused parse error: UTF-8 byte 0x94 decoded as closing `"` in Win-1252
+  - Fixed in `rip-audio.ps1` (x2) and `search-metadata.ps1` (x1)
+
+- PR #74 - fix: refresh PATH before metaflac install check
+  - `Assert-MetaflacInstalled` now refreshes `$env:PATH` from registry before deciding metaflac is missing
+  - Fixes repeated install prompts when metaflac is installed but the session predates its PATH entry
+
+- PR #75 - feat: add ASCII coffee art badge to success summaries
+  - Replaced plain text coffee message with `Show-CoffeeBadge` function in all three scripts
+  - Box drawn via `[char]` casts (Unicode double-line box chars built at runtime, source stays ASCII-safe)
+  - Steam/cup in DarkYellow, text in White, URL in Yellow, border in DarkGray
+
+- PR #76 - feat: add arrows and click here to coffee badge
+  - Added `>>` before URL, replaced blank cup-bottom row with `>>> click here! <<<` in Cyan
+
+- PR #77 - feat: blank line + up-arrow style in coffee badge
+  - Added blank cup-body row between text and URL for visual separation
+  - Changed `>>> <<<` to `^^^ ^^^` for the click here arrows
+
+**Session Verified Clean:**
+- All 10 PRs (#68-#77) squash-merged to master
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+- Stale remote branches `feature/coffee-badge-arrows` and `feature/coffee-badge-spacing` pruned
+
+**Technical Notes:**
+- PowerShell 5.1 reads .ps1 files without UTF-8 BOM as Windows-1252. The last byte of some UTF-8 multibyte chars (e.g. 0x94 from em dash — or box-drawing chars like ╔) decodes as `"` in Win-1252, breaking string parsing. Fix: use ASCII in string literals, or build Unicode chars at runtime via `[char]` casts.
+- `[Console]::OutputEncoding` must be set to UTF8 for `metaflac` output to decode correctly — set after param block in both `search-metadata.ps1` and `audit-metadata.ps1`.
+- `Assert-MetaflacInstalled` must refresh PATH from registry before calling `Get-Command metaflac`, otherwise already-installed tools are not found in new sessions.
+- Cover art embedding uses `metaflac --import-picture-from=3||||<path>` (type 3 = Front Cover) applied to all FLAC files after download.
+
+**Priority for Next Session:**
+1. All roadmap items are complete — no pending development work remains
+2. Consider end-to-end testing: rip a real disc and confirm auto-detect of drive, correct disc number on multi-disc albums, cover art embedded into FLAC files, and coffee badge displayed in summary
+3. Consider end-to-end testing of `search-metadata.ps1` with accented/smart-quote tags to verify UTF-8 encoding fix
+4. Offline/internet-independent operation (noted in Roadmap.md Planned section) is a future stretch goal
