@@ -212,7 +212,8 @@ foreach ($folder in $albumFolders) {
     if (-not $hasGenre) { $issues += "Missing genre" }
 
     # Check 3: Cover art - flag if no Front.*, Cover.*, or Folder.* exists
-    $coverArt = Get-ChildItem -Path $folder -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+    $coverArt = Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
     if (-not $coverArt -or $coverArt.Count -eq 0) {
         $issues += "No cover art"
     }
