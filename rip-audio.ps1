@@ -2138,6 +2138,39 @@ if ($arResults.TracksVerified -ge 0) {
     Write-Log "AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) verified"
 }
 
+# If MusicBrainz had no match the tracks will be named "Unknown track".
+# Offer to run search-metadata.ps1 to identify and tag them before closing.
+if (-not $script:IsProcessingQueue) {
+    $unknownTracks = $rippedFiles | Where-Object { $_.Name -like "*Unknown track*" }
+    if ($unknownTracks.Count -gt 0) {
+        Write-Host "`n  Disc not found in MusicBrainz -- $($unknownTracks.Count) track(s) are untagged." -ForegroundColor Yellow
+        Write-Host "  Run search-metadata.ps1 now to identify and tag this album? [Y/N] (auto-Yes in 30s): " -NoNewline -ForegroundColor White
+        $key = $null
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($sw.Elapsed.TotalSeconds -lt 30) {
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                break
+            }
+            Start-Sleep -Milliseconds 200
+        }
+        $sw.Stop()
+        $choice = if ($key) { "$($key.KeyChar)".ToUpper() } else { $null }
+        if ($null -eq $choice) { Write-Host "Y (auto)" -ForegroundColor Gray; $choice = "Y" }
+        else { Write-Host $choice }
+        if ($choice -ne "N") {
+            Write-Host "  Launching search-metadata.ps1..." -ForegroundColor Cyan
+            Write-Log "Launching search-metadata.ps1 for untagged disc: $finalOutputDir"
+            $searchScript = Join-Path $PSScriptRoot "search-metadata.ps1"
+            Start-Process powershell.exe -ArgumentList @(
+                "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", $searchScript,
+                "-Path", $finalOutputDir
+            ) -Wait -NoNewWindow
+        }
+    }
+}
+
 Enable-ConsoleClose
 $host.UI.RawUI.WindowTitle = "$windowTitle - DONE"
 if ($arResults.DbStatus -eq "found" -and $arResults.TracksVerified -ge 0 -and $arResults.TracksVerified -lt $arResults.TracksTotal) {
