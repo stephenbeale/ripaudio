@@ -904,7 +904,7 @@ function Process-AlbumFolder {
             Write-Host "  Album (from tags): $folderAlbum" -ForegroundColor Gray
         } else {
             if ($isGenericAlbum) {
-                Write-Host "  Album tag is generic ($tagAlbum) — using folder name instead" -ForegroundColor Yellow
+                Write-Host "  Album tag is generic ($tagAlbum) - using folder name instead" -ForegroundColor Yellow
             }
             $folderAlbum = Split-Path -Leaf $FolderPath
             Write-Host "  Album (from folder): $folderAlbum" -ForegroundColor Gray
