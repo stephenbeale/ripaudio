@@ -73,8 +73,8 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 |-----------|----------|---------|-------------|
 | `-album` | No | - | Album name (auto-detected from disc if omitted) |
 | `-artist` | No | - | Artist name (affects output directory structure) |
-| `-Drive` | No | D: | CD drive letter |
-| `-OutputDrive` | No | E: | Output drive letter |
+| `-Drive` | No | auto-detect | CD drive letter (auto-detected if only one optical drive present) |
+| `-OutputDrive` | No | system drive | Output drive letter (defaults to `$env:SystemDrive`, e.g. `C:`) |
 | `-format` | No | flac | Output format(s), comma-separated (flac, mp3, opus, aac, wav, alac) |
 | `-Quality` | No | 0 | Bitrate in kbps for lossy formats (32-320, e.g. 320 for mp3) |
 | `-RequireMusicBrainz` | No | - | Stop if disc not found in MusicBrainz (no fallback to generic names) |
@@ -266,22 +266,49 @@ Results are displayed in green (all verified) or yellow (partial), logged to the
 
 ## Resuming Interrupted Rips
 
-If cyanrip crashes mid-rip (e.g., access violation), re-running the script with the same parameters will detect the partial rip and offer to resume:
+If a rip crashes or is cancelled mid-way, just re-run the **same command** with the disc still in the drive. The script automatically detects the partial work and offers to pick up where it left off — no extra flags needed.
 
-1. The script checks existing audio files against the disc's total track count (from the `.cue` file or `cyanrip -I`)
+```powershell
+# Original rip command (ran, then crashed after track 3)
+.\rip-audio.ps1
+
+# Re-run — script detects tracks 1–3 exist, offers to resume from track 4
+.\rip-audio.ps1
+```
+
+```powershell
+# Works the same way when album/artist were specified
+.\rip-audio.ps1 -album "Abbey Road" -artist "The Beatles"
+
+# Re-run after a crash
+.\rip-audio.ps1 -album "Abbey Road" -artist "The Beatles"
+```
+
+**What happens on re-run:**
+
+1. The script checks existing audio files in the output folder against the disc's total track count (from the `.cue` file or `cyanrip -I`)
 2. Each existing track is validated (FLAC: `metaflac --test`, others: file size > 10KB)
-3. A summary shows which tracks are valid and which are missing
+3. A summary shows which tracks are valid and which are missing:
 
-**3-option menu:**
-- **Resume** - rip only the missing/invalid tracks (passes `-l` to cyanrip)
-- **Re-rip** - rip all tracks from scratch
-- **Abort** - cancel
+```
+Valid: 3/12 tracks (1, 2, 3)
+Missing: 9 tracks (4, 5, 6, 7, 8, 9, 10, 11, 12)
+
+  [1] Resume (rip tracks 4,5,6,7,8,9,10,11,12 only)
+  [2] Re-rip all tracks from scratch
+  [3] Abort
+```
+
+**Menu options:**
+- **Resume** — rip only the missing/invalid tracks (passes `-l` to cyanrip)
+- **Re-rip** — discard existing files and rip all tracks from scratch
+- **Abort** — cancel without changing anything
 
 **Edge cases:**
-- **All tracks valid** - offers to skip the rip entirely or re-rip
-- **No valid tracks** - falls back to the standard Continue/Abort menu
-- **Can't determine track count** (no cue file, disc query fails) - falls back to Continue/Abort
-- **Queue mode** - auto-resumes when missing tracks are detected
+- **All tracks valid** — offers to skip the rip entirely or re-rip
+- **No valid tracks** — falls back to the standard Continue/Abort menu
+- **Can't determine track count** (no cue file, disc query fails) — falls back to Continue/Abort
+- **Queue mode** — auto-resumes when missing tracks are detected
 
 ## MusicBrainz Release Selection
 
