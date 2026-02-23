@@ -81,6 +81,23 @@ function Write-Log {
     }
 }
 
+function Show-CoffeeBadge {
+    $vt = [char]0x2551
+    $hz = [string]::new([char]0x2550, 53)
+    $tl = [char]0x2554
+    $tr = [char]0x2557
+    $bl = [char]0x255A
+    $br = [char]0x255D
+    Write-Host ""
+    Write-Host "  $tl$hz$tr" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "   ) ) )                                             " -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  (_____)  " -NoNewline -ForegroundColor DarkYellow; Write-Host "Enjoying this app? Buy me a coffee!       " -NoNewline -ForegroundColor White; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  |     |  " -NoNewline -ForegroundColor DarkYellow; Write-Host "https://buymeacoffee.com/stephenbeale    " -NoNewline -ForegroundColor Yellow; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  '-----'                                           " -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $bl$hz$br" -ForegroundColor DarkGray
+    Write-Host ""
+}
+
 function Stop-WithError {
     param([string]$Step, [string]$Message)
 
@@ -440,8 +457,7 @@ if ($flaggedResults.Count -gt 0) {
 
 Write-Host "`n========================================`n" -ForegroundColor Cyan
 
-Write-Host "  If you enjoy this app, consider buying me a coffee to help me continue to improve it!" -ForegroundColor DarkYellow
-Write-Host "  https://buymeacoffee.com/stephenbeale`n" -ForegroundColor DarkYellow
+Show-CoffeeBadge
 
 $host.UI.RawUI.WindowTitle = "audit-metadata - DONE ($($flaggedResults.Count) flagged / $($auditResults.Count) scanned)"
 
