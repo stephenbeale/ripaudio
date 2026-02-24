@@ -1165,12 +1165,22 @@ function Process-AlbumFolder {
     $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
 
     # Retry with disc suffix stripped (e.g. "Singles Collection CD 1" -> "Singles Collection")
-    if (-not $merged) {
+    # Triggers on no results OR artist mismatch (wrong album matched due to generic name)
+    $needsRetry = (-not $merged) -or
+        ($merged -and $folderArtist -and (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $merged.Artist))
+    if ($needsRetry) {
         $strippedAlbum = $folderAlbum -replace '\s*[-]?\s*\(?\s*(?:CD|Disc)\s*\d+\s*\)?\s*$', ''
         if ($strippedAlbum -and $strippedAlbum -ne $folderAlbum) {
-            Write-Host "  No results for `"$folderAlbum`" - retrying as `"$strippedAlbum`"..." -ForegroundColor Yellow
-            Write-Log "  Retry: stripped disc suffix `"$folderAlbum`" -> `"$strippedAlbum`""
-            $merged = Search-AllSources -AlbumName $strippedAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+            $reason = if (-not $merged) { "No results" } else { "Artist mismatch ($($merged.Artist))" }
+            Write-Host "  $reason for `"$folderAlbum`" - retrying as `"$strippedAlbum`"..." -ForegroundColor Yellow
+            Write-Log "  Retry: $reason - stripped disc suffix `"$folderAlbum`" -> `"$strippedAlbum`""
+            $retryResult = Search-AllSources -AlbumName $strippedAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+            if ($retryResult) {
+                # Only use retry result if it's a better artist match (or original had no result)
+                if (-not $merged -or -not (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $retryResult.Artist)) {
+                    $merged = $retryResult
+                }
+            }
         }
     }
 
