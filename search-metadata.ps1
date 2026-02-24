@@ -932,14 +932,35 @@ function Process-AlbumFolder {
     if (-not $folderAlbum) {
         $tagAlbum = ($existingTracks | Where-Object { $_.Album -and $_.Album -ne "" } | Select-Object -First 1).Album
         $isGenericAlbum = $tagAlbum -and ($tagAlbum -match '^Unknown disc' -or $tagAlbum -match '^Unknown track' -or $tagAlbum -match '^Track \d+')
+
+        # Check if tag album has any word overlap with the folder name
+        $dirName = Split-Path -Leaf $FolderPath
+        $isTagMismatch = $false
         if ($tagAlbum -and -not $isGenericAlbum) {
+            $tagWords = ($tagAlbum -replace '[^a-zA-Z0-9\s]', ' ' -split '\s+').Where({ $_ }) |
+                ForEach-Object { $_.ToLower() }
+            $dirWords = ($dirName -replace '[^a-zA-Z0-9\s]', ' ' -split '\s+').Where({ $_ }) |
+                ForEach-Object { $_.ToLower() }
+            # Filter out trivial words (CD, Disc, numbers) from folder name for comparison
+            $dirContentWords = $dirWords | Where-Object { $_ -notmatch '^(cd|disc|\d+)$' }
+            if ($dirContentWords.Count -gt 0) {
+                $overlap = $dirContentWords | Where-Object { $_ -in $tagWords }
+                if ($overlap.Count -eq 0) {
+                    $isTagMismatch = $true
+                }
+            }
+        }
+
+        if ($tagAlbum -and -not $isGenericAlbum -and -not $isTagMismatch) {
             $folderAlbum = $tagAlbum
             Write-Host "  Album (from tags): $folderAlbum" -ForegroundColor Gray
         } else {
             if ($isGenericAlbum) {
                 Write-Host "  Album tag is generic ($tagAlbum) - using folder name instead" -ForegroundColor Yellow
+            } elseif ($isTagMismatch) {
+                Write-Host "  Album tag `"$tagAlbum`" does not match folder `"$dirName`" - using folder name" -ForegroundColor Yellow
             }
-            $folderAlbum = Split-Path -Leaf $FolderPath
+            $folderAlbum = $dirName
             Write-Host "  Album (from folder): $folderAlbum" -ForegroundColor Gray
         }
     }
