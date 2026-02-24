@@ -820,6 +820,7 @@ function Rename-AudioFiles {
         if ($file.Name -ne $newName) {
             $newPath = Join-Path $file.DirectoryName $newName
             try {
+                Write-Log "UNDO_RENAME|$newPath|$($file.FullName)"
                 Rename-Item -Path $file.FullName -NewName $newName -ErrorAction Stop
                 Write-Host "    $($file.Name) -> $newName" -ForegroundColor Gray
                 Write-Log "  Renamed: $($file.Name) -> $newName"
@@ -1268,6 +1269,27 @@ function Process-AlbumFolder {
         Write-Host "`n[STEP 4/$script:TotalSteps] Applying tags..." -ForegroundColor Green
         Write-Log "STEP 4/$($script:TotalSteps): Applying tags"
 
+        # Log baseline tags for undo support
+        foreach ($track in $existingTracks) {
+            $bTITLE = $track.Title -replace '\|', '_'
+            $bARTIST = $track.Artist -replace '\|', '_'
+            $bALBUM = $track.Album -replace '\|', '_'
+            $bALBUMARTIST = $track.AlbumArtist -replace '\|', '_'
+            $bTRACKNUMBER = $track.TrackNumber -replace '\|', '_'
+            $bDATE = $track.Date -replace '\|', '_'
+            $bGENRE = $track.Genre -replace '\|', '_'
+            # Read TRACKTOTAL and MUSICBRAINZ_ALBUMID directly since they're not in $track
+            $bTRACKTOTAL = ""
+            $bMBID = ""
+            if (Get-Command metaflac -ErrorAction SilentlyContinue) {
+                $ttVal = & metaflac --show-tag=TRACKTOTAL $track.File.FullName 2>$null
+                if ($ttVal -match '^TRACKTOTAL=(.+)$') { $bTRACKTOTAL = $Matches[1] -replace '\|', '_' }
+                $mbVal = & metaflac --show-tag=MUSICBRAINZ_ALBUMID $track.File.FullName 2>$null
+                if ($mbVal -match '^MUSICBRAINZ_ALBUMID=(.+)$') { $bMBID = $Matches[1] -replace '\|', '_' }
+            }
+            Write-Log "UNDO_BASELINE|$($track.File.FullName)|TITLE=$bTITLE|ARTIST=$bARTIST|ALBUM=$bALBUM|ALBUMARTIST=$bALBUMARTIST|TRACKNUMBER=$bTRACKNUMBER|TRACKTOTAL=$bTRACKTOTAL|DATE=$bDATE|GENRE=$bGENRE|MUSICBRAINZ_ALBUMID=$bMBID"
+        }
+
         for ($i = 0; $i -lt $existingTracks.Count; $i++) {
             $track = $existingTracks[$i]
             $trackTitle = if ($merged.Tracks -and $i -lt $merged.Tracks.Count) { $merged.Tracks[$i].Title } else { $track.Title }
@@ -1333,9 +1355,12 @@ function Process-AlbumFolder {
             Write-Host "    Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Gray
             Write-Log "  Cover art already exists"
         } else {
+            $hadExistingArt = [bool]$existingArt
             $artFile = Get-CoverArt -ArtworkUrl $merged.ArtworkUrl -ArtworkSource $merged.ArtworkSource `
                 -OutputPath $FolderPath -ReleaseId $merged.ReleaseId
-            if (-not $artFile) {
+            if ($artFile) {
+                Write-Log "UNDO_COVER_ART|$FolderPath|$artFile|$hadExistingArt"
+            } else {
                 Write-Log "  No cover art downloaded"
             }
         }

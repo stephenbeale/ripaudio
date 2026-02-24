@@ -21,6 +21,7 @@ ripaudio/
     get-metadata.ps1     # MusicBrainz metadata lookup and CUE file generation
     search-metadata.ps1  # Multi-source metadata search, tag, rename (MB + iTunes + Deezer)
     audit-metadata.ps1   # Scan for missing/incomplete metadata, copy flagged albums to staging
+    undo-metadata.ps1    # Reverse changes made by search-metadata.ps1 using UNDO_* log entries
     README.md            # User documentation
     CLAUDE.md            # This file - development notes
     Roadmap.md           # Planned features
