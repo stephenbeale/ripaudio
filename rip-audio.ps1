@@ -309,19 +309,20 @@ function Write-Log {
 }
 
 function Show-CoffeeBadge {
-    $vt = [char]0x2551  # box vertical  (║)
-    $hz = [string]::new([char]0x2550, 60)  # box horizontal x60  (═══)
-    $tl = [char]0x2554  # top-left corner  (╔)
-    $tr = [char]0x2557  # top-right corner  (╗)
-    $bl = [char]0x255A  # bottom-left corner  (╚)
-    $br = [char]0x255D  # bottom-right corner  (╝)
+    $vt = [char]0x2551
+    $w  = 60
+    $hz = [string]::new([char]0x2550, $w)
+    $tl = [char]0x2554
+    $tr = [char]0x2557
+    $bl = [char]0x255A
+    $br = [char]0x255D
     Write-Host ""
     Write-Host "  $tl$hz$tr" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "   ) ) )                                                    " -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  (_____)  " -NoNewline -ForegroundColor DarkYellow; Write-Host "Enjoying this app? Consider buying me a coffee! " -NoNewline -ForegroundColor White; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  |     |                                                   " -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  |     |  " -NoNewline -ForegroundColor DarkYellow; Write-Host ">> https://buymeacoffee.com/stephenbeale         " -NoNewline -ForegroundColor Yellow; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  '-----'" -NoNewline -ForegroundColor DarkYellow; Write-Host "            ^^^ click here! ^^^                   " -NoNewline -ForegroundColor Cyan; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host ("   ) ) )".PadRight($w)) -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
+    $c = "  (_____)  "; Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host $c -NoNewline -ForegroundColor DarkYellow; Write-Host ("Enjoying this app? Consider buying me a coffee!".PadRight($w - $c.Length)) -NoNewline -ForegroundColor White; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host ("  |     |".PadRight($w)) -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
+    $c = "  |     |  "; Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host $c -NoNewline -ForegroundColor DarkYellow; Write-Host (">> https://buymeacoffee.com/stephenbeale".PadRight($w - $c.Length)) -NoNewline -ForegroundColor Yellow; Write-Host "$vt" -ForegroundColor DarkGray
+    $c = "  '-----'"; Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host $c -NoNewline -ForegroundColor DarkYellow; Write-Host ("            ^^^ click here! ^^^".PadRight($w - $c.Length)) -NoNewline -ForegroundColor Cyan; Write-Host "$vt" -ForegroundColor DarkGray
     Write-Host "  $bl$hz$br" -ForegroundColor DarkGray
     Write-Host ""
 }
