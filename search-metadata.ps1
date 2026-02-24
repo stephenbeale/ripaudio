@@ -239,6 +239,38 @@ function Read-ExistingTags {
     return $tracks
 }
 
+function Get-TrackDurations {
+    param([array]$ExistingTracks)
+
+    $durations = @()
+    foreach ($track in $ExistingTracks) {
+        $samples = & metaflac --show-total-samples $track.File.FullName 2>$null
+        $rate = & metaflac --show-sample-rate $track.File.FullName 2>$null
+        if ($samples -and $rate -and [int]$rate -gt 0) {
+            $durations += [int][Math]::Round([double]$samples / [double]$rate)
+        } else {
+            $durations += 0
+        }
+    }
+    return ,$durations
+}
+
+function Test-DurationMatch {
+    param([array]$LocalDurations, [array]$CandidateDurations, [int]$ToleranceSec = 5)
+
+    if (-not $LocalDurations -or -not $CandidateDurations) { return 0 }
+    if ($LocalDurations.Count -ne $CandidateDurations.Count) { return 0 }
+
+    $matched = 0
+    for ($i = 0; $i -lt $LocalDurations.Count; $i++) {
+        if ($LocalDurations[$i] -eq 0 -or $CandidateDurations[$i] -eq 0) { continue }
+        if ([Math]::Abs($LocalDurations[$i] - $CandidateDurations[$i]) -le $ToleranceSec) {
+            $matched++
+        }
+    }
+    return $matched
+}
+
 function Search-ByDiscId {
     param([string]$DiscId, [string]$ReleaseId)
 
@@ -333,7 +365,7 @@ function Search-ByDiscId {
 }
 
 function Search-MusicBrainz {
-    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount)
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount, [array]$LocalDurations)
 
     $headers = @{
         "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
@@ -355,25 +387,68 @@ function Search-MusicBrainz {
         Start-Sleep -Milliseconds 1100  # Rate limit
 
         if ($response.releases -and $response.releases.Count -gt 0) {
-            # Prefer release with matching track count
-            $bestMatch = $null
+            # Collect all releases with matching track count
+            $candidates = @()
             if ($TrackCount -gt 0) {
                 foreach ($rel in $response.releases) {
                     if ($rel.media -and $rel.media.Count -gt 0) {
                         $relTrackCount = ($rel.media | ForEach-Object { $_.'track-count' } | Measure-Object -Sum).Sum
                         if ($relTrackCount -eq $TrackCount) {
-                            $bestMatch = $rel
-                            break
+                            $candidates += $rel
                         }
                     }
                 }
             }
-            if (-not $bestMatch) {
-                $bestMatch = $response.releases[0]
+            if ($candidates.Count -eq 0) {
+                $candidates = @($response.releases[0])
             }
 
-            # Fetch full release details with recordings
-            $detailUrl = "https://musicbrainz.org/ws/2/release/$($bestMatch.id)?inc=recordings+artist-credits+release-groups&fmt=json"
+            # If we have local durations and multiple candidates, validate each by duration
+            if ($LocalDurations -and $LocalDurations.Count -gt 0 -and $candidates.Count -gt 1) {
+                Write-Host "    MusicBrainz: $($candidates.Count) releases match track count - checking durations..." -ForegroundColor Gray
+                Write-Log "  MusicBrainz: $($candidates.Count) candidates with $TrackCount tracks, validating by duration"
+
+                $bestRelease = $null
+                $bestScore = -1
+
+                foreach ($candidate in $candidates) {
+                    $detailUrl = "https://musicbrainz.org/ws/2/release/$($candidate.id)?inc=recordings+artist-credits+release-groups&fmt=json"
+                    $fullRel = Invoke-RestMethod -Uri $detailUrl -Headers $headers -TimeoutSec 15
+                    Start-Sleep -Milliseconds 1100
+
+                    # Extract track durations from recordings (in milliseconds -> seconds)
+                    $mbDurations = @()
+                    if ($fullRel.media -and $fullRel.media[0].tracks) {
+                        foreach ($t in $fullRel.media[0].tracks) {
+                            $lenMs = if ($t.length) { $t.length } elseif ($t.recording -and $t.recording.length) { $t.recording.length } else { 0 }
+                            $mbDurations += [int][Math]::Round($lenMs / 1000.0)
+                        }
+                    }
+
+                    $score = Test-DurationMatch -LocalDurations $LocalDurations -CandidateDurations $mbDurations
+                    $artist = if ($fullRel.'artist-credit') { ($fullRel.'artist-credit' | ForEach-Object { $_.name }) -join "" } else { "" }
+                    Write-Host "    MusicBrainz: `"$($fullRel.title)`" ($($candidate.id.Substring(0,8))...) - duration match: $score/$($LocalDurations.Count)" -ForegroundColor Gray
+                    Write-Log "  MusicBrainz candidate: $($fullRel.title) by $artist (ID: $($candidate.id)) - duration match $score/$($LocalDurations.Count)"
+
+                    if ($score -gt $bestScore) {
+                        $bestScore = $score
+                        $bestRelease = $fullRel
+                    }
+
+                    # Perfect match - stop looking
+                    if ($score -eq $LocalDurations.Count) { break }
+                }
+
+                if ($bestRelease) {
+                    $artist = if ($bestRelease.'artist-credit') { ($bestRelease.'artist-credit' | ForEach-Object { $_.name }) -join "" } else { "" }
+                    Write-Host "    MusicBrainz: best match `"$($bestRelease.title)`" by $artist (duration score: $bestScore/$($LocalDurations.Count))" -ForegroundColor Green
+                    Write-Log "  MusicBrainz: selected $($bestRelease.title) by $artist (ID: $($bestRelease.id)) with duration score $bestScore/$($LocalDurations.Count)"
+                    return $bestRelease
+                }
+            }
+
+            # Single candidate or no local durations - fetch and return
+            $detailUrl = "https://musicbrainz.org/ws/2/release/$($candidates[0].id)?inc=recordings+artist-credits+release-groups&fmt=json"
             $fullRelease = Invoke-RestMethod -Uri $detailUrl -Headers $headers -TimeoutSec 15
             Start-Sleep -Milliseconds 1100
 
@@ -527,9 +602,9 @@ function Search-Deezer {
 }
 
 function Search-AllSources {
-    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount)
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount, [array]$LocalDurations)
 
-    $mbResult = Search-MusicBrainz -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
+    $mbResult = Search-MusicBrainz -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount -LocalDurations $LocalDurations
     $itunesResult = Search-iTunes -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
     $deezerResult = Search-Deezer -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
 
@@ -1072,6 +1147,12 @@ function Process-AlbumFolder {
         Write-Host "  Tracks with missing/generic titles: $gapCount" -ForegroundColor Yellow
     }
 
+    # Read track durations for duration-based release validation
+    $localDurations = @()
+    if (Get-Command metaflac -ErrorAction SilentlyContinue) {
+        $localDurations = Get-TrackDurations -ExistingTracks $existingTracks
+    }
+
     Write-Log "  Artist: $folderArtist, Album: $folderAlbum, Tracks: $($existingTracks.Count), Gaps: $gapCount"
 
     Complete-CurrentStep
@@ -1096,7 +1177,7 @@ function Process-AlbumFolder {
             Write-Host "    No cover art on disk, searching online..." -ForegroundColor Yellow
             Write-Log "  No cover art on disk, searching online"
 
-            $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+            $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations
 
             # Check if search result matches -- auto-proceed on match, prompt on mismatch
             $artworkValid = $false
@@ -1296,7 +1377,7 @@ function Process-AlbumFolder {
 
     # Fall back to text search if no disc ID or disc ID lookup failed
     if (-not $merged) {
-        $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+        $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations
     }
 
     # Retry with disc suffix stripped (e.g. "Singles Collection CD 1" -> "Singles Collection")
@@ -1309,7 +1390,7 @@ function Process-AlbumFolder {
             $reason = if (-not $merged) { "No results" } else { "Artist mismatch ($($merged.Artist))" }
             Write-Host "  $reason for `"$folderAlbum`" - retrying as `"$strippedAlbum`"..." -ForegroundColor Yellow
             Write-Log "  Retry: $reason - stripped disc suffix `"$folderAlbum`" -> `"$strippedAlbum`""
-            $retryResult = Search-AllSources -AlbumName $strippedAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+            $retryResult = Search-AllSources -AlbumName $strippedAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations
             if ($retryResult) {
                 # Only use retry result if it's a better artist match (or original had no result)
                 if (-not $merged -or -not (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $retryResult.Artist)) {
