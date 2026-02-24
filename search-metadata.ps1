@@ -147,18 +147,19 @@ function Assert-MetaflacInstalled {
 
 function Show-CoffeeBadge {
     $vt = [char]0x2551
-    $hz = [string]::new([char]0x2550, 60)
+    $w  = 60
+    $hz = [string]::new([char]0x2550, $w)
     $tl = [char]0x2554
     $tr = [char]0x2557
     $bl = [char]0x255A
     $br = [char]0x255D
     Write-Host ""
     Write-Host "  $tl$hz$tr" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "   ) ) )                                                    " -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  (_____)  " -NoNewline -ForegroundColor DarkYellow; Write-Host "Enjoying this app? Consider buying me a coffee! " -NoNewline -ForegroundColor White; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  |     |                                                   " -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  |     |  " -NoNewline -ForegroundColor DarkYellow; Write-Host ">> https://buymeacoffee.com/stephenbeale         " -NoNewline -ForegroundColor Yellow; Write-Host "$vt" -ForegroundColor DarkGray
-    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host "  '-----'" -NoNewline -ForegroundColor DarkYellow; Write-Host "            ^^^ click here! ^^^                   " -NoNewline -ForegroundColor Cyan; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host ("   ) ) )".PadRight($w)) -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
+    $c = "  (_____)  "; Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host $c -NoNewline -ForegroundColor DarkYellow; Write-Host ("Enjoying this app? Consider buying me a coffee!".PadRight($w - $c.Length)) -NoNewline -ForegroundColor White; Write-Host "$vt" -ForegroundColor DarkGray
+    Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host ("  |     |".PadRight($w)) -NoNewline -ForegroundColor DarkYellow; Write-Host "$vt" -ForegroundColor DarkGray
+    $c = "  |     |  "; Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host $c -NoNewline -ForegroundColor DarkYellow; Write-Host (">> https://buymeacoffee.com/stephenbeale".PadRight($w - $c.Length)) -NoNewline -ForegroundColor Yellow; Write-Host "$vt" -ForegroundColor DarkGray
+    $c = "  '-----'"; Write-Host "  $vt" -NoNewline -ForegroundColor DarkGray; Write-Host $c -NoNewline -ForegroundColor DarkYellow; Write-Host ("            ^^^ click here! ^^^".PadRight($w - $c.Length)) -NoNewline -ForegroundColor Cyan; Write-Host "$vt" -ForegroundColor DarkGray
     Write-Host "  $bl$hz$br" -ForegroundColor DarkGray
     Write-Host ""
 }
@@ -1162,6 +1163,16 @@ function Process-AlbumFolder {
     Write-Log "STEP 2/$($script:TotalSteps): Searching metadata sources"
 
     $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+
+    # Retry with disc suffix stripped (e.g. "Singles Collection CD 1" -> "Singles Collection")
+    if (-not $merged) {
+        $strippedAlbum = $folderAlbum -replace '\s*[-]?\s*\(?\s*(?:CD|Disc)\s*\d+\s*\)?\s*$', ''
+        if ($strippedAlbum -and $strippedAlbum -ne $folderAlbum) {
+            Write-Host "  No results for `"$folderAlbum`" - retrying as `"$strippedAlbum`"..." -ForegroundColor Yellow
+            Write-Log "  Retry: stripped disc suffix `"$folderAlbum`" -> `"$strippedAlbum`""
+            $merged = Search-AllSources -AlbumName $strippedAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+        }
+    }
 
     if (-not $merged) {
         $msg = "No results found from any source for `"$folderAlbum`" by `"$folderArtist`""
