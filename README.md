@@ -464,6 +464,56 @@ With `-EmbedOnly`, if no art exists on disk the script searches MusicBrainz/iTun
 - **Cover art**: Deezer (1000x1000) > iTunes (600x600) > Cover Art Archive
 - **Track titles**: MusicBrainz > Deezer
 
+### Artist Mismatch Detection
+
+When search results return a different artist than expected (e.g. searching for a Cher album but iTunes returns Rolling Stones), the script detects the mismatch using fuzzy matching:
+
+- **Batch mode** (`-Recurse`): auto-skips the album (safe default, never applies wrong artist's metadata)
+- **Interactive mode**: shows a `WARNING: Artist mismatch` message and prompts `Apply anyway? [y/N]` (default No)
+- **No folder artist**: check is skipped (can't compare if the expected artist is unknown)
+
+### Undo Support
+
+All destructive operations are logged with structured `UNDO_*` entries in the session log file, enabling reversal via `undo-metadata.ps1`:
+
+- **UNDO_BASELINE** - original tag values before overwriting (per file)
+- **UNDO_RENAME** - original filename before renaming
+- **UNDO_COVER_ART** - downloaded cover art file path and whether art pre-existed
+
+## undo-metadata.ps1
+
+Reverses changes made by `search-metadata.ps1` using the structured undo data in its log file.
+
+### Usage
+
+```
+.\undo-metadata.ps1 -LogFile <path> [-DryRun]
+```
+
+### Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `-LogFile` | Yes | - | Path to the search-metadata log file (supports wildcards) |
+| `-DryRun` | No | - | Preview what would be undone without making changes |
+
+### 4-Step Workflow
+
+1. **Parse log** - scan for `UNDO_BASELINE`, `UNDO_RENAME`, `UNDO_COVER_ART` entries
+2. **Preview** - show what will be undone (renames reversed, tags restored, cover art removed)
+3. **Confirm** - `Apply undo? [Y/n]` prompt
+4. **Execute** - reverse renames first (restore original filenames), then restore original tags, then remove newly downloaded cover art
+
+### Examples
+
+```powershell
+# Preview what would be undone (dry run)
+.\undo-metadata.ps1 -LogFile "C:\Music\logs\search-metadata_20260224_*.log" -DryRun
+
+# Execute undo
+.\undo-metadata.ps1 -LogFile "C:\Music\logs\search-metadata_20260224_143052.log"
+```
+
 ## audit-metadata.ps1
 
 Scans album folders for missing or incomplete metadata, copies flagged albums to a staging directory, and optionally processes them with `search-metadata.ps1` — all in a single pipeline with continue/exit checkpoints between stages.

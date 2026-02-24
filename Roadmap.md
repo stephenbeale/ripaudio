@@ -23,6 +23,8 @@
 - [x] Resume interrupted rips - detects completed tracks via cue file/disc query, validates integrity (metaflac --test / file size), offers 3-option menu (Resume/Re-rip/Abort), passes `-l` to cyanrip for selective track ripping
 - [x] Auto-discover disc metadata - `-album` now optional; queries disc ID via `cyanrip -I`, looks up MusicBrainz API for artist/album/disc position, handles multi-disc albums (appends "Disc N"), prompts on failure
 - [x] Real-time cyanrip output - streams cyanrip stdout/stderr to console during rip instead of buffering until completion
+- [x] Artist mismatch detection - compares folder artist vs search result artist; auto-skips in batch mode, prompts [y/N] in interactive mode
+- [x] Undo metadata - `undo-metadata.ps1` reverses tag changes, renames, and cover art downloads using structured UNDO_* log entries from search-metadata.ps1
 
 ## Planned
 
