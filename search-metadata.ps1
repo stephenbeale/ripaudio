@@ -24,7 +24,10 @@ param(
     [switch]$DryRun,
 
     [Parameter()]
-    [switch]$EmbedOnly
+    [switch]$EmbedOnly,
+
+    [Parameter()]
+    [switch]$Reset
 )
 
 # Ensure metaflac (and other external tools) output is read as UTF-8
@@ -1069,7 +1072,8 @@ function Process-AlbumFolder {
         [switch]$SkipCoverArtMode,
         [switch]$BatchMode,
         [switch]$DryRunMode,
-        [switch]$EmbedOnlyMode
+        [switch]$EmbedOnlyMode,
+        [switch]$ResetMode
     )
 
     # Reset step tracking for each album
@@ -1086,8 +1090,14 @@ function Process-AlbumFolder {
         Error = ""
     }
 
-    # Override step tracking for EmbedOnly mode, or restore defaults
-    if ($EmbedOnlyMode) {
+    # Override step tracking for EmbedOnly/Reset modes, or restore defaults
+    if ($ResetMode) {
+        $script:AllSteps = @(
+            @{ Number = 1; Name = "Scan files"; Description = "Read existing files" }
+            @{ Number = 2; Name = "Reset metadata"; Description = "Clear tags and rename to generic format" }
+        )
+        $script:TotalSteps = 2
+    } elseif ($EmbedOnlyMode) {
         $script:AllSteps = @(
             @{ Number = 1; Name = "Scan files"; Description = "Read existing tags and identify files" }
             @{ Number = 2; Name = "Cover art"; Description = "Find or download cover art and embed into FLAC files" }
@@ -1214,6 +1224,127 @@ function Process-AlbumFolder {
     Write-Log "  Artist: $folderArtist, Album: $folderAlbum, Tracks: $($existingTracks.Count), Gaps: $gapCount, Disc: $discNumber"
 
     Complete-CurrentStep
+
+    # ========== RESET MODE ==========
+    if ($ResetMode) {
+        Set-CurrentStep -StepNumber 2
+        Write-Host "`n[STEP 2/$script:TotalSteps] Resetting metadata..." -ForegroundColor Green
+        Write-Log "STEP 2/$($script:TotalSteps): Reset metadata"
+
+        # Derive artist and album from folder structure
+        $resetArtist = $folderArtist
+        if (-not $resetArtist) {
+            $parentName = Split-Path -Leaf (Split-Path -Parent $FolderPath)
+            if ($parentName -and $parentName -ne "Music" -and $parentName -ne "logs") {
+                $resetArtist = $parentName
+            }
+        }
+        $rawDirForReset = Split-Path -Leaf $FolderPath
+        $resetAlbum = if ($AlbumHint) { $AlbumHint } else { $rawDirForReset }
+
+        Write-Host "  Artist: $resetArtist" -ForegroundColor White
+        Write-Host "  Album: $resetAlbum" -ForegroundColor White
+
+        # Preview
+        Write-Host "`n  --- Reset Preview ---" -ForegroundColor Cyan
+        for ($i = 0; $i -lt $existingTracks.Count; $i++) {
+            $track = $existingTracks[$i]
+            $num = '{0:D2}' -f ($i + 1)
+            $sanitizedArtist = $resetArtist -replace '[\\/:*?"<>|]', '_'
+            $sanitizedAlbum = $resetAlbum -replace '[\\/:*?"<>|]', '_'
+            $ext = $track.File.Extension
+            $newName = "$num - $sanitizedArtist - $sanitizedAlbum$ext"
+            Write-Host "    $($track.FileName) -> $newName" -ForegroundColor Yellow
+        }
+        Write-Host "  Tags: all cleared, set ARTIST=$resetArtist, ALBUM=$resetAlbum, TRACKNUMBER=N" -ForegroundColor Yellow
+
+        if ($DryRunMode) {
+            Write-Host "`n  [DRY RUN] No changes will be made." -ForegroundColor Cyan
+            Write-Log "  [DRY RUN] Reset preview only"
+        } elseif (-not $ForceMode -and -not $BatchMode) {
+            Write-Host "`n  Reset all metadata and rename? [Y/n] (auto-Yes in 30s) " -NoNewline -ForegroundColor White
+            $confirm = $null
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            while ($sw.Elapsed.TotalSeconds -lt 30) {
+                if ([Console]::KeyAvailable) { $confirm = [Console]::ReadKey($true).KeyChar; Write-Host $confirm; break }
+                Start-Sleep -Milliseconds 200
+            }
+            $sw.Stop()
+            if ($null -eq $confirm) { Write-Host "Y (auto)" -ForegroundColor Gray }
+            if ($confirm -and "$confirm".ToUpper() -eq "N") {
+                Write-Host "`n  Cancelled." -ForegroundColor Yellow
+                Write-Log "  Reset cancelled by user"
+                $albumResult.Status = "skipped"
+                $albumResult.Artist = $resetArtist
+                $albumResult.Album = $resetAlbum
+                return $albumResult
+            }
+        }
+
+        if (-not $DryRunMode) {
+            $tagCount = 0
+            $renamedCount = 0
+
+            for ($i = 0; $i -lt $existingTracks.Count; $i++) {
+                $track = $existingTracks[$i]
+                $filePath = $track.File.FullName
+                $num = '{0:D2}' -f ($i + 1)
+
+                # Log baseline for undo
+                $bTITLE = $track.Title -replace '\|', '_'
+                $bARTIST = $track.Artist -replace '\|', '_'
+                $bALBUM = $track.Album -replace '\|', '_'
+                $bALBUMARTIST = $track.AlbumArtist -replace '\|', '_'
+                $bTRACKNUMBER = $track.TrackNumber -replace '\|', '_'
+                $bDATE = $track.Date -replace '\|', '_'
+                $bGENRE = $track.Genre -replace '\|', '_'
+                $bTRACKTOTAL = ""
+                $bMBID = ""
+                $ttVal = & metaflac --show-tag=TRACKTOTAL $filePath 2>$null
+                if ($ttVal -is [array]) { $ttVal = $ttVal[0] }
+                if ($ttVal -match '^TRACKTOTAL=(.+)$') { $bTRACKTOTAL = $Matches[1] -replace '\|', '_' }
+                $mbVal = & metaflac --show-tag=MUSICBRAINZ_ALBUMID $filePath 2>$null
+                if ($mbVal -is [array]) { $mbVal = $mbVal[0] }
+                if ($mbVal -match '^MUSICBRAINZ_ALBUMID=(.+)$') { $bMBID = $Matches[1] -replace '\|', '_' }
+                Write-Log "UNDO_BASELINE|$filePath|TITLE=$bTITLE|ARTIST=$bARTIST|ALBUM=$bALBUM|ALBUMARTIST=$bALBUMARTIST|TRACKNUMBER=$bTRACKNUMBER|TRACKTOTAL=$bTRACKTOTAL|DATE=$bDATE|GENRE=$bGENRE|MUSICBRAINZ_ALBUMID=$bMBID"
+
+                # Strip ALL tags, then set minimal ones
+                & metaflac --remove-all-tags $filePath 2>$null
+                & metaflac "--set-tag=ARTIST=$resetArtist" "--set-tag=ALBUM=$resetAlbum" "--set-tag=TITLE=$resetArtist $resetAlbum" "--set-tag=TRACKNUMBER=$($i + 1)" "--set-tag=TRACKTOTAL=$($existingTracks.Count)" $filePath 2>$null
+                if ($LASTEXITCODE -eq 0) { $tagCount++ }
+
+                # Rename
+                $sanitizedArtist = $resetArtist -replace '[\\/:*?"<>|]', '_'
+                $sanitizedAlbum = $resetAlbum -replace '[\\/:*?"<>|]', '_'
+                $ext = $track.File.Extension
+                $newName = "$num - $sanitizedArtist - $sanitizedAlbum$ext"
+                if ($track.File.Name -ne $newName) {
+                    $newPath = Join-Path $track.File.DirectoryName $newName
+                    Write-Log "UNDO_RENAME|$newPath|$filePath"
+                    try {
+                        Rename-Item -Path $filePath -NewName $newName -ErrorAction Stop
+                        $renamedCount++
+                    } catch {
+                        Write-Host "    Failed to rename $($track.FileName): $_" -ForegroundColor Red
+                    }
+                }
+            }
+
+            Write-Host "  Cleared and re-tagged $tagCount/$($existingTracks.Count) file(s)" -ForegroundColor Green
+            Write-Host "  Renamed $renamedCount file(s)" -ForegroundColor Green
+            Write-Log "  Reset: tagged $tagCount, renamed $renamedCount"
+
+            $albumResult.TagCount = $tagCount
+            $albumResult.RenameCount = $renamedCount
+        }
+
+        Complete-CurrentStep
+
+        $albumResult.Artist = $resetArtist
+        $albumResult.Album = $resetAlbum
+        $albumResult.Status = "success"
+        return $albumResult
+    }
 
     # ========== EMBED ONLY MODE ==========
     if ($EmbedOnlyMode) {
@@ -1765,7 +1896,9 @@ function Process-AlbumFolder {
 # Load System.Web for URL encoding
 Add-Type -AssemblyName System.Web
 
-if ($EmbedOnly) {
+if ($Reset) {
+    $bannerText = "Reset Metadata to Generic"
+} elseif ($EmbedOnly) {
     $bannerText = "Embed Cover Art"
 } else {
     $bannerText = "Search & Apply Audio Metadata"
@@ -1804,6 +1937,7 @@ Write-Log "Force: $Force"
 Write-Log "Recurse: $Recurse"
 Write-Log "DryRun: $DryRun"
 Write-Log "EmbedOnly: $EmbedOnly"
+Write-Log "Reset: $Reset"
 
 # Window title
 $host.UI.RawUI.WindowTitle = "search-metadata - $Path"
@@ -1854,7 +1988,7 @@ if ($Recurse) {
         try {
             $result = Process-AlbumFolder -FolderPath $folder `
                 -ForceMode:$true -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
-                -BatchMode -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly
+                -BatchMode -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly -ResetMode:$Reset
 
             $batchResults += $result
 
@@ -1953,7 +2087,7 @@ if ($Recurse) {
     $result = Process-AlbumFolder -FolderPath $Path `
         -ArtistHint $Artist -AlbumHint $Album `
         -ForceMode:$Force -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
-        -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly
+        -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly -ResetMode:$Reset
 
     # ========== SUMMARY ==========
     $dryRunLabel = if ($DryRun) { "[DRY RUN] " } else { "" }
