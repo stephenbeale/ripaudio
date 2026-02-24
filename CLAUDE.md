@@ -624,3 +624,58 @@ These branches have no commits ahead of master and were pruned from local tracki
 2. Consider end-to-end testing: rip a real disc and confirm auto-detect of drive, correct disc number on multi-disc albums, cover art embedded into FLAC files, and coffee badge displayed in summary
 3. Consider end-to-end testing of `search-metadata.ps1` with accented/smart-quote tags to verify UTF-8 encoding fix
 4. Offline/internet-independent operation (noted in Roadmap.md Planned section) is a future stretch goal
+
+---
+
+### 2026-02-24 - Coffee Badge Fix, Artist Mismatch Detection, Undo Metadata
+
+**PRs Merged:**
+
+- PR #78 - fix: widen coffee badge and update text
+  - Widened box from 53 to 60 chars to fit new text
+  - Changed "Buy me a coffee!" to "Consider buying me a coffee!"
+  - Fixed URL row that was 52 chars instead of 53 (all rows now exactly 60 chars)
+  - Updated in all 3 scripts: `search-metadata.ps1`, `audit-metadata.ps1`, `rip-audio.ps1`
+
+- PR #79 - feat(metadata): add artist mismatch detection
+  - Added `Test-ArtistMismatch` function using fuzzy contains-match (`-like "*...*"`)
+  - Inserted mismatch check after Step 2 search results, before Step 3 confirmation
+  - Batch mode (`-Recurse`): auto-skips on mismatch (safe default)
+  - Interactive mode: prompts `Apply anyway? [y/N]` with default No
+  - Skips check when no folder artist is known (can't compare)
+  - Prevents wrong artist metadata being applied (e.g. Cher album matched to Rolling Stones)
+
+- PR #80 - feat: add undo metadata feature
+  - Added structured undo logging to `search-metadata.ps1`:
+    - `UNDO_BASELINE|<filepath>|TITLE=...|ARTIST=...|...` before Step 4 tag application
+    - `UNDO_RENAME|<new_path>|<old_path>` before each file rename
+    - `UNDO_COVER_ART|<folder>|<file>|<had_existing>` before cover art download
+  - Created `undo-metadata.ps1` with 4-step workflow:
+    1. Parse log file for `UNDO_*` entries
+    2. Preview what will be reversed
+    3. Confirm with `Apply undo? [Y/n]`
+    4. Execute: reverse renames first, then restore tags, then remove newly downloaded cover art
+  - Supports `-DryRun` for preview without changes
+  - Supports wildcard log file paths (auto-resolves, rejects ambiguous matches)
+  - Updated README.md with artist mismatch detection docs and undo-metadata.ps1 usage section
+  - Updated Roadmap.md to mark both features as completed
+  - Updated CLAUDE.md project structure to include `undo-metadata.ps1`
+
+**Technical Notes:**
+- Pipe characters (`|`) in tag values are escaped to `_` in UNDO_BASELINE entries to avoid corrupting the `|`-delimited log format
+- TRACKTOTAL and MUSICBRAINZ_ALBUMID are read directly via `metaflac --show-tag` for baseline logging since they're not stored in the `$existingTracks` hashtable from `Read-ExistingTags`
+- Undo execution order is critical: renames must be reversed FIRST so that the original file paths referenced in BASELINE entries are valid when tags are restored
+- Cover art is only deleted if `HadExistingArt` was False (newly downloaded); pre-existing art is preserved
+
+**Session Verified Clean:**
+- All 3 PRs (#78-#80) squash-merged to master
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+
+**Priority for Next Session:**
+1. Test `undo-metadata.ps1` end-to-end: run `search-metadata.ps1` on a test album, verify UNDO_* entries in log, then run undo and confirm tags/filenames are restored
+2. Test artist mismatch detection: run `search-metadata.ps1 -Recurse` on a folder where album name matches wrong artist, verify auto-skip in batch mode
+3. Test artist mismatch in interactive mode: verify `[y/N]` prompt appears and default is No
+4. Note: only logs created after PR #80 will contain UNDO_* data; older logs will report "No undo data found"
+5. Offline/internet-independent operation remains the only planned roadmap item
