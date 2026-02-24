@@ -626,6 +626,13 @@ function Show-MetadataComparison {
     Write-Host "`n  Sources found: $($sourceList -join ', ')" -ForegroundColor Gray
 }
 
+function Test-ArtistMismatch {
+    param([string]$ExpectedArtist, [string]$FoundArtist)
+    if (-not $ExpectedArtist -or -not $FoundArtist) { return $false }
+    $match = ($FoundArtist -like "*$ExpectedArtist*") -or ($ExpectedArtist -like "*$FoundArtist*")
+    return -not $match
+}
+
 function Set-AudioTags {
     param(
         [string]$FilePath,
@@ -1172,6 +1179,38 @@ function Process-AlbumFolder {
     if ($merged.Date) { Write-Host "  Year: $($merged.Date)" -ForegroundColor Gray }
     if ($merged.Genre) { Write-Host "  Genre: $($merged.Genre)" -ForegroundColor Gray }
     Write-Host "  Tracks: $($merged.Tracks.Count)" -ForegroundColor Gray
+
+    # Artist mismatch guard
+    if (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $merged.Artist) {
+        $mismatchMsg = "Artist mismatch: folder has `"$folderArtist`" but search returned `"$($merged.Artist)`""
+        Write-Host "`n  WARNING: $mismatchMsg" -ForegroundColor Red
+        Write-Log "  WARNING: $mismatchMsg"
+
+        if ($BatchMode) {
+            # Auto-skip in batch mode - never apply wrong artist's metadata
+            Write-Host "  Skipping album (artist mismatch in batch mode)" -ForegroundColor Yellow
+            Write-Log "  SKIPPED: artist mismatch (batch mode)"
+            $albumResult.Status = "skipped"
+            $albumResult.Error = $mismatchMsg
+            $albumResult.Artist = $folderArtist
+            $albumResult.Album = $folderAlbum
+            return $albumResult
+        } else {
+            # Interactive mode - require explicit confirmation, default No
+            Write-Host "  Apply anyway? [y/N] " -NoNewline -ForegroundColor White
+            $key = [Console]::ReadKey($true)
+            Write-Host $key.KeyChar
+            if ("$($key.KeyChar)".ToUpper() -ne "Y") {
+                Write-Host "  Skipped by user." -ForegroundColor Yellow
+                Write-Log "  SKIPPED: artist mismatch (user declined)"
+                $albumResult.Status = "skipped"
+                $albumResult.Artist = $folderArtist
+                $albumResult.Album = $folderAlbum
+                return $albumResult
+            }
+            Write-Log "  User confirmed artist mismatch override"
+        }
+    }
 
     Complete-CurrentStep
 
