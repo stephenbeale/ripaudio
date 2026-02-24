@@ -170,7 +170,7 @@ function Get-DiscMetadata {
     $output = $outputLines.ToArray()
     $outputText = $output -join "`n"
 
-    $result = @{ Album = $null; Artist = $null; DiscNum = $null; TotalDiscs = $null; ReleaseChoice = $null }
+    $result = @{ Album = $null; Artist = $null; DiscNum = $null; TotalDiscs = $null; ReleaseChoice = $null; DiscId = $null; ReleaseId = $null }
 
     # Parse disc ID - try multiple formats cyanrip may output
     $discId = $null
@@ -239,6 +239,8 @@ function Get-DiscMetadata {
         $release = if ($response.releases) { $response.releases[0] } else { $response }
 
         $result.Album = $release.title
+        $result.DiscId = $discId
+        $result.ReleaseId = $release.id
         if ($release.'artist-credit' -and $release.'artist-credit'.Count -gt 0) {
             $result.Artist = ($release.'artist-credit' | ForEach-Object { $_.name }) -join " / "
         }
@@ -1377,6 +1379,22 @@ try {
             }
         }
     }
+}
+
+# Save disc ID to .discid file for future metadata lookups
+if ($discMeta -and $discMeta.DiscId) {
+    $discIdFile = Join-Path $finalOutputDir ".discid"
+    $discIdContent = @(
+        "# MusicBrainz Disc ID - do not edit"
+        "# Created by rip-audio.ps1 on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        "DISCID=$($discMeta.DiscId)"
+    )
+    if ($discMeta.ReleaseId) {
+        $discIdContent += "RELEASEID=$($discMeta.ReleaseId)"
+    }
+    $discIdContent | Set-Content -Path $discIdFile -Encoding UTF8
+    Write-Host "Saved disc ID: $($discMeta.DiscId)" -ForegroundColor Gray
+    Write-Log "Saved .discid file: $($discMeta.DiscId)"
 }
 
 Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow

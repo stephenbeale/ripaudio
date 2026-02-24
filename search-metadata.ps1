@@ -239,6 +239,99 @@ function Read-ExistingTags {
     return $tracks
 }
 
+function Search-ByDiscId {
+    param([string]$DiscId, [string]$ReleaseId)
+
+    $headers = @{
+        "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
+        "Accept" = "application/json"
+    }
+
+    # Try direct release ID first (exact match), then disc ID (may return multiple releases)
+    $release = $null
+    if ($ReleaseId) {
+        Write-Host "    MusicBrainz: looking up release ID $ReleaseId..." -ForegroundColor Gray
+        Write-Log "  MusicBrainz disc ID lookup: release=$ReleaseId"
+        try {
+            $url = "https://musicbrainz.org/ws/2/release/$($ReleaseId)?inc=recordings+artist-credits+release-groups&fmt=json"
+            $release = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15
+            Start-Sleep -Milliseconds 1100
+        } catch {
+            Write-Host "    MusicBrainz: release lookup failed - $_" -ForegroundColor Yellow
+            Write-Log "  MusicBrainz release lookup failed: $_"
+        }
+    }
+
+    if (-not $release -and $DiscId) {
+        Write-Host "    MusicBrainz: looking up disc ID $DiscId..." -ForegroundColor Gray
+        Write-Log "  MusicBrainz disc ID lookup: discid=$DiscId"
+        try {
+            $url = "https://musicbrainz.org/ws/2/discid/$($DiscId)?inc=recordings+artist-credits&fmt=json"
+            $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15
+            Start-Sleep -Milliseconds 1100
+            if ($response.releases -and $response.releases.Count -gt 0) {
+                $releaseId = $response.releases[0].id
+                # Fetch full release details
+                $url = "https://musicbrainz.org/ws/2/release/$($releaseId)?inc=recordings+artist-credits+release-groups&fmt=json"
+                $release = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15
+                Start-Sleep -Milliseconds 1100
+            }
+        } catch {
+            Write-Host "    MusicBrainz: disc ID lookup failed - $_" -ForegroundColor Yellow
+            Write-Log "  MusicBrainz disc ID lookup failed: $_"
+        }
+    }
+
+    if (-not $release) { return $null }
+
+    $artist = if ($release.'artist-credit') {
+        ($release.'artist-credit' | ForEach-Object { $_.name }) -join ""
+    } else { "" }
+
+    $tracks = @()
+    if ($release.media -and $release.media[0].tracks) {
+        $num = 1
+        foreach ($t in $release.media[0].tracks) {
+            $tArtist = if ($t.'artist-credit') {
+                ($t.'artist-credit' | ForEach-Object { $_.name }) -join ""
+            } else { $artist }
+            $tracks += @{ Number = $num; Title = $t.title; Artist = $tArtist }
+            $num++
+        }
+    }
+
+    Write-Host "    MusicBrainz (disc ID): found `"$($release.title)`" by $artist" -ForegroundColor Green
+    Write-Log "  MusicBrainz disc ID: found $($release.title) by $artist (ID: $($release.id))"
+
+    # Build a merged result directly (disc ID is authoritative, no need for iTunes/Deezer)
+    $result = @{
+        Artist = $artist
+        Album = $release.title
+        AlbumArtist = $artist
+        Date = if ($release.date) { $release.date.Substring(0, [Math]::Min(4, $release.date.Length)) } else { "" }
+        Genre = ""
+        TrackCount = if ($release.media) { ($release.media | ForEach-Object { $_.'track-count' } | Measure-Object -Sum).Sum } else { 0 }
+        ReleaseId = $release.id
+        Tracks = $tracks
+        ArtworkUrl = "CAA:$($release.id)"
+        ArtworkSource = "Cover Art Archive"
+        Sources = @{ MusicBrainz = $true; iTunes = $null; Deezer = $null }
+    }
+
+    # Still try Deezer/iTunes for genre and better artwork
+    $deezerResult = Search-Deezer -AlbumName $result.Album -ArtistName $result.Artist -TrackCount $result.TrackCount
+    if ($deezerResult) {
+        if ($deezerResult.Genre) { $result.Genre = $deezerResult.Genre }
+        if ($deezerResult.ArtworkUrl) {
+            $result.ArtworkUrl = $deezerResult.ArtworkUrl
+            $result.ArtworkSource = "Deezer"
+        }
+        $result.Sources.Deezer = $deezerResult
+    }
+
+    return $result
+}
+
 function Search-MusicBrainz {
     param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount)
 
@@ -1183,7 +1276,28 @@ function Process-AlbumFolder {
     Write-Host "`n[STEP 2/$script:TotalSteps] Searching metadata sources..." -ForegroundColor Green
     Write-Log "STEP 2/$($script:TotalSteps): Searching metadata sources"
 
-    $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+    # Check for .discid file first (single source of truth from rip-audio.ps1)
+    $merged = $null
+    $discIdFile = Join-Path $FolderPath ".discid"
+    if (Test-Path $discIdFile) {
+        $discIdContent = Get-Content -Path $discIdFile -Encoding UTF8
+        $fileDiscId = $null
+        $fileReleaseId = $null
+        foreach ($line in $discIdContent) {
+            if ($line -match '^DISCID=(.+)$') { $fileDiscId = $Matches[1] }
+            if ($line -match '^RELEASEID=(.+)$') { $fileReleaseId = $Matches[1] }
+        }
+        if ($fileDiscId -or $fileReleaseId) {
+            Write-Host "  Found .discid file - using disc ID for exact lookup" -ForegroundColor Cyan
+            Write-Log "  Found .discid file: discid=$fileDiscId, releaseid=$fileReleaseId"
+            $merged = Search-ByDiscId -DiscId $fileDiscId -ReleaseId $fileReleaseId
+        }
+    }
+
+    # Fall back to text search if no disc ID or disc ID lookup failed
+    if (-not $merged) {
+        $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count
+    }
 
     # Retry with disc suffix stripped (e.g. "Singles Collection CD 1" -> "Singles Collection")
     # Triggers on no results OR artist mismatch (wrong album matched due to generic name)
