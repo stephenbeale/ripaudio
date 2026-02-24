@@ -224,6 +224,8 @@ function Read-ExistingTags {
             $tagFields = @("ARTIST", "ALBUM", "ALBUMARTIST", "TITLE", "TRACKNUMBER", "DATE", "GENRE")
             foreach ($field in $tagFields) {
                 $value = & metaflac --show-tag=$field $file.FullName 2>$null
+                # metaflac may return multiple lines (array) — use only the first
+                if ($value -is [array]) { $value = $value[0] }
                 if ($value -and $value -match "^$field=(.+)$") {
                     $tagData[$field.Substring(0,1).ToUpper() + $field.Substring(1).ToLower()] = $Matches[1]
                     # Fix casing for multi-word fields
@@ -1395,6 +1397,25 @@ function Process-AlbumFolder {
                 # Only use retry result if it's a better artist match (or original had no result)
                 if (-not $merged -or -not (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $retryResult.Artist)) {
                     $merged = $retryResult
+                }
+            }
+        }
+    }
+
+    # Final retry: if album came from tags and still no good match, try the raw folder directory name
+    # Tags may have a different/misspelled album name (e.g. "Singles Collections" vs folder "Singles Collection")
+    $stillBad = (-not $merged) -or
+        ($merged -and $folderArtist -and (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $merged.Artist))
+    if ($stillBad) {
+        $rawDirName = Split-Path -Leaf $FolderPath
+        $strippedDir = $rawDirName -replace '\s*[-]?\s*\(?\s*(?:CD|Disc)\s*\d+\s*\)?\s*$', ''
+        if ($strippedDir -and $strippedDir -ne $folderAlbum -and $strippedDir -ne ($folderAlbum -replace '\s*[-]?\s*\(?\s*(?:CD|Disc)\s*\d+\s*\)?\s*$', '')) {
+            Write-Host "  Retrying with folder name `"$strippedDir`"..." -ForegroundColor Yellow
+            Write-Log "  Retry: using folder directory name `"$strippedDir`" instead of tag album `"$folderAlbum`""
+            $dirResult = Search-AllSources -AlbumName $strippedDir -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations
+            if ($dirResult) {
+                if (-not $merged -or -not (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $dirResult.Artist)) {
+                    $merged = $dirResult
                 }
             }
         }
