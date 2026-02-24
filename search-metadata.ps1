@@ -238,6 +238,12 @@ function Read-ExistingTags {
         $tracks += $tagData
     }
 
+    # Sort by track number when available (fixes alphabetical misordering of e.g. (1),(10),(2))
+    $hasTrackNums = ($tracks | Where-Object { $_.TrackNumber }).Count -gt 0
+    if ($hasTrackNums) {
+        $tracks = @($tracks | Sort-Object { [int]($_.TrackNumber -replace '/.*$', '' -replace '\D', '') })
+    }
+
     return $tracks
 }
 
@@ -367,7 +373,7 @@ function Search-ByDiscId {
 }
 
 function Search-MusicBrainz {
-    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount, [array]$LocalDurations)
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount, [array]$LocalDurations, [int]$DiscNumber = 0)
 
     $headers = @{
         "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
@@ -389,7 +395,7 @@ function Search-MusicBrainz {
         Start-Sleep -Milliseconds 1100  # Rate limit
 
         if ($response.releases -and $response.releases.Count -gt 0) {
-            # Collect all releases with matching track count
+            # Collect all releases where TOTAL track count matches OR any individual medium matches
             $candidates = @()
             if ($TrackCount -gt 0) {
                 foreach ($rel in $response.releases) {
@@ -397,12 +403,38 @@ function Search-MusicBrainz {
                         $relTrackCount = ($rel.media | ForEach-Object { $_.'track-count' } | Measure-Object -Sum).Sum
                         if ($relTrackCount -eq $TrackCount) {
                             $candidates += $rel
+                        } else {
+                            # Multi-disc: check if any individual medium has the matching track count
+                            foreach ($medium in $rel.media) {
+                                if ($medium.'track-count' -eq $TrackCount) {
+                                    $candidates += $rel
+                                    break
+                                }
+                            }
                         }
                     }
                 }
             }
             if ($candidates.Count -eq 0) {
                 $candidates = @($response.releases[0])
+            }
+
+            # Helper: find the right medium index for a release
+            $findMediumIndex = {
+                param($fullRel)
+                $idx = 0
+                if ($fullRel.media.Count -gt 1) {
+                    if ($DiscNumber -gt 0 -and $DiscNumber -le $fullRel.media.Count) {
+                        $idx = $DiscNumber - 1
+                    } else {
+                        for ($mi = 0; $mi -lt $fullRel.media.Count; $mi++) {
+                            if ($fullRel.media[$mi].tracks -and $fullRel.media[$mi].tracks.Count -eq $TrackCount) {
+                                $idx = $mi; break
+                            }
+                        }
+                    }
+                }
+                return $idx
             }
 
             # If we have local durations and multiple candidates, validate each by duration
@@ -412,16 +444,19 @@ function Search-MusicBrainz {
 
                 $bestRelease = $null
                 $bestScore = -1
+                $bestMediumIdx = 0
 
                 foreach ($candidate in $candidates) {
                     $detailUrl = "https://musicbrainz.org/ws/2/release/$($candidate.id)?inc=recordings+artist-credits+release-groups&fmt=json"
                     $fullRel = Invoke-RestMethod -Uri $detailUrl -Headers $headers -TimeoutSec 15
                     Start-Sleep -Milliseconds 1100
 
-                    # Extract track durations from recordings (in milliseconds -> seconds)
+                    $mediumIdx = & $findMediumIndex $fullRel
+
+                    # Extract track durations from the matched medium (milliseconds -> seconds)
                     $mbDurations = @()
-                    if ($fullRel.media -and $fullRel.media[0].tracks) {
-                        foreach ($t in $fullRel.media[0].tracks) {
+                    if ($fullRel.media -and $fullRel.media[$mediumIdx].tracks) {
+                        foreach ($t in $fullRel.media[$mediumIdx].tracks) {
                             $lenMs = if ($t.length) { $t.length } elseif ($t.recording -and $t.recording.length) { $t.recording.length } else { 0 }
                             $mbDurations += [int][Math]::Round($lenMs / 1000.0)
                         }
@@ -429,12 +464,14 @@ function Search-MusicBrainz {
 
                     $score = Test-DurationMatch -LocalDurations $LocalDurations -CandidateDurations $mbDurations
                     $artist = if ($fullRel.'artist-credit') { ($fullRel.'artist-credit' | ForEach-Object { $_.name }) -join "" } else { "" }
-                    Write-Host "    MusicBrainz: `"$($fullRel.title)`" ($($candidate.id.Substring(0,8))...) - duration match: $score/$($LocalDurations.Count)" -ForegroundColor Gray
-                    Write-Log "  MusicBrainz candidate: $($fullRel.title) by $artist (ID: $($candidate.id)) - duration match $score/$($LocalDurations.Count)"
+                    $discLabel = if ($fullRel.media.Count -gt 1) { " (disc $($mediumIdx+1)/$($fullRel.media.Count))" } else { "" }
+                    Write-Host "    MusicBrainz: `"$($fullRel.title)`"$discLabel ($($candidate.id.Substring(0,8))...) - duration match: $score/$($LocalDurations.Count)" -ForegroundColor Gray
+                    Write-Log "  MusicBrainz candidate: $($fullRel.title) by $artist (ID: $($candidate.id), medium $($mediumIdx+1)) - duration match $score/$($LocalDurations.Count)"
 
                     if ($score -gt $bestScore) {
                         $bestScore = $score
                         $bestRelease = $fullRel
+                        $bestMediumIdx = $mediumIdx
                     }
 
                     # Perfect match - stop looking
@@ -442,9 +479,11 @@ function Search-MusicBrainz {
                 }
 
                 if ($bestRelease) {
+                    $bestRelease | Add-Member -NotePropertyName '_matchedMediumIndex' -NotePropertyValue $bestMediumIdx -Force
                     $artist = if ($bestRelease.'artist-credit') { ($bestRelease.'artist-credit' | ForEach-Object { $_.name }) -join "" } else { "" }
-                    Write-Host "    MusicBrainz: best match `"$($bestRelease.title)`" by $artist (duration score: $bestScore/$($LocalDurations.Count))" -ForegroundColor Green
-                    Write-Log "  MusicBrainz: selected $($bestRelease.title) by $artist (ID: $($bestRelease.id)) with duration score $bestScore/$($LocalDurations.Count)"
+                    $discLabel = if ($bestRelease.media.Count -gt 1) { " (disc $($bestMediumIdx+1))" } else { "" }
+                    Write-Host "    MusicBrainz: best match `"$($bestRelease.title)`"$discLabel by $artist (duration score: $bestScore/$($LocalDurations.Count))" -ForegroundColor Green
+                    Write-Log "  MusicBrainz: selected $($bestRelease.title) by $artist (ID: $($bestRelease.id), medium $($bestMediumIdx+1)) with duration score $bestScore/$($LocalDurations.Count)"
                     return $bestRelease
                 }
             }
@@ -454,12 +493,16 @@ function Search-MusicBrainz {
             $fullRelease = Invoke-RestMethod -Uri $detailUrl -Headers $headers -TimeoutSec 15
             Start-Sleep -Milliseconds 1100
 
+            $mediumIdx = & $findMediumIndex $fullRelease
+            $fullRelease | Add-Member -NotePropertyName '_matchedMediumIndex' -NotePropertyValue $mediumIdx -Force
+
             $artist = if ($fullRelease.'artist-credit') {
                 ($fullRelease.'artist-credit' | ForEach-Object { $_.name }) -join ""
             } else { "" }
 
-            Write-Host "    MusicBrainz: found `"$($fullRelease.title)`" by $artist" -ForegroundColor Green
-            Write-Log "  MusicBrainz: found $($fullRelease.title) by $artist (ID: $($fullRelease.id))"
+            $discLabel = if ($fullRelease.media.Count -gt 1) { " (disc $($mediumIdx+1))" } else { "" }
+            Write-Host "    MusicBrainz: found `"$($fullRelease.title)`"$discLabel by $artist" -ForegroundColor Green
+            Write-Log "  MusicBrainz: found $($fullRelease.title) by $artist (ID: $($fullRelease.id), medium $($mediumIdx+1))"
             return $fullRelease
         }
     } catch {
@@ -604,9 +647,9 @@ function Search-Deezer {
 }
 
 function Search-AllSources {
-    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount, [array]$LocalDurations)
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount, [array]$LocalDurations, [int]$DiscNumber = 0)
 
-    $mbResult = Search-MusicBrainz -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount -LocalDurations $LocalDurations
+    $mbResult = Search-MusicBrainz -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount -LocalDurations $LocalDurations -DiscNumber $DiscNumber
     $itunesResult = Search-iTunes -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
     $deezerResult = Search-Deezer -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
 
@@ -621,10 +664,13 @@ function Search-AllSources {
             ($mbResult.'artist-credit' | ForEach-Object { $_.name }) -join ""
         } else { "" }
 
+        # Use the matched medium (may be disc 2, 3, etc. for multi-disc releases)
+        $mediumIdx = if ($null -ne $mbResult._matchedMediumIndex) { $mbResult._matchedMediumIndex } else { 0 }
+
         $mbTracks = @()
-        if ($mbResult.media -and $mbResult.media[0].tracks) {
+        if ($mbResult.media -and $mbResult.media[$mediumIdx].tracks) {
             $num = 1
-            foreach ($t in $mbResult.media[0].tracks) {
+            foreach ($t in $mbResult.media[$mediumIdx].tracks) {
                 $tArtist = if ($t.'artist-credit') {
                     ($t.'artist-credit' | ForEach-Object { $_.name }) -join ""
                 } else { $mbArtist }
@@ -639,7 +685,7 @@ function Search-AllSources {
             Album = $mbResult.title
             Date = if ($mbResult.date) { $mbResult.date.Substring(0, [Math]::Min(4, $mbResult.date.Length)) } else { "" }
             Genre = ""  # MusicBrainz doesn't return genre in release endpoint
-            TrackCount = if ($mbResult.media) { ($mbResult.media | ForEach-Object { $_.'track-count' } | Measure-Object -Sum).Sum } else { 0 }
+            TrackCount = if ($mbResult.media) { $mbResult.media[$mediumIdx].'track-count' } else { 0 }
             ReleaseId = $mbResult.id
             Tracks = $mbTracks
         }
@@ -1155,7 +1201,17 @@ function Process-AlbumFolder {
         $localDurations = Get-TrackDurations -ExistingTracks $existingTracks
     }
 
-    Write-Log "  Artist: $folderArtist, Album: $folderAlbum, Tracks: $($existingTracks.Count), Gaps: $gapCount"
+    # Extract disc number from folder name (e.g. "CD 1", "Disc 2") for multi-disc matching
+    $discNumber = 0
+    $rawDirName = Split-Path -Leaf $FolderPath
+    if ($rawDirName -match '(?:CD|Disc)\s*(\d+)') {
+        $discNumber = [int]$Matches[1]
+        if (-not $EmbedOnlyMode) {
+            Write-Host "  Disc number: $discNumber (from folder name)" -ForegroundColor Gray
+        }
+    }
+
+    Write-Log "  Artist: $folderArtist, Album: $folderAlbum, Tracks: $($existingTracks.Count), Gaps: $gapCount, Disc: $discNumber"
 
     Complete-CurrentStep
 
@@ -1179,7 +1235,7 @@ function Process-AlbumFolder {
             Write-Host "    No cover art on disk, searching online..." -ForegroundColor Yellow
             Write-Log "  No cover art on disk, searching online"
 
-            $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations
+            $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations -DiscNumber $discNumber
 
             # Check if search result matches -- auto-proceed on match, prompt on mismatch
             $artworkValid = $false
@@ -1379,7 +1435,7 @@ function Process-AlbumFolder {
 
     # Fall back to text search if no disc ID or disc ID lookup failed
     if (-not $merged) {
-        $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations
+        $merged = Search-AllSources -AlbumName $folderAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations -DiscNumber $discNumber
     }
 
     # Retry with disc suffix stripped (e.g. "Singles Collection CD 1" -> "Singles Collection")
@@ -1392,7 +1448,7 @@ function Process-AlbumFolder {
             $reason = if (-not $merged) { "No results" } else { "Artist mismatch ($($merged.Artist))" }
             Write-Host "  $reason for `"$folderAlbum`" - retrying as `"$strippedAlbum`"..." -ForegroundColor Yellow
             Write-Log "  Retry: $reason - stripped disc suffix `"$folderAlbum`" -> `"$strippedAlbum`""
-            $retryResult = Search-AllSources -AlbumName $strippedAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations
+            $retryResult = Search-AllSources -AlbumName $strippedAlbum -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations -DiscNumber $discNumber
             if ($retryResult) {
                 # Only use retry result if it's a better artist match (or original had no result)
                 if (-not $merged -or -not (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $retryResult.Artist)) {
@@ -1412,7 +1468,7 @@ function Process-AlbumFolder {
         if ($strippedDir -and $strippedDir -ne $folderAlbum -and $strippedDir -ne ($folderAlbum -replace '\s*[-]?\s*\(?\s*(?:CD|Disc)\s*\d+\s*\)?\s*$', '')) {
             Write-Host "  Retrying with folder name `"$strippedDir`"..." -ForegroundColor Yellow
             Write-Log "  Retry: using folder directory name `"$strippedDir`" instead of tag album `"$folderAlbum`""
-            $dirResult = Search-AllSources -AlbumName $strippedDir -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations
+            $dirResult = Search-AllSources -AlbumName $strippedDir -ArtistName $folderArtist -TrackCount $existingTracks.Count -LocalDurations $localDurations -DiscNumber $discNumber
             if ($dirResult) {
                 if (-not $merged -or -not (Test-ArtistMismatch -ExpectedArtist $folderArtist -FoundArtist $dirResult.Artist)) {
                     $merged = $dirResult
