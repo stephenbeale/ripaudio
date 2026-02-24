@@ -679,3 +679,69 @@ These branches have no commits ahead of master and were pruned from local tracki
 3. Test artist mismatch in interactive mode: verify `[y/N]` prompt appears and default is No
 4. Note: only logs created after PR #80 will contain UNDO_* data; older logs will report "No undo data found"
 5. Offline/internet-independent operation remains the only planned roadmap item
+
+---
+
+### 2026-02-24 - Duration Validation, Array Fix, Folder Retry, Multi-Disc, Reset Switch
+
+**PRs Merged:**
+
+- PR #81 - docs: add 2026-02-24 session notes and create CHANGELOG.md
+  - Session notes added to CLAUDE.md for PRs #78-#80
+  - CHANGELOG.md created to document feature history
+
+- PR #82 - fix: align coffee badge border and retry search with disc suffix stripped
+  - Coffee badge border width alignment fixes
+  - When tag-based searches return artist mismatch, now retries with disc suffix (e.g. "Disc 1") stripped from album name
+
+- PR #83 - fix(metadata): validate MusicBrainz candidates by track duration
+  - When multiple MusicBrainz releases match the same artist/album/track count, compare local FLAC file durations against MusicBrainz recording lengths to select the correct release
+  - Reads track lengths from FLAC files using `metaflac --show-tag=LENGTH` (length stored in samples at 44100 Hz sample rate)
+  - Fetches recording durations from MusicBrainz (in milliseconds) for each candidate release
+  - Picks the release whose total duration is closest to the local files' total duration
+  - Falls back to first candidate if no duration data is available
+
+- PR #84 - fix(metadata): handle metaflac array output and add folder-name retry
+  - Fixed "Cannot index into a null array" crash when `metaflac --show-tag` returns multiple lines for a single field (e.g. multiple ARTIST values)
+  - Now takes only the first line when the result is an array
+  - Added folder-name retry: when all tag-based album searches fail with an artist mismatch, falls back to the raw folder directory name as the search term
+  - Catches cases where FLAC tags have different spelling than the folder name that a human would recognise
+
+- PR #85 - fix(metadata): multi-disc matching, track-number sort, disc-aware duration validation
+  - Sort FLAC files by TRACKNUMBER tag (via `metaflac --show-tag=TRACKNUMBER`) instead of alphabetically — fixes wrong ordering for filenames like `(1),(10),(2)` due to lexicographic sort
+  - Match multi-disc releases where an individual medium has the same track count as the local folder (not just total tracks across all media)
+  - Extract disc number from folder name using patterns like "Disc 1", "CD 2", "Disk 3" to select the correct medium from a multi-disc MusicBrainz release
+  - Duration validation uses durations from the matched medium only, not from all tracks across the release
+
+- PR #86 - feat(metadata): add -Reset switch to clear tags and rename to generic format
+  - New `-Reset` switch in `search-metadata.ps1`: strips all metadata tags and renames files to `NN - Artist - Album.ext` generic format
+  - Reads current ARTIST and ALBUM tags before stripping (used for rename)
+  - Uses `metaflac --remove-all-tags` to strip all tags from each FLAC file
+  - Rename format: `01 - Artist - Album.flac`, `02 - Artist - Album.flac`, etc.
+  - Supports `-DryRun` (preview what would happen without making changes)
+  - Supports `-Force` (skip confirmation prompt)
+  - Undo is possible via `undo-metadata.ps1` since UNDO_BASELINE and UNDO_RENAME entries are written to the log before changes are applied
+  - Useful as a starting point before running `search-metadata.ps1` normally to re-apply correct metadata from scratch
+
+**Technical Notes:**
+- Duration matching (PR #83): FLAC length stored in samples; converted to ms via `$samples / 44100 * 1000`. MusicBrainz returns durations in ms. Total duration delta used for candidate scoring.
+- Metaflac array guard (PR #84): `$val = @(metaflac --show-tag=FIELD file.flac)[0]` — wrapping in `@()` and indexing `[0]` ensures a single string is returned even if metaflac emits multiple lines.
+- Track-number sort (PR #85): reads `TRACKNUMBER` tag per file, casts to `[int]`, sorts ascending. Falls back to alphabetical sort if no TRACKNUMBER tags present.
+- Multi-disc detection (PR #85): MusicBrainz release `media` array iterated; first medium whose `track-count` matches local file count is selected. Disc number extracted from folder name via regex `(?:disc|disk|cd)\s*(\d+)` (case-insensitive).
+- Reset mode (PR #86): executes before the normal search-metadata workflow. After reset, script exits rather than continuing into the metadata search pipeline.
+
+**Session Verified Clean:**
+- All 6 PRs (#81-#86) squash-merged to master
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+- Branches: only `master` local; all feature branches deleted locally and remotely
+- Stash list: empty
+
+**Priority for Next Session:**
+1. Test PR #83 duration validation: find an album with multiple MusicBrainz candidates (same artist/album/track count) and confirm the correct edition is selected by duration
+2. Test PR #84 folder-name retry: process a folder where FLAC tags have different artist spelling than folder name, confirm fallback triggers
+3. Test PR #85 multi-disc matching: run `search-metadata.ps1` on a folder for one disc of a multi-disc set (e.g. "CD 1"), confirm the correct medium is selected
+4. Test PR #85 track-number sort: verify files with numerically out-of-order filenames (e.g. `10 - ...`, `2 - ...`) are processed in correct track order
+5. Test PR #86 `-Reset` followed by normal `search-metadata.ps1` run: confirm reset produces clean generic filenames, then confirm re-tagging applies correct metadata
+6. Offline/internet-independent operation remains the only planned roadmap item
