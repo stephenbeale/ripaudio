@@ -26,6 +26,4 @@
 - [x] Artist mismatch detection - compares folder artist vs search result artist; auto-skips in batch mode, prompts [y/N] in interactive mode
 - [x] Undo metadata - `undo-metadata.ps1` reverses tag changes, renames, and cover art downloads using structured UNDO_* log entries from search-metadata.ps1
 
-## Planned
-
-- [ ] Offline/internet-independent operation - if MusicBrainz or internet is unavailable during disc query or cover art download, prompt user to continue without metadata, note the issues in the summary, and complete the rip with generic names rather than aborting
+- [x] Offline/internet-independent operation - tracks metadata source (MusicBrainz/CDDB/Generic) and cover art source in FILE SUMMARY and log; prompts user to continue without metadata when offline; completes rip with generic names rather than aborting

@@ -772,6 +772,8 @@ do {
     $script:CddbResult = $null
     $script:ReleaseChoice = $null
     $script:ResumeTrackList = $null
+    $script:MetadataSource = "MusicBrainz"
+    $script:CoverArtSource = ""
     $script:SkipRip = $false
     $itemFailed = $false
 
@@ -1319,6 +1321,7 @@ try {
         Write-Host "ProcessQueue mode: auto-continuing without MusicBrainz metadata" -ForegroundColor Yellow
         Write-Log "MusicBrainz API unreachable - ProcessQueue auto-continuing without metadata"
         $skipMusicBrainz = $true
+        $script:MetadataSource = "Generic"
     } elseif ($RequireMusicBrainz) {
         Write-Host "`n  -RequireMusicBrainz is set, cannot continue without MusicBrainz." -ForegroundColor Red
         Write-Host "  [R] Retry connection" -ForegroundColor White
@@ -1369,6 +1372,7 @@ try {
                 Write-Host "Will continue without MusicBrainz metadata" -ForegroundColor Yellow
                 Write-Log "MusicBrainz API unreachable - user chose to continue without metadata"
                 $skipMusicBrainz = $true
+                $script:MetadataSource = "Generic"
                 $resolved = $true
             } elseif ($mbChoice -match "^[Qq]") {
                 Write-Host "Aborted by user." -ForegroundColor Yellow
@@ -1588,6 +1592,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
             Write-Log "User chose to continue without MusicBrainz metadata (connection failed)"
             $skipMusicBrainz = $true
+            $script:MetadataSource = "Generic"
 
             $cyanripArgs += @("-N")
             Push-Location $parentDir
@@ -1646,6 +1651,7 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
         # Continue with -N flag (CDDB names will be applied after rip)
         Write-Host "`nContinuing with CDDB metadata..." -ForegroundColor Green
         $skipMusicBrainz = $true
+        $script:MetadataSource = "CDDB"
         $cyanripArgs += @("-N")
         $cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0 -N"
         Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
@@ -1686,6 +1692,7 @@ if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find releas
             Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
             Write-Log "User chose to continue without MusicBrainz metadata"
             $skipMusicBrainz = $true
+            $script:MetadataSource = "Generic"
 
             # Re-run cyanrip with -N flag to skip metadata requirement
             $cyanripArgs += @("-N")
@@ -1999,6 +2006,7 @@ if ($existingArt -and $existingArt.Count -gt 0) {
     Write-Host "  Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Green
     Write-Log "Cover art already exists: $($existingArt[0].Name)"
     $script:CoverArtDownloaded = $true
+    $script:CoverArtSource = "cyanrip"
 } else {
     # Try to get release ID from cue file for Cover Art Archive lookup
     $releaseId = $null
@@ -2038,6 +2046,7 @@ if ($existingArt -and $existingArt.Count -gt 0) {
                 Write-Log "Downloaded cover art from Cover Art Archive: Front.$extension"
                 $artDownloaded = $true
                 $script:CoverArtDownloaded = $true
+                $script:CoverArtSource = "Cover Art Archive"
             }
         } catch {
             Write-Host "  Cover Art Archive: not available" -ForegroundColor Yellow
@@ -2081,6 +2090,7 @@ if ($existingArt -and $existingArt.Count -gt 0) {
                         Write-Log "Downloaded cover art from MusicBrainz/CAA search: Front.$extension"
                         $artDownloaded = $true
                         $script:CoverArtDownloaded = $true
+                        $script:CoverArtSource = "MusicBrainz/CAA"
                     } else {
                         Remove-Item $outputFile -ErrorAction SilentlyContinue
                     }
@@ -2115,6 +2125,7 @@ if ($existingArt -and $existingArt.Count -gt 0) {
                         Write-Log "Downloaded cover art from iTunes: Front.jpg"
                         $artDownloaded = $true
                         $script:CoverArtDownloaded = $true
+                        $script:CoverArtSource = "iTunes"
                     } else {
                         Remove-Item $outputFile -ErrorAction SilentlyContinue
                     }
@@ -2150,6 +2161,7 @@ if ($existingArt -and $existingArt.Count -gt 0) {
                         Write-Log "Downloaded cover art from Deezer: Front.jpg"
                         $artDownloaded = $true
                         $script:CoverArtDownloaded = $true
+                        $script:CoverArtSource = "Deezer"
                     } else {
                         Remove-Item $outputFile -ErrorAction SilentlyContinue
                     }
@@ -2229,7 +2241,9 @@ Show-StepsSummary
 Write-Host "`n--- FILE SUMMARY ---" -ForegroundColor Cyan
 Write-Host "  Total tracks: $($rippedFiles.Count)" -ForegroundColor White
 Write-Host "  Total size: $totalSizeMB MB" -ForegroundColor White
-$coverArtStatus = if ($script:CoverArtDownloaded) { "Yes" } else { "No" }
+$mdColor = switch ($script:MetadataSource) { "MusicBrainz" { "Green" } "CDDB" { "Yellow" } default { "Red" } }
+Write-Host "  Metadata: $($script:MetadataSource)" -ForegroundColor $mdColor
+$coverArtStatus = if ($script:CoverArtDownloaded) { "Yes ($($script:CoverArtSource))" } else { "No" }
 Write-Host "  Cover art: $coverArtStatus" -ForegroundColor White
 if ($script:CoverArtDownloaded) {
     $totalFlacCount = (Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue).Count
@@ -2255,6 +2269,8 @@ Write-Log "========== RIP SESSION COMPLETE =========="
 Write-Log "Final location: $finalOutputDir"
 Write-Log "Total tracks: $($rippedFiles.Count)"
 Write-Log "Total size: $totalSizeMB MB"
+Write-Log "Metadata source: $($script:MetadataSource)"
+if ($script:CoverArtSource) { Write-Log "Cover art source: $($script:CoverArtSource)" }
 if ($arResults.TracksVerified -ge 0) {
     Write-Log "AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) verified"
 }
