@@ -2340,6 +2340,41 @@ if (-not $script:IsProcessingQueue) {
             ) -Wait -NoNewWindow
         }
     }
+
+    # After search-metadata.ps1 (or if it was skipped), check if tracks are still untagged.
+    # If so, offer to open Mp3tag for manual tagging.
+    $stillUntagged = Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match 'Unknown track|Unknown disc' -or $_.Name -match '^\d{2} - .+ - .+\.flac$' }
+    if ($stillUntagged.Count -gt 0) {
+        $mp3tagPath = "${env:ProgramFiles}\Mp3tag\Mp3tag.exe"
+        if (-not (Test-Path $mp3tagPath)) {
+            $mp3tagPath = "${env:ProgramFiles(x86)}\Mp3tag\Mp3tag.exe"
+        }
+        if (Test-Path $mp3tagPath) {
+            Write-Host "`n  Tracks still need metadata. Open Mp3tag to tag manually? [Y/n] (auto-Yes in 30s): " -NoNewline -ForegroundColor Yellow
+            $mp3Key = $null
+            $mp3Sw = [System.Diagnostics.Stopwatch]::StartNew()
+            while ($mp3Sw.Elapsed.TotalSeconds -lt 30) {
+                if ([Console]::KeyAvailable) {
+                    $mp3Key = [Console]::ReadKey($true)
+                    break
+                }
+                Start-Sleep -Milliseconds 200
+            }
+            $mp3Sw.Stop()
+            $mp3Choice = if ($mp3Key) { "$($mp3Key.KeyChar)".ToUpper() } else { $null }
+            if ($null -eq $mp3Choice) { Write-Host "Y (auto)" -ForegroundColor Gray; $mp3Choice = "Y" }
+            else { Write-Host $mp3Choice }
+            if ($mp3Choice -ne "N") {
+                Write-Host "  Opening Mp3tag..." -ForegroundColor Cyan
+                Write-Log "Opening Mp3tag for manual tagging: $finalOutputDir"
+                Start-Process $mp3tagPath -ArgumentList "/fp:`"$finalOutputDir`""
+            }
+        } else {
+            Write-Host "`n  Tracks still need metadata. Consider opening Mp3tag to tag manually." -ForegroundColor Yellow
+            Write-Host "  Mp3tag not found at default location." -ForegroundColor Gray
+        }
+    }
 }
 
 Enable-ConsoleClose
