@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## 2026-03-02
+
+### Added
+- **Mp3tag fallback prompt** - When all metadata searching fails (MusicBrainz, CDDB, search-metadata.ps1), prompts to open Mp3tag desktop app pointed at the album folder for manual tagging; auto-detects Mp3tag install location, 30s auto-Yes timeout (PR #91)
+- **UTF-8 encoding for rip-audio.ps1** - Added `[Console]::OutputEncoding = UTF8` to fix garbled characters in cyanrip output (PR #88)
+
+### Fixed
+- **Disc metadata parsed from cyanrip output** - `Get-DiscMetadata` now extracts Album, Artist, Disc number, Total discs, and Release ID directly from cyanrip's `-I` output instead of making a separate MusicBrainz API call; eliminates redundant network request and avoids API parameter errors (PR #88)
+- **Disc ID regex false match** - Regex now requires colon after `DiscID` to avoid matching "DiscID has a matching stub" (which captured "has" as the disc ID); added URL `&id=` parameter fallback for stub cases (PR #88)
+- **MusicBrainz stub disc handling** - Discs with incomplete MusicBrainz stubs now correctly fall through to CDDB fallback and generic names with `-N` flag, instead of failing with exit code 1 (PRs #89, #90)
+- **MusicBrainz discid API URL** - Removed invalid `releases` and `media` inc parameters from the discid endpoint (releases are returned by default); fixes API errors on discs not parsed from cyanrip output (PRs #88, #90)
+
 ## 2026-02-24
 
 ### Added

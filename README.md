@@ -14,6 +14,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 - **Multiple output formats** (FLAC, MP3, Opus, AAC, WAV, ALAC) with simultaneous encoding
 - **Queue mode** for batch ripping multiple discs sequentially
 - **CDDB fallback** when MusicBrainz has no match (gnudb.org)
+- **Mp3tag fallback** prompts to open Mp3tag for manual tagging when all automated sources fail
 - **AccurateRip verification** with per-track reporting
 - **Cover art** from 4 sources: Cover Art Archive, MusicBrainz+CAA, iTunes, Deezer
 - **Artist/Album organization** with flexible directory structure
@@ -218,12 +219,12 @@ Queue mode lets you line up multiple albums for sequential ripping. The queue is
 
 When `-album` is omitted, the script automatically detects disc metadata before ripping:
 
-1. Queries the disc with `cyanrip -I` to get the disc ID
-2. If multiple MusicBrainz releases match, prompts you to select one
-3. Queries the MusicBrainz API for artist, album title, and disc position
+1. Queries the disc with `cyanrip -I` to get the disc ID and metadata
+2. Parses Album, Artist, Disc number, and Release ID directly from cyanrip output (no extra API call needed)
+3. If multiple MusicBrainz releases match, prompts you to select one
 4. For multi-disc albums (e.g. "Mothership"), appends `Disc N` to the album name
 5. Displays: `Detected: Led Zeppelin - Mothership Disc 1`
-6. If discovery fails (API unreachable, no match), prompts for album name manually
+6. If discovery fails (stub, API unreachable, no match), prompts for album name manually
 
 Discovery is skipped when:
 - `-album` is provided (user override)
@@ -235,12 +236,16 @@ When ripping, the script uses multiple sources to ensure track names and metadat
 
 1. **MusicBrainz** (via cyanrip) - Primary source, automatic lookup by disc ID
 2. **CDDB** (gnudb.org) - Fallback when MusicBrainz has no match; uses TOC-based disc ID lookup, then text search
-3. **Generic names** - Last resort: tracks named `01 - Track 01`, `02 - Track 02`, etc.
+3. **search-metadata.ps1** - Post-rip metadata search across MusicBrainz, iTunes, and Deezer APIs
+4. **Mp3tag prompt** - When all automated sources fail, prompts to open Mp3tag desktop app for manual tagging
+5. **Generic names** - Last resort: tracks named `01 - Track 01`, `02 - Track 02`, etc.
 
 If a disc is not found in MusicBrainz, the script will:
 - Search CDDB by disc ID (computed from the disc's table of contents)
 - If that fails, search CDDB by album name
 - Show a preview of the CDDB results (artist, album, first 5 tracks) before proceeding
+- Run `search-metadata.ps1` for additional API-based search
+- If tracks still have generic names, prompt to open Mp3tag (auto-detected from Program Files, 30s auto-Yes timeout)
 - Use `-RequireMusicBrainz` to stop instead of falling back
 
 ## Cover Art Sources
