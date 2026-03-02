@@ -27,6 +27,9 @@ param(
     [switch]$ProcessQueue
 )
 
+# Ensure cyanrip/metaflac output is decoded as UTF-8 (PS5.1 defaults to system locale)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 # ========== STEP TRACKING ==========
 # Define the 4 processing steps
 $script:AllSteps = @(
@@ -173,12 +176,16 @@ function Get-DiscMetadata {
     $result = @{ Album = $null; Artist = $null; DiscNum = $null; TotalDiscs = $null; ReleaseChoice = $null; DiscId = $null; ReleaseId = $null }
 
     # Parse disc ID - try multiple formats cyanrip may output
+    # Note: must require colon after DiscID to avoid matching "DiscID has a matching stub"
     $discId = $null
     if ($outputText -match 'for DiscID\s+(\S+?):') {
         $discId = $Matches[1]
-    } elseif ($outputText -match 'Disc ID:\s*(\S+)') {
+    } elseif ($outputText -match 'DiscID:\s+(\S+)') {
         $discId = $Matches[1]
-    } elseif ($outputText -match 'DiscID\s*[:\s]\s*(\S+)') {
+    } elseif ($outputText -match 'Disc ID:\s+(\S+)') {
+        $discId = $Matches[1]
+    } elseif ($outputText -match '[&?]id=([A-Za-z0-9_.~-]+)') {
+        # Fallback: extract from MusicBrainz URL parameter (e.g. stub message)
         $discId = $Matches[1]
     }
 
@@ -187,8 +194,34 @@ function Get-DiscMetadata {
         return $null
     }
     Write-Host "Disc ID: $discId" -ForegroundColor Gray
+    $result.DiscId = $discId
 
-    # Check for multiple releases
+    # Try to parse metadata directly from cyanrip output first.
+    # cyanrip prints Album:, Album artist:, Disc number:, etc. when MusicBrainz lookup succeeds.
+    # This avoids a redundant MusicBrainz API call and works even when the API would fail.
+    if ($outputText -match '(?m)^Album:\s+(.+)$') {
+        $result.Album = $Matches[1].Trim()
+    }
+    if ($outputText -match '(?m)^Album artist:\s+(.+)$') {
+        $result.Artist = $Matches[1].Trim()
+    }
+    if ($outputText -match '(?m)^Release ID:\s+(\S+)') {
+        $result.ReleaseId = $Matches[1]
+    }
+    if ($outputText -match '(?m)^Disc number:\s+(\d+)') {
+        $result.DiscNum = [int]$Matches[1]
+    }
+    if ($outputText -match '(?m)^Total discs:\s+(\d+)') {
+        $result.TotalDiscs = [int]$Matches[1]
+    }
+
+    # If cyanrip already found the album, we're done - no API call needed
+    if ($result.Album) {
+        Write-Host "Parsed metadata from disc query" -ForegroundColor Green
+        return $result
+    }
+
+    # Check for multiple releases (user selection needed before API call)
     $releaseUuid = $null
     if ($outputText -match "Multiple releases found") {
         $releases = @()
@@ -221,7 +254,8 @@ function Get-DiscMetadata {
         }
     }
 
-    # Query MusicBrainz API for full metadata
+    # Fallback: Query MusicBrainz API for metadata (only when cyanrip output
+    # didn't contain Album/Artist, e.g. multiple releases requiring selection)
     Write-Host "Querying MusicBrainz for release details..." -ForegroundColor Yellow
     $mbHeaders = @{
         "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
@@ -231,7 +265,8 @@ function Get-DiscMetadata {
         if ($releaseUuid) {
             $url = "https://musicbrainz.org/ws/2/release/$($releaseUuid)?inc=artist-credits+media+discids&fmt=json"
         } else {
-            $url = "https://musicbrainz.org/ws/2/discid/$($discId)?inc=artist-credits+media+discids&fmt=json"
+            # discid endpoint requires 'releases' before 'media' or 'discids' can be used
+            $url = "https://musicbrainz.org/ws/2/discid/$($discId)?inc=releases+artist-credits+media+discids&fmt=json"
         }
         $response = Invoke-RestMethod -Uri $url -Headers $mbHeaders -TimeoutSec 10
 
@@ -239,7 +274,6 @@ function Get-DiscMetadata {
         $release = if ($response.releases) { $response.releases[0] } else { $response }
 
         $result.Album = $release.title
-        $result.DiscId = $discId
         $result.ReleaseId = $release.id
         if ($release.'artist-credit' -and $release.'artist-credit'.Count -gt 0) {
             $result.Artist = ($release.'artist-credit' | ForEach-Object { $_.name }) -join " / "
