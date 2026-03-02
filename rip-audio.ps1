@@ -1656,8 +1656,45 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
     }
 }
 
+# Check if disc found as MusicBrainz stub (incomplete release data)
+# cyanrip says "To continue add metadata via -a or -t, or ignore via -N!"
+# Retry with -a (artist) and -t (album title) flags if we have them
+if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "DiscID has a matching stub") {
+    Write-Host "`nDisc found as MusicBrainz stub (incomplete release data)." -ForegroundColor Yellow
+    Write-Log "MusicBrainz stub detected"
+
+    $metaFlags = @()
+    if ($artist) { $metaFlags += @("-a", $artist) }
+    if ($album) { $metaFlags += @("-t", $album) }
+
+    if ($metaFlags.Count -gt 0) {
+        Write-Host "Retrying with provided metadata ($artist - $album)..." -ForegroundColor Green
+        Write-Log "Retrying with manual metadata flags: $($metaFlags -join ' ')"
+        $cyanripArgs += $metaFlags
+
+        Push-Location $parentDir
+        try {
+            $outputLines = [System.Collections.ArrayList]::new()
+            & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
+                $line = [string]$_
+                if ($line -notmatch 'progress - \d+\.\d+%') {
+                    Write-Host $line
+                }
+                [void]$outputLines.Add($line)
+            }
+            $cyanripExitCode = $LASTEXITCODE
+            $cyanripOutput = $outputLines.ToArray()
+        } catch {
+            Pop-Location
+            Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
+        }
+        Pop-Location
+        $cyanripOutputText = $cyanripOutput -join "`n"
+    }
+}
+
 # Check if disc not found in MusicBrainz - try CDDB fallback, then offer generic names
-if ($cyanripExitCode -ne 0 -and $cyanripOutputText -match "Unable to find release info") {
+if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find release info" -or $cyanripOutputText -match "DiscID has a matching stub")) {
     Write-Host "`nDisc not found in MusicBrainz database." -ForegroundColor Yellow
 
     if ($RequireMusicBrainz) {
