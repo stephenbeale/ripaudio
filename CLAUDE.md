@@ -745,3 +745,90 @@ These branches have no commits ahead of master and were pruned from local tracki
 4. Test PR #85 track-number sort: verify files with numerically out-of-order filenames (e.g. `10 - ...`, `2 - ...`) are processed in correct track order
 5. Test PR #86 `-Reset` followed by normal `search-metadata.ps1` run: confirm reset produces clean generic filenames, then confirm re-tagging applies correct metadata
 6. Offline/internet-independent operation remains the only planned roadmap item
+
+---
+
+### 2026-02-28 - Metadata Source and Cover Art Source Tracking
+
+**PRs Merged:**
+
+- PR #87 - feat(rip): add metadata source and cover art source tracking
+  - Added `$script:MetadataSource` tracking variable set at all decision points in `rip-audio.ps1`: MusicBrainz (default), CDDB (when MusicBrainz returns no match), Generic (no external lookup)
+  - Added `$script:CoverArtSource` tracking variable set at each cover art download point: cyanrip (art bundled by cyanrip), Cover Art Archive (direct lookup), MusicBrainz CAA (search + CAA fallback), iTunes (iTunes Search API), Deezer (Deezer API)
+  - Both variables displayed in the FILE SUMMARY block with colour coding: MusicBrainz = green, CDDB = yellow, Generic = red; cover art source shown inline: "Yes (iTunes)" instead of just "Yes"
+  - Both variables logged to the session log file
+  - Roadmap.md: offline/internet-independent operation item marked as completed — the ROADMAP IS NOW FULLY COMPLETE (no remaining planned items)
+
+**Technical Notes:**
+- `$script:MetadataSource` initialised to `"MusicBrainz"` and overwritten whenever the code path diverges (e.g. CDDB lookup succeeds, or generic names are used)
+- `$script:CoverArtSource` initialised to `""` and set at each cover art download branch before the download is attempted; remains `""` if no cover art is downloaded
+- Colour coding in FILE SUMMARY uses `switch` on the variable value — no new helper function needed
+- Cover art display in FILE SUMMARY conditionally appends `" ($script:CoverArtSource)"` when a source is set
+
+**Roadmap Status:**
+- Roadmap.md is now fully complete — all planned items are in the Completed section; no Planned or In Progress items remain
+
+**Session Verified Clean:**
+- PR #87 squash-merged to master; feature branch deleted
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+
+**Priority for Next Session:**
+1. The ROADMAP IS FULLY COMPLETE — no outstanding development items remain
+2. End-to-end test: rip a disc that falls back to CDDB and confirm "Metadata: CDDB" appears in yellow in the FILE SUMMARY
+3. End-to-end test: rip a disc with no MusicBrainz/CDDB match and confirm "Metadata: Generic" appears in red in the FILE SUMMARY
+4. End-to-end test: rip a disc and confirm cover art source (e.g. "Cover art: Yes (iTunes)") appears correctly in FILE SUMMARY
+
+---
+
+### 2026-03-02 - Disc Metadata Parsing Rewrite, Stub Disc Handling, Mp3tag Fallback
+
+**PRs Merged:**
+
+- PR #88 - fix(rip): parse disc metadata from cyanrip output, fix disc ID regex and MB API URL
+  - Rewrote `Get-DiscMetadata` to parse album/artist/disc info directly from cyanrip output instead of making separate MusicBrainz API calls post-rip
+  - Fixed disc ID regex that was incorrectly matching "has" from the phrase "DiscID has a matching stub" — regex now anchors to the disc ID pattern properly
+  - Fixed MusicBrainz API URL (incorrect endpoint was being called)
+  - Added `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` to `rip-audio.ps1` so cyanrip UTF-8 output is captured correctly by PowerShell
+
+- PR #89 - fix(rip): handle MusicBrainz stub discs (superseded by PR #90)
+  - Attempted to retry MusicBrainz lookup with `-a`/`-t` flags when a stub disc is detected
+  - This approach was found to be broken and was removed in PR #90
+
+- PR #90 - fix(rip): remove broken stub retry and fix discid API URL
+  - Removed the broken stub-disc retry logic added in PR #89
+  - MusicBrainz stub discs now correctly fall through to CDDB fallback then generic names — the normal fallback chain handles this correctly
+  - Fixed the discid API URL: removed invalid `inc` parameters that were causing API errors
+
+- PR #91 - feat(rip): prompt to open Mp3tag when metadata search fails
+  - Added Mp3tag fallback prompt shown when all metadata sources fail (MusicBrainz + CDDB both return no match)
+  - Auto-detects Mp3tag install via standard registry/path locations
+  - 30-second timeout on the prompt — auto-continues without opening Mp3tag if no response
+  - Allows the user to manually tag files immediately after a failed rip rather than having to find the folder separately
+
+- PR #92 - docs: update README and CHANGELOG for PRs #88-#91
+  - README updated to document the new disc metadata parsing behaviour and Mp3tag fallback prompt
+  - CHANGELOG updated with entries for PRs #88-#91
+
+**Technical Notes:**
+- `Get-DiscMetadata` rewrite: cyanrip prints disc metadata (album, artist, disc title, release date, track count) to stdout during its lookup phase; parsing this output directly is more reliable than making a second MusicBrainz API call and avoids rate-limiting concerns
+- Stub disc detection: cyanrip outputs "DiscID has a matching stub" when MusicBrainz knows the disc ID but has no full release entry; the old regex accidentally matched "has" in this string — the fix anchors on the disc ID hex pattern
+- discid API URL fix: the `inc` parameter is not valid for the discid lookup endpoint; removing it resolved 400 errors when looking up disc IDs directly
+- Mp3tag auto-detect: checks `$env:ProgramFiles`, `${env:ProgramFiles(x86)}`, and `$env:LOCALAPPDATA` for `Mp3tag\Mp3tag.exe`; opens the ripped folder directly in Mp3tag if found
+- UTF-8 encoding: `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` added early in `rip-audio.ps1` ensures cyanrip output containing non-ASCII characters (accented artist/album names) is captured correctly
+
+**Session Verified Clean:**
+- All 5 PRs (#88-#92) squash-merged to master; all feature branches deleted locally and remotely
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master)
+- No open PRs
+- Stash list: empty (one obsolete stash from mid-session was dropped during session closure)
+- Remote branches remaining (orphaned, never deleted): docs/session-updates, feature/offline-summary — these predate this session and have no commits ahead of master
+
+**Priority for Next Session:**
+1. The ROADMAP IS FULLY COMPLETE — no outstanding development items remain
+2. Clean up orphaned remote branches: `git push origin --delete docs/session-updates feature/offline-summary`
+3. End-to-end test: rip a disc that triggers the Mp3tag prompt (disc not in MusicBrainz or CDDB) and confirm the prompt appears, auto-detects Mp3tag, and opens the folder
+4. End-to-end test: rip a disc that returns a MusicBrainz stub and confirm it falls through to CDDB then generic names correctly
+5. Earlier test suggestions (PRs #83-#87) still stand as useful validation exercises
