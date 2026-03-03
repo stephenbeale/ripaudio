@@ -231,9 +231,40 @@ function Get-DiscMetadata {
             }
         }
         if ($releases.Count -gt 0) {
+            # Fetch track info for each release to help differentiate versions
+            $trackHeaders = @{
+                "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
+                "Accept" = "application/json"
+            }
+            Write-Host "Fetching track details for each release..." -ForegroundColor Gray
+            foreach ($rel in $releases) {
+                try {
+                    if ($releases.IndexOf($rel) -gt 0) { Start-Sleep -Seconds 1 }
+                    $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=media+recordings&fmt=json"
+                    $trackResp = Invoke-RestMethod -Uri $trackUrl -Headers $trackHeaders -TimeoutSec 10
+                    if ($trackResp.media -and $trackResp.media.Count -gt 0) {
+                        $medium = $trackResp.media[0]
+                        $rel.TrackCount = $medium.'track-count'
+                        if ($medium.tracks -and $medium.tracks.Count -gt 0) {
+                            $rel.FirstTrack = $medium.tracks[0].title
+                            $rel.LastTrack = $medium.tracks[-1].title
+                        }
+                    }
+                } catch {
+                    # Continue without track info if API call fails
+                }
+            }
+
             Write-Host "`nMultiple releases found. Select one:" -ForegroundColor Cyan
             foreach ($rel in $releases) {
-                Write-Host "  $($rel.Index): $($rel.Description)" -ForegroundColor White
+                $info = "  $($rel.Index): $($rel.Description)"
+                if ($rel.TrackCount) {
+                    $info += " | $($rel.TrackCount) tracks"
+                    if ($rel.FirstTrack -and $rel.LastTrack) {
+                        $info += " ($($rel.FirstTrack) ... $($rel.LastTrack))"
+                    }
+                }
+                Write-Host $info -ForegroundColor White
             }
             Write-Host ""
 
@@ -1510,18 +1541,50 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
     # Parse the release options from the output
     $releases = @()
     foreach ($line in $cyanripOutput) {
-        if ($line -match '^\s*(\d+)\s+\(ID:.*?\):\s*(.+)$') {
+        if ($line -match '^\s*(\d+)\s+\(ID:\s*([a-f0-9-]+)\):\s*(.+)$') {
             $releases += @{
                 Index = $Matches[1]
-                Description = $Matches[2].Trim()
+                UUID = $Matches[2]
+                Description = $Matches[3].Trim()
             }
         }
     }
 
     if ($releases.Count -gt 0) {
+        # Fetch track info for each release to help differentiate versions
+        $trackHeaders = @{
+            "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
+            "Accept" = "application/json"
+        }
+        Write-Host "Fetching track details for each release..." -ForegroundColor Gray
+        foreach ($rel in $releases) {
+            try {
+                if ($releases.IndexOf($rel) -gt 0) { Start-Sleep -Seconds 1 }
+                $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=media+recordings&fmt=json"
+                $trackResp = Invoke-RestMethod -Uri $trackUrl -Headers $trackHeaders -TimeoutSec 10
+                if ($trackResp.media -and $trackResp.media.Count -gt 0) {
+                    $medium = $trackResp.media[0]
+                    $rel.TrackCount = $medium.'track-count'
+                    if ($medium.tracks -and $medium.tracks.Count -gt 0) {
+                        $rel.FirstTrack = $medium.tracks[0].title
+                        $rel.LastTrack = $medium.tracks[-1].title
+                    }
+                }
+            } catch {
+                # Continue without track info if API call fails
+            }
+        }
+
         Write-Host "Select a release:" -ForegroundColor Cyan
         foreach ($rel in $releases) {
-            Write-Host "  $($rel.Index): $($rel.Description)" -ForegroundColor White
+            $info = "  $($rel.Index): $($rel.Description)"
+            if ($rel.TrackCount) {
+                $info += " | $($rel.TrackCount) tracks"
+                if ($rel.FirstTrack -and $rel.LastTrack) {
+                    $info += " ($($rel.FirstTrack) ... $($rel.LastTrack))"
+                }
+            }
+            Write-Host $info -ForegroundColor White
         }
         Write-Host ""
 
