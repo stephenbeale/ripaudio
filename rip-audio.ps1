@@ -933,10 +933,13 @@ if (-not $album -and -not $script:IsProcessingQueue) {
 }
 
 # Sanitize album and artist for use as directory names.
-# Removes: illegal Windows path characters, dots (trailing dots make NTFS silently rename the folder),
-# and hyphens. Collapses multiple spaces and trims.
-$safeAlbum = (($album  -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' ').Trim()
-$safeArtist = if ($artist) { (($artist -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' ').Trim() } else { "" }
+# First normalize Unicode dashes (en-dash, em-dash) to ASCII hyphen so cyanrip
+# and PowerShell produce the same directory name. Then remove illegal Windows path
+# characters, dots (trailing dots make NTFS silently rename the folder), and hyphens.
+# Collapses multiple spaces and trims.
+$safeAlbum = (($album -replace '[\u2013\u2014]', '-') -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' '
+$safeAlbum = $safeAlbum.Trim()
+$safeArtist = if ($artist) { ((($artist -replace '[\u2013\u2014]', '-') -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' ').Trim() } else { "" }
 
 # Build output directory path
 # Format: E:\Music\{Artist}\{Album}\ or E:\Music\{Album}\ if no artist
@@ -1069,15 +1072,19 @@ function Stop-WithError {
     }
     Write-Log "Log file: $($script:LogFile)"
 
-    Write-Host "`n========================================" -ForegroundColor Red
-    Write-Host "FAILED!" -ForegroundColor Red
-    Write-Host "========================================" -ForegroundColor Red
+    # Use yellow for non-critical failures (rip succeeded, later step failed)
+    $ripCompleted = $script:CompletedSteps | Where-Object { $_.Number -eq 1 }
+    $bannerColor = if ($ripCompleted) { "Yellow" } else { "Red" }
+
+    Write-Host "`n========================================" -ForegroundColor $bannerColor
+    Write-Host "FAILED!" -ForegroundColor $bannerColor
+    Write-Host "========================================" -ForegroundColor $bannerColor
 
     # Always show what was being processed
     Write-Host "`nProcessing: $(Get-AlbumSummary)" -ForegroundColor White
 
-    Write-Host "`nError at: $Step" -ForegroundColor Red
-    Write-Host "Message: $Message" -ForegroundColor Red
+    Write-Host "`nError at: $Step" -ForegroundColor $bannerColor
+    Write-Host "Message: $Message" -ForegroundColor $bannerColor
 
     # Show completed and remaining steps
     Show-StepsSummary -ShowRemaining
@@ -1101,9 +1108,9 @@ function Stop-WithError {
     }
 
     Write-Host "`nLog file: $($script:LogFile)" -ForegroundColor Yellow
-    Write-Host "`n========================================" -ForegroundColor Red
-    Write-Host "Please complete the remaining steps manually" -ForegroundColor Red
-    Write-Host "========================================`n" -ForegroundColor Red
+    Write-Host "`n========================================" -ForegroundColor $bannerColor
+    Write-Host "Please complete the remaining steps manually" -ForegroundColor $bannerColor
+    Write-Host "========================================`n" -ForegroundColor $bannerColor
     Enable-ConsoleClose
 
     if ($script:IsProcessingQueue) {
@@ -2071,7 +2078,32 @@ if ($rippedFiles.Count -eq 0) {
         Write-Host "Found $($anyAudioFiles.Count) audio file(s) (different format than expected)" -ForegroundColor Yellow
         $rippedFiles = $anyAudioFiles
     } else {
-        Stop-WithError -Step "STEP 2/4: Verify output" -Message "No audio files found in $finalOutputDir"
+        # cyanrip may have created a differently-named directory (e.g. Unicode dash truncation).
+        # Look for sibling directories that share the same name prefix and contain audio files.
+        $parentDir = Split-Path -Parent $finalOutputDir
+        $albumLeaf = Split-Path -Leaf $finalOutputDir
+        # Use first 10 chars as prefix to find cyanrip's actual output
+        $prefixLen = [Math]::Min(10, $albumLeaf.Length)
+        $prefix = $albumLeaf.Substring(0, $prefixLen)
+        $siblingDirs = Get-ChildItem -Path $parentDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne $albumLeaf -and $_.Name.StartsWith($prefix) }
+        $foundInSibling = $false
+        foreach ($dir in $siblingDirs) {
+            $siblingAudio = Get-ChildItem -Path $dir.FullName -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav" -Recurse -ErrorAction SilentlyContinue
+            if ($siblingAudio -and $siblingAudio.Count -gt 0) {
+                Write-Host "Found audio files in '$($dir.Name)' instead of '$albumLeaf' (cyanrip directory name mismatch)" -ForegroundColor Yellow
+                Write-Host "Moving files to expected directory..." -ForegroundColor Yellow
+                # Move contents from cyanrip's directory to the expected directory
+                Get-ChildItem -Path $dir.FullName | Move-Item -Destination $finalOutputDir -Force
+                Remove-Item -Path $dir.FullName -Force -ErrorAction SilentlyContinue
+                $rippedFiles = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav" -Recurse -ErrorAction SilentlyContinue
+                $foundInSibling = $true
+                break
+            }
+        }
+        if (-not $foundInSibling) {
+            Stop-WithError -Step "STEP 2/4: Verify output" -Message "No audio files found in $finalOutputDir"
+        }
     }
 }
 
