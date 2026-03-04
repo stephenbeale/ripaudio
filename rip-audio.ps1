@@ -949,6 +949,63 @@ if ($safeArtist) {
     $finalOutputDir = "$outputDriveLetter\Music\$safeAlbum"
 }
 
+# ========== DUPLICATE VERSION CHECK ==========
+# If output directory already exists with audio files, offer to add a version suffix
+# (e.g. "Limited Edition", "Import", "Remaster") to create a separate folder
+if ((Test-Path $finalOutputDir) -and -not $script:IsProcessingQueue) {
+    $formatExtMap = @{ "flac" = "*.flac"; "mp3" = "*.mp3"; "opus" = "*.opus"; "aac" = "*.m4a"; "wav" = "*.wav"; "alac" = "*.m4a" }
+    $hasAudioFiles = $false
+    foreach ($fmt in $formatList) {
+        $ext = $formatExtMap[$fmt]
+        if ($ext -and (Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            $hasAudioFiles = $true
+            break
+        }
+    }
+
+    if ($hasAudioFiles) {
+        Write-Host "`n========================================" -ForegroundColor Yellow
+        Write-Host "ALBUM FOLDER ALREADY EXISTS" -ForegroundColor Yellow
+        Write-Host "========================================" -ForegroundColor Yellow
+        Write-Host "`n  $finalOutputDir" -ForegroundColor White
+        Write-Host "`nIs this a different version of the same album?" -ForegroundColor Cyan
+        Write-Host "  [1] Yes - add a version suffix (e.g. Limited Edition, Import, Remaster)" -ForegroundColor Yellow
+        Write-Host "  [2] No  - continue (resume/overwrite options will follow)" -ForegroundColor Yellow
+
+        $versionChoice = $null
+        while ($versionChoice -ne '1' -and $versionChoice -ne '2') {
+            $versionChoice = Read-Host "Enter 1 or 2"
+            if ($versionChoice -ne '1' -and $versionChoice -ne '2') {
+                Write-Host "Invalid choice. Please enter 1 or 2." -ForegroundColor Red
+            }
+        }
+
+        if ($versionChoice -eq '1') {
+            $suffix = $null
+            while (-not $suffix) {
+                $suffix = (Read-Host "Enter version suffix (e.g. Limited Edition, Import, Remaster, Japanese Edition)").Trim()
+                if (-not $suffix) {
+                    Write-Host "Suffix cannot be empty. Please enter a version name." -ForegroundColor Red
+                }
+            }
+            # Sanitize the suffix the same way as album/artist names
+            $safeSuffix = (($suffix -replace '[\u2013\u2014]', '-') -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' '
+            $safeSuffix = $safeSuffix.Trim()
+
+            # Rebuild output directory with suffix appended to album name
+            $safeAlbum = "$safeAlbum ($safeSuffix)"
+            if ($safeArtist) {
+                $finalOutputDir = "$outputDriveLetter\Music\$safeArtist\$safeAlbum"
+            } else {
+                $finalOutputDir = "$outputDriveLetter\Music\$safeAlbum"
+            }
+            Write-Host "`nNew output directory:" -ForegroundColor Green
+            Write-Host "  $finalOutputDir" -ForegroundColor White
+            Write-Log "Version suffix applied: '$suffix' -> output dir: $finalOutputDir"
+        }
+    }
+}
+
 # ========== PATH LENGTH VALIDATION ==========
 # Check worst-case output path against Windows MAX_PATH (260 chars) before starting
 $MAX_PATH = 260
