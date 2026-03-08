@@ -261,7 +261,7 @@ function Get-DiscMetadata {
                 if ($rel.TrackCount) {
                     $info += " | $($rel.TrackCount) tracks"
                     if ($rel.FirstTrack -and $rel.LastTrack) {
-                        $info += " ($($rel.FirstTrack) ... $($rel.LastTrack))"
+                        $info += " (Track 1: $($rel.FirstTrack) ... Last track: $($rel.LastTrack))"
                     }
                 }
                 Write-Host $info -ForegroundColor White
@@ -1650,7 +1650,7 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
             if ($rel.TrackCount) {
                 $info += " | $($rel.TrackCount) tracks"
                 if ($rel.FirstTrack -and $rel.LastTrack) {
-                    $info += " ($($rel.FirstTrack) ... $($rel.LastTrack))"
+                    $info += " (Track 1: $($rel.FirstTrack) ... Last track: $($rel.LastTrack))"
                 }
             }
             Write-Host $info -ForegroundColor White
