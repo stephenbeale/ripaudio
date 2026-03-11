@@ -53,6 +53,14 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 
 ## Installation
 
+### Option A: PowerShell Gallery (recommended)
+
+```powershell
+Install-Module RipAudio
+```
+
+### Option B: Manual
+
 1. Install cyanrip:
    ```powershell
    winget install cyanrip
@@ -577,7 +585,7 @@ Contributions are welcome! Please follow the existing code style and patterns.
 
 ## License
 
-This project is provided as-is for personal use.
+This project is licensed under the [MIT License](LICENSE).
 
 ## Notes
 
