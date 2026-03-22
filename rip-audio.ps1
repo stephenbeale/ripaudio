@@ -455,6 +455,38 @@ function Parse-AccurateRipResults {
     return $result
 }
 
+# ========== DATA ERROR DETECTION ==========
+function Parse-TrackDataErrors {
+    param([string]$Output)
+
+    $errorTracks = @()
+    $currentTrack = 0
+
+    foreach ($line in ($Output -split "`n")) {
+        # Track header line (e.g. "Track  3" or "Track 03")
+        if ($line -match '^\s*Track\s+(\d+)') {
+            $currentTrack = [int]$Matches[1]
+        }
+
+        # Detect data/read error indicators on track lines
+        # cyanrip reports errors like: "error", "read error", "SCSI error", "skip", "dropped"
+        if ($currentTrack -gt 0 -and $line -match '(read error|SCSI error|data error|rip(ping)? error|I/O error|dropped|skipped sector)') {
+            if ($errorTracks -notcontains $currentTrack) {
+                $errorTracks += $currentTrack
+            }
+        }
+
+        # Also detect error counts in track completion lines (e.g. "errors: 5")
+        if ($currentTrack -gt 0 -and $line -match 'errors?:\s*(\d+)' -and [int]$Matches[1] -gt 0) {
+            if ($errorTracks -notcontains $currentTrack) {
+                $errorTracks += $currentTrack
+            }
+        }
+    }
+
+    return $errorTracks | Sort-Object
+}
+
 # ========== CDDB FALLBACK ==========
 function Search-CDDB {
     param(
@@ -1939,6 +1971,115 @@ if ($arResults.TracksVerified -ge 0) {
     }
 }
 
+# ========== DATA ERROR HANDLING ==========
+# Parse cyanrip output for per-track data errors and prompt user to retry or skip
+$script:DataErrorTracks = @()
+$dataErrorTracks = Parse-TrackDataErrors -Output $cyanripOutputText
+
+if ($dataErrorTracks.Count -gt 0) {
+    Write-Host "`nDATA ERRORS DETECTED on $($dataErrorTracks.Count) track(s): $($dataErrorTracks -join ', ')" -ForegroundColor Red
+    Write-Log "Data errors detected on tracks: $($dataErrorTracks -join ', ')"
+
+    foreach ($errorTrack in $dataErrorTracks) {
+        $trackPadded = "{0:D2}" -f $errorTrack
+
+        if ($script:IsProcessingQueue) {
+            # Auto-skip in ProcessQueue mode
+            Write-Host "  Track ${trackPadded}: DATA ERROR -- auto-skipping (queue mode)" -ForegroundColor Yellow
+            Write-Log "Track ${trackPadded}: data error, auto-skipped (queue mode)"
+            $script:DataErrorTracks += $errorTrack
+        } else {
+            $resolved = $false
+            while (-not $resolved) {
+                Write-Host ""
+                Write-Host "  Track $trackPadded has data errors." -ForegroundColor Yellow
+                Write-Host "    [R] Retry -- eject disc, clean/reinsert, re-rip this track" -ForegroundColor White
+                Write-Host "    [S] Skip  -- mark as _DATA_ERROR and continue to next track" -ForegroundColor White
+                Write-Host ""
+                $errChoice = Read-Host "  Choice (R/s)"
+
+                if ($errChoice -eq "" -or $errChoice -match "^[Rr]") {
+                    # Eject disc for cleaning
+                    Write-Host "  Ejecting disc for cleaning..." -ForegroundColor Yellow
+                    try {
+                        $driveEject = New-Object -comObject Shell.Application
+                        $driveEject.Namespace(17).ParseName($driveLetter).InvokeVerb("Eject")
+                    } catch {}
+
+                    Read-Host "  Clean the disc and reinsert it, then press Enter to retry"
+
+                    # Wait for drive to become ready
+                    Write-Host "  Waiting for disc..." -ForegroundColor Gray
+                    $driveReady = $false
+                    for ($w = 0; $w -lt 30; $w++) {
+                        Start-Sleep -Seconds 1
+                        if (Test-Path $driveLetter) {
+                            $driveReady = $true
+                            break
+                        }
+                    }
+                    if (-not $driveReady) {
+                        Write-Host "  Drive not ready after 30 seconds." -ForegroundColor Yellow
+                        continue
+                    }
+
+                    # Re-rip just this track using -l flag
+                    Write-Host "  Re-ripping track $trackPadded..." -ForegroundColor Cyan
+                    $retryArgs = @(
+                        "-D", $albumFolder,
+                        "-o", $format,
+                        "-d", $driveLetter,
+                        "-s", "0",
+                        "-l", "$errorTrack"
+                    )
+                    if ($Quality -gt 0 -and $hasLossy) { $retryArgs += @("-b", "$Quality") }
+                    if ($skipMusicBrainz) { $retryArgs += @("-N") }
+                    if ($script:ReleaseChoice) { $retryArgs += @("-R", $script:ReleaseChoice) }
+
+                    Write-Log "Retrying track ${trackPadded}: cyanrip -l $errorTrack"
+
+                    Push-Location $parentDir
+                    try {
+                        $retryLines = [System.Collections.ArrayList]::new()
+                        & cyanrip @retryArgs 2>&1 | ForEach-Object {
+                            $line = [string]$_
+                            if ($line -notmatch 'progress - \d+\.\d+%') {
+                                Write-Host "    $line"
+                            }
+                            [void]$retryLines.Add($line)
+                        }
+                        $retryExitCode = $LASTEXITCODE
+                        $retryOutput = $retryLines -join "`n"
+                    } catch {
+                        Pop-Location
+                        Write-Host "  Retry failed: $_" -ForegroundColor Red
+                        continue
+                    }
+                    Pop-Location
+
+                    # Check if retry had errors too
+                    $retryErrors = Parse-TrackDataErrors -Output $retryOutput
+                    if ($retryExitCode -eq 0 -and $retryErrors.Count -eq 0) {
+                        Write-Host "  Track $trackPadded re-ripped successfully!" -ForegroundColor Green
+                        Write-Log "Track ${trackPadded}: retry successful"
+                        $resolved = $true
+                    } else {
+                        Write-Host "  Track $trackPadded still has errors after retry." -ForegroundColor Yellow
+                        # Loop back to prompt again
+                    }
+                } elseif ($errChoice -match "^[Ss]") {
+                    Write-Host "  Track ${trackPadded}: marked for _DATA_ERROR suffix" -ForegroundColor Yellow
+                    Write-Log "Track ${trackPadded}: data error, user chose to skip"
+                    $script:DataErrorTracks += $errorTrack
+                    $resolved = $true
+                } else {
+                    Write-Host "  Invalid choice. Enter R or S" -ForegroundColor Yellow
+                }
+            }
+        }
+    }
+}
+
 # Rename tracks if they have generic names (no MusicBrainz metadata)
 # Format: "## - Artist - Album" e.g. "01 - John Martyn - Solid Air"
 $audioExtensions = @("*.flac", "*.mp3", "*.opus", "*.m4a", "*.wav")
@@ -2020,6 +2161,33 @@ if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
             }
         }
         Write-Host "Track renaming complete" -ForegroundColor Green
+    }
+}
+
+# Rename data error tracks with _DATA_ERROR suffix
+if ($script:DataErrorTracks.Count -gt 0) {
+    Write-Host "`nApplying _DATA_ERROR suffix to skipped tracks..." -ForegroundColor Yellow
+    # Re-scan for current files
+    $currentFiles = @()
+    foreach ($ext in $audioExtensions) {
+        $f = Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
+        if ($f) { $currentFiles += $f }
+    }
+
+    foreach ($errTrackNum in $script:DataErrorTracks) {
+        $trackPadded = "{0:D2}" -f $errTrackNum
+        $matchingFile = $currentFiles | Where-Object { $_.BaseName -match "^$trackPadded(\s|-)" } | Select-Object -First 1
+        if ($matchingFile) {
+            $newName = "$($matchingFile.BaseName)_DATA_ERROR$($matchingFile.Extension)"
+            try {
+                Rename-Item -Path $matchingFile.FullName -NewName $newName -ErrorAction Stop
+                Write-Host "  $($matchingFile.Name) -> $newName" -ForegroundColor Yellow
+                Write-Log "Data error rename: $($matchingFile.Name) -> $newName"
+            } catch {
+                Write-Host "  Failed to rename: $($matchingFile.Name)" -ForegroundColor Red
+                Write-Log "WARNING: Failed to rename data error track $($matchingFile.Name): $_"
+            }
+        }
     }
 }
 
@@ -2452,6 +2620,9 @@ if ($arResults.DbStatus -eq "found" -and $arResults.TracksVerified -ge 0) {
 } elseif ($arResults.DbStatus -eq "not found") {
     Write-Host "  AccurateRip: disc not in database" -ForegroundColor White
 }
+if ($script:DataErrorTracks.Count -gt 0) {
+    Write-Host "  Data errors: $($script:DataErrorTracks.Count) track(s) marked _DATA_ERROR (tracks $($script:DataErrorTracks -join ', '))" -ForegroundColor Red
+}
 Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
 Write-Host "========================================`n" -ForegroundColor Cyan
 
@@ -2465,6 +2636,9 @@ Write-Log "Metadata source: $($script:MetadataSource)"
 if ($script:CoverArtSource) { Write-Log "Cover art source: $($script:CoverArtSource)" }
 if ($arResults.TracksVerified -ge 0) {
     Write-Log "AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) verified"
+}
+if ($script:DataErrorTracks.Count -gt 0) {
+    Write-Log "Data errors: $($script:DataErrorTracks.Count) track(s) marked _DATA_ERROR (tracks $($script:DataErrorTracks -join ', '))"
 }
 
 # If MusicBrainz had no match the tracks will be named "Unknown track".
@@ -2539,6 +2713,9 @@ Enable-ConsoleClose
 $host.UI.RawUI.WindowTitle = "$windowTitle - DONE"
 if ($arResults.DbStatus -eq "found" -and $arResults.TracksVerified -ge 0 -and $arResults.TracksVerified -lt $arResults.TracksTotal) {
     $host.UI.RawUI.WindowTitle += " - AR PARTIAL"
+}
+if ($script:DataErrorTracks.Count -gt 0) {
+    $host.UI.RawUI.WindowTitle += " - DATA ERRORS"
 }
 
 } catch {
