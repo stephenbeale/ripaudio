@@ -1985,8 +1985,8 @@ if ($dataErrorTracks.Count -gt 0) {
 
         if ($script:IsProcessingQueue) {
             # Auto-skip in ProcessQueue mode
-            Write-Host "  Track $trackPadded: DATA ERROR -- auto-skipping (queue mode)" -ForegroundColor Yellow
-            Write-Log "Track $trackPadded: data error, auto-skipped (queue mode)"
+            Write-Host "  Track ${trackPadded}: DATA ERROR -- auto-skipping (queue mode)" -ForegroundColor Yellow
+            Write-Log "Track ${trackPadded}: data error, auto-skipped (queue mode)"
             $script:DataErrorTracks += $errorTrack
         } else {
             $resolved = $false
@@ -2036,7 +2036,7 @@ if ($dataErrorTracks.Count -gt 0) {
                     if ($skipMusicBrainz) { $retryArgs += @("-N") }
                     if ($script:ReleaseChoice) { $retryArgs += @("-R", $script:ReleaseChoice) }
 
-                    Write-Log "Retrying track $trackPadded: cyanrip -l $errorTrack"
+                    Write-Log "Retrying track ${trackPadded}: cyanrip -l $errorTrack"
 
                     Push-Location $parentDir
                     try {
@@ -2061,15 +2061,15 @@ if ($dataErrorTracks.Count -gt 0) {
                     $retryErrors = Parse-TrackDataErrors -Output $retryOutput
                     if ($retryExitCode -eq 0 -and $retryErrors.Count -eq 0) {
                         Write-Host "  Track $trackPadded re-ripped successfully!" -ForegroundColor Green
-                        Write-Log "Track $trackPadded: retry successful"
+                        Write-Log "Track ${trackPadded}: retry successful"
                         $resolved = $true
                     } else {
                         Write-Host "  Track $trackPadded still has errors after retry." -ForegroundColor Yellow
                         # Loop back to prompt again
                     }
                 } elseif ($errChoice -match "^[Ss]") {
-                    Write-Host "  Track $trackPadded: marked for _DATA_ERROR suffix" -ForegroundColor Yellow
-                    Write-Log "Track $trackPadded: data error, user chose to skip"
+                    Write-Host "  Track ${trackPadded}: marked for _DATA_ERROR suffix" -ForegroundColor Yellow
+                    Write-Log "Track ${trackPadded}: data error, user chose to skip"
                     $script:DataErrorTracks += $errorTrack
                     $resolved = $true
                 } else {
