@@ -470,7 +470,8 @@ function Parse-TrackDataErrors {
 
         # Detect data/read error indicators on track lines
         # cyanrip reports errors like: "error", "read error", "SCSI error", "skip", "dropped"
-        if ($currentTrack -gt 0 -and $line -match '(read error|SCSI error|data error|rip(ping)? error|I/O error|dropped|skipped sector)') {
+        # Exclude "Ripping errors: 0" — cyanrip prints this for every track even when there are no errors
+        if ($currentTrack -gt 0 -and $line -notmatch 'Ripping errors:\s*0' -and $line -match '(read error|SCSI error|data error|rip(ping)? error|I/O error|dropped|skipped sector)') {
             if ($errorTracks -notcontains $currentTrack) {
                 $errorTracks += $currentTrack
             }
