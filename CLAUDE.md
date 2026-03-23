@@ -832,3 +832,21 @@ These branches have no commits ahead of master and were pruned from local tracki
 3. End-to-end test: rip a disc that triggers the Mp3tag prompt (disc not in MusicBrainz or CDDB) and confirm the prompt appears, auto-detects Mp3tag, and opens the folder
 4. End-to-end test: rip a disc that returns a MusicBrainz stub and confirm it falls through to CDDB then generic names correctly
 5. Earlier test suggestions (PRs #83-#87) still stand as useful validation exercises
+
+---
+
+### 2026-03-23 - False Data Error Fix (PR #106)
+
+**PR #106 merged: `fix/false-data-error-detection`**
+- Bug: the regex `rip(ping)? error` (used to detect cyanrip data errors mid-rip) matched inside cyanrip's own `Ripping errors: 0` summary line printed at the end of every track
+- Effect: every rip flagged the last track as having a data error, even on a perfectly clean disc
+- Fix: added a negative lookahead so the regex only matches if the line does not contain `Ripping errors: 0` (or similar "N errors" patterns that indicate a clean summary line)
+
+**Session Verified Clean:**
+- PR #106 squash-merged to master; feature branch deleted
+- Working tree: clean, no uncommitted changes
+- No open PRs
+
+**Priority for Next Session:**
+1. End-to-end test: verify no false data error is reported on a clean rip after PR #106
+2. PSGallery publish still pending — get API key from powershellgallery.com and run `Publish-Module`

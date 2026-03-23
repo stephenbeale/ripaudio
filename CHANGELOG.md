@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 2026-03-23
+
+### Fixed
+- **False data error detection** - Regex `rip(ping)? error` matched inside cyanrip's `Ripping errors: 0` summary line, causing every rip to falsely flag the last track as having a data error; fixed with a negative lookahead (PR #106)
+
 ## 2026-03-02
 
 ### Added
