@@ -375,6 +375,12 @@ function Write-Log {
     }
 }
 
+function Write-Timestamp {
+    param([string]$Label)
+    $ts = Get-Date -Format "dd/MM/yyyy HH:mm:ss"
+    Write-Host "  [$ts] $Label" -ForegroundColor DarkGray
+}
+
 function Show-CoffeeBadge {
     $vt = [char]0x2551
     $w  = 60
@@ -931,6 +937,7 @@ try { # try block wraps main processing - catch handles ProcessQueue failures
 # When -album is not provided and not in ProcessQueue mode, auto-discover from disc
 $script:ReleaseChoice = $null
 if (-not $album -and -not $script:IsProcessingQueue) {
+    Write-Timestamp "Disc metadata discovery started"
     $discMeta = Get-DiscMetadata -DriveLetter $driveLetter
 
     if ($discMeta -and $discMeta.Album) {
@@ -955,6 +962,7 @@ if (-not $album -and -not $script:IsProcessingQueue) {
             $detectedLabel += " (Disc $($discMeta.DiscNum) of $($discMeta.TotalDiscs))"
         }
         Write-Host "Detected: $detectedLabel" -ForegroundColor Green
+        Write-Timestamp "Disc metadata discovery complete"
     } else {
         # Discovery failed — prompt user for album name
         Write-Host "`nCould not auto-detect disc metadata." -ForegroundColor Yellow
@@ -1136,6 +1144,7 @@ if ($artist) {
     $script:LogFile = Join-Path $logDir "${logAlbumName}_${logTimestamp}.log"
 }
 
+Write-Timestamp "Session started"
 Write-Log "========== RIP SESSION STARTED =========="
 Write-Log "Album: $album"
 if ($artist) {
@@ -1233,6 +1242,7 @@ Write-Host "========================================`n" -ForegroundColor Cyan
 Set-CurrentStep -StepNumber 1
 Write-Log "STEP 1/4: Starting cyanrip..."
 Write-Host "[STEP 1/4] Starting cyanrip..." -ForegroundColor Green
+Write-Timestamp "Step 1 started"
 
 # Check if destination drive is ready before attempting to create directories
 Write-Host "Checking destination drive..." -ForegroundColor Yellow
@@ -1468,6 +1478,7 @@ if (!(Test-Path $finalOutputDir)) {
 
 if ($script:SkipRip) {
     Write-Host "`nSkipping rip - all tracks already present." -ForegroundColor Green
+    Write-Timestamp "Step 1 skipped (all tracks present)"
     Write-Log "STEP 1/4: Skipped (all tracks already valid)"
     Complete-CurrentStep
 } else {
@@ -1941,6 +1952,7 @@ if ($cyanripExitCode -ne 0) {
 }
 
 Write-Host "`ncyanrip complete!" -ForegroundColor Green
+Write-Timestamp "Step 1 complete"
 Write-Log "STEP 1/4: cyanrip complete"
 
 # Parse AccurateRip results
@@ -2291,6 +2303,7 @@ try {
 Set-CurrentStep -StepNumber 2
 Write-Log "STEP 2/4: Verifying output..."
 Write-Host "`n[STEP 2/4] Verifying output..." -ForegroundColor Green
+Write-Timestamp "Step 2 started"
 
 # Check for ripped files based on format(s)
 $formatExtMap = @{ "flac" = "*.flac"; "mp3" = "*.mp3"; "opus" = "*.opus"; "aac" = "*.m4a"; "wav" = "*.wav"; "alac" = "*.m4a" }
@@ -2352,12 +2365,14 @@ Write-Host "Total size: $totalSizeMB MB" -ForegroundColor White
 Write-Log "Total size: $totalSizeMB MB"
 
 Complete-CurrentStep
+Write-Timestamp "Step 2 complete"
 Write-Log "STEP 2/4: Verification complete - $($rippedFiles.Count) file(s)"
 
 # ========== STEP 3: COVER ART ==========
 Set-CurrentStep -StepNumber 3
 Write-Log "STEP 3/4: Downloading cover art..."
 Write-Host "`n[STEP 3/4] Downloading cover art..." -ForegroundColor Green
+Write-Timestamp "Step 3 started"
 
 $script:CoverArtDownloaded = $false
 
@@ -2576,19 +2591,23 @@ if ($artFile -and (Get-Command metaflac -ErrorAction SilentlyContinue)) {
     Write-Log "Cover art embed skipped: metaflac not found"
 }
 
+Write-Timestamp "Step 3 complete"
 Complete-CurrentStep
 
 # ========== STEP 4: OPEN DIRECTORY ==========
 Set-CurrentStep -StepNumber 4
 Write-Log "STEP 4/4: Opening directory..."
 Write-Host "`n[STEP 4/4] Opening output directory..." -ForegroundColor Green
+Write-Timestamp "Step 4 started"
 Write-Host "Opening: $finalOutputDir" -ForegroundColor Yellow
 Start-Process explorer.exe -ArgumentList $finalOutputDir
+Write-Timestamp "Step 4 complete"
 Complete-CurrentStep
 
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "COMPLETE!" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
+Write-Timestamp "Session complete"
 
 # Show summary
 Write-Host "`nProcessed: $(Get-AlbumSummary)" -ForegroundColor White
