@@ -485,7 +485,7 @@ function Parse-TrackDataErrors {
         # Detect data/read error indicators on track lines
         # cyanrip reports errors like: "error", "read error", "SCSI error", "skip", "dropped"
         # Exclude "Ripping errors: 0" — cyanrip prints this for every track even when there are no errors
-        if ($currentTrack -gt 0 -and $line -notmatch 'Ripping errors:\s*0' -and $line -match '(read error|SCSI error|data error|rip(ping)? error|I/O error|dropped|skipped sector)') {
+        if ($currentTrack -gt 0 -and $line -notmatch 'Ripping errors:\s*0' -and $line -match '(read error|SCSI error|data error|cdio error|rip(ping)? error|I/O error|dropped|skipped sector|unrecoverable error)') {
             if ($errorTracks -notcontains $currentTrack) {
                 $errorTracks += $currentTrack
             }
@@ -1652,20 +1652,173 @@ Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip working directory: $parentDir"
 Write-Log "cyanrip command: $cmdDisplay"
 
-# Execute cyanrip from the parent directory (streaming output in real-time)
-Push-Location $parentDir
-try {
+# Execute cyanrip from the parent directory with cdio error detection.
+# If cyanrip hits repeated cdio errors (unreadable sectors), kill it and
+# auto-resume skipping the failed track rather than freezing indefinitely.
+$cdioErrorThreshold = 30  # consecutive cdio error lines before killing
+$script:SkippedTracks = @()
+
+function Start-CyanripWithErrorDetection {
+    param(
+        [string[]]$Args,
+        [string]$WorkDir
+    )
+
+    $cyanripPath = (Get-Command cyanrip -ErrorAction Stop).Source
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($cyanripPath)
+    foreach ($a in $Args) { $psi.ArgumentList.Add($a) }
+    $psi.WorkingDirectory = $WorkDir
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+
+    $proc = [System.Diagnostics.Process]::new()
+    $proc.StartInfo = $psi
+
+    $outLines = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+    $proc.add_OutputDataReceived({
+        param($sender, $e)
+        if ($null -ne $e.Data) { $outLines.Enqueue($e.Data) }
+    })
+    $proc.add_ErrorDataReceived({
+        param($sender, $e)
+        if ($null -ne $e.Data) { $outLines.Enqueue($e.Data) }
+    })
+
+    [void]$proc.Start()
+    $proc.BeginOutputReadLine()
+    $proc.BeginErrorReadLine()
+
     $outputLines = [System.Collections.ArrayList]::new()
-    & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-        $line = [string]$_
-        # Show non-progress lines (track completions, errors, metadata) but suppress per-% progress spam
+    $consecutiveCdioErrors = 0
+    $lastCompletedTrack = 0
+    $killedDueToErrors = $false
+
+    while (-not $proc.HasExited) {
+        $line = $null
+        $drained = $false
+        while ($outLines.TryDequeue([ref]$line)) {
+            $drained = $true
+            [void]$outputLines.Add($line)
+
+            # Suppress progress spam
+            if ($line -notmatch 'progress - \d+\.\d+%') {
+                Write-Host $line
+            }
+
+            # Track which track completed successfully
+            if ($line -match 'Track\s+(\d+)\s+ripped and encoded successfully') {
+                $lastCompletedTrack = [int]$Matches[1]
+                $consecutiveCdioErrors = 0
+            }
+
+            # Count consecutive cdio errors
+            if ($line -match 'cdio error|Unknown, unrecoverable error reading data') {
+                $consecutiveCdioErrors++
+            } elseif ($line -match '\S' -and $line -notmatch 'cdio error|Unknown, unrecoverable error') {
+                $consecutiveCdioErrors = 0
+            }
+
+            # Kill if threshold exceeded
+            if ($consecutiveCdioErrors -ge $cdioErrorThreshold) {
+                $failedTrack = $lastCompletedTrack + 1
+                Write-Host "`n*** CDIO ERROR: Track $failedTrack is unreadable -- skipping ***" -ForegroundColor Red
+                Write-Log "Track $failedTrack: unreadable (cdio error threshold exceeded) -- killing cyanrip"
+                $killedDueToErrors = $true
+                try { $proc.Kill() } catch {}
+                break
+            }
+        }
+
+        if (-not $killedDueToErrors -and -not $drained) {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+
+    # Drain remaining output after exit
+    Start-Sleep -Milliseconds 200
+    $line = $null
+    while ($outLines.TryDequeue([ref]$line)) {
+        [void]$outputLines.Add($line)
         if ($line -notmatch 'progress - \d+\.\d+%') {
             Write-Host $line
         }
-        [void]$outputLines.Add($line)
+        if ($line -match 'Track\s+(\d+)\s+ripped and encoded successfully') {
+            $lastCompletedTrack = [int]$Matches[1]
+        }
     }
-    $cyanripExitCode = $LASTEXITCODE
-    $cyanripOutput = $outputLines.ToArray()
+
+    return @{
+        ExitCode = $proc.ExitCode
+        Output = $outputLines.ToArray()
+        Killed = $killedDueToErrors
+        LastCompletedTrack = $lastCompletedTrack
+    }
+}
+
+Push-Location $parentDir
+try {
+    $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+
+    # If killed due to cdio errors, skip the failed track and resume remaining tracks
+    while ($result.Killed) {
+        $failedTrack = $result.LastCompletedTrack + 1
+        $script:SkippedTracks += $failedTrack
+
+        # Parse total track count from output so far
+        $totalFromOutput = 0
+        $allOutput = $result.Output -join "`n"
+        if ($allOutput -match 'Disc tracks:\s+(\d+)') {
+            $totalFromOutput = [int]$Matches[1]
+        }
+
+        if ($totalFromOutput -eq 0) {
+            Write-Host "Cannot determine total tracks -- unable to auto-resume" -ForegroundColor Red
+            break
+        }
+
+        # Build list of remaining tracks (after the failed one)
+        $remainingTracks = @()
+        for ($t = $failedTrack + 1; $t -le $totalFromOutput; $t++) {
+            $remainingTracks += $t
+        }
+
+        if ($remainingTracks.Count -eq 0) {
+            Write-Host "No more tracks to rip after skipping track $failedTrack" -ForegroundColor Yellow
+            break
+        }
+
+        $trackList = $remainingTracks -join ","
+        Write-Host "`nResuming rip from track $($remainingTracks[0]) (skipped: $($script:SkippedTracks -join ', '))..." -ForegroundColor Cyan
+        Write-Log "Resuming: ripping tracks $trackList (skipped: $($script:SkippedTracks -join ', '))"
+
+        # Build resume args with -l flag for remaining tracks
+        $resumeArgs = @(
+            "-D", $albumFolder,
+            "-o", $format,
+            "-d", $driveLetter,
+            "-s", "0",
+            "-l", $trackList
+        )
+        if ($ParanoiaLevel -ge 0) { $resumeArgs += @("-P", "$ParanoiaLevel") }
+        if ($Retries -ge 1) { $resumeArgs += @("-r", "$Retries") }
+        if ($Quality -gt 0 -and $hasLossy) { $resumeArgs += @("-b", "$Quality") }
+        if ($skipMusicBrainz) { $resumeArgs += @("-N") }
+        if ($script:ReleaseChoice) { $resumeArgs += @("-R", $script:ReleaseChoice) }
+
+        $result = Start-CyanripWithErrorDetection -Args $resumeArgs -WorkDir $parentDir
+    }
+
+    $cyanripExitCode = $result.ExitCode
+    $cyanripOutput = $result.Output
+
+    # Show summary of skipped tracks
+    if ($script:SkippedTracks.Count -gt 0) {
+        Write-Host "`nWARNING: $($script:SkippedTracks.Count) track(s) skipped due to disc damage: $($script:SkippedTracks -join ', ')" -ForegroundColor Yellow
+        Write-Log "Tracks skipped due to cdio errors: $($script:SkippedTracks -join ', ')"
+    }
 } catch {
     Pop-Location
     Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1755,16 +1908,12 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
 
         Push-Location $parentDir
         try {
-            $outputLines = [System.Collections.ArrayList]::new()
-            & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                $line = [string]$_
-                if ($line -notmatch 'progress - \d+\.\d+%') {
-                    Write-Host $line
-                }
-                [void]$outputLines.Add($line)
+            $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+            $cyanripExitCode = $result.ExitCode
+            $cyanripOutput = $result.Output
+            if ($result.Killed) {
+                $script:SkippedTracks += ($result.LastCompletedTrack + 1)
             }
-            $cyanripExitCode = $LASTEXITCODE
-            $cyanripOutput = $outputLines.ToArray()
         } catch {
             Pop-Location
             Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1798,16 +1947,10 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
 
             Push-Location $parentDir
             try {
-                $outputLines = [System.Collections.ArrayList]::new()
-                & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                    $line = [string]$_
-                    if ($line -notmatch 'progress - \d+\.\d+%') {
-                        Write-Host $line
-                    }
-                    [void]$outputLines.Add($line)
-                }
-                $cyanripExitCode = $LASTEXITCODE
-                $cyanripOutput = $outputLines.ToArray()
+                $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+                $cyanripExitCode = $result.ExitCode
+                $cyanripOutput = $result.Output
+                if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1834,16 +1977,10 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             $cyanripArgs += @("-N")
             Push-Location $parentDir
             try {
-                $outputLines = [System.Collections.ArrayList]::new()
-                & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                    $line = [string]$_
-                    if ($line -notmatch 'progress - \d+\.\d+%') {
-                        Write-Host $line
-                    }
-                    [void]$outputLines.Add($line)
-                }
-                $cyanripExitCode = $LASTEXITCODE
-                $cyanripOutput = $outputLines.ToArray()
+                $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+                $cyanripExitCode = $result.ExitCode
+                $cyanripOutput = $result.Output
+                if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1896,16 +2033,10 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 
         Push-Location $parentDir
         try {
-            $outputLines = [System.Collections.ArrayList]::new()
-            & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                $line = [string]$_
-                if ($line -notmatch 'progress - \d+\.\d+%') {
-                    Write-Host $line
-                }
-                [void]$outputLines.Add($line)
-            }
-            $cyanripExitCode = $LASTEXITCODE
-            $cyanripOutput = $outputLines.ToArray()
+            $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+            $cyanripExitCode = $result.ExitCode
+            $cyanripOutput = $result.Output
+            if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
         } catch {
             Pop-Location
             Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -1939,16 +2070,10 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 
             Push-Location $parentDir
             try {
-                $outputLines = [System.Collections.ArrayList]::new()
-                & cyanrip @cyanripArgs 2>&1 | ForEach-Object {
-                    $line = [string]$_
-                    if ($line -notmatch 'progress - \d+\.\d+%') {
-                        Write-Host $line
-                    }
-                    [void]$outputLines.Add($line)
-                }
-                $cyanripExitCode = $LASTEXITCODE
-                $cyanripOutput = $outputLines.ToArray()
+                $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+                $cyanripExitCode = $result.ExitCode
+                $cyanripOutput = $result.Output
+                if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -2079,16 +2204,12 @@ if ($dataErrorTracks.Count -gt 0) {
 
                     Push-Location $parentDir
                     try {
-                        $retryLines = [System.Collections.ArrayList]::new()
-                        & cyanrip @retryArgs 2>&1 | ForEach-Object {
-                            $line = [string]$_
-                            if ($line -notmatch 'progress - \d+\.\d+%') {
-                                Write-Host "    $line"
-                            }
-                            [void]$retryLines.Add($line)
+                        $retryResult = Start-CyanripWithErrorDetection -Args $retryArgs -WorkDir $parentDir
+                        $retryExitCode = $retryResult.ExitCode
+                        $retryOutput = $retryResult.Output -join "`n"
+                        if ($retryResult.Killed) {
+                            Write-Host "  Track $trackPadded still unreadable -- skipping" -ForegroundColor Yellow
                         }
-                        $retryExitCode = $LASTEXITCODE
-                        $retryOutput = $retryLines -join "`n"
                     } catch {
                         Pop-Location
                         Write-Host "  Retry failed: $_" -ForegroundColor Red
@@ -2666,6 +2787,9 @@ if ($arResults.DbStatus -eq "found" -and $arResults.TracksVerified -ge 0) {
 } elseif ($arResults.DbStatus -eq "not found") {
     Write-Host "  AccurateRip: disc not in database" -ForegroundColor White
 }
+if ($script:SkippedTracks.Count -gt 0) {
+    Write-Host "  Skipped (unreadable): $($script:SkippedTracks.Count) track(s) (tracks $($script:SkippedTracks -join ', '))" -ForegroundColor Red
+}
 if ($script:DataErrorTracks.Count -gt 0) {
     Write-Host "  Data errors: $($script:DataErrorTracks.Count) track(s) marked _DATA_ERROR (tracks $($script:DataErrorTracks -join ', '))" -ForegroundColor Red
 }
@@ -2682,6 +2806,9 @@ Write-Log "Metadata source: $($script:MetadataSource)"
 if ($script:CoverArtSource) { Write-Log "Cover art source: $($script:CoverArtSource)" }
 if ($arResults.TracksVerified -ge 0) {
     Write-Log "AccurateRip: $($arResults.TracksVerified)/$($arResults.TracksTotal) verified"
+}
+if ($script:SkippedTracks.Count -gt 0) {
+    Write-Log "Skipped (unreadable): $($script:SkippedTracks.Count) track(s) (tracks $($script:SkippedTracks -join ', '))"
 }
 if ($script:DataErrorTracks.Count -gt 0) {
     Write-Log "Data errors: $($script:DataErrorTracks.Count) track(s) marked _DATA_ERROR (tracks $($script:DataErrorTracks -join ', '))"
