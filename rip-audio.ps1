@@ -24,7 +24,15 @@ param(
     [switch]$Queue,
 
     [Parameter()]
-    [switch]$ProcessQueue
+    [switch]$ProcessQueue,
+
+    [Parameter()]
+    [ValidateRange(0, 3)]
+    [int]$ParanoiaLevel = -1,
+
+    [Parameter()]
+    [ValidateRange(1, 100)]
+    [int]$Retries = -1
 )
 
 # Ensure cyanrip/metaflac output is decoded as UTF-8 (PS5.1 defaults to system locale)
@@ -1235,6 +1243,12 @@ Write-Host "Format: $bannerFormat" -ForegroundColor White
 Write-Host "Drive: $driveLetter" -ForegroundColor White
 Write-Host "Output Drive: $outputDriveLetter" -ForegroundColor White
 Write-Host "Final Output: $finalOutputDir" -ForegroundColor White
+if ($ParanoiaLevel -ge 0) {
+    Write-Host "Paranoia level: $ParanoiaLevel (cyanrip default: 3)" -ForegroundColor White
+}
+if ($Retries -ge 1) {
+    Write-Host "Max retries: $Retries (cyanrip default: 10)" -ForegroundColor White
+}
 Write-Host "Log file: $($script:LogFile)" -ForegroundColor White
 Write-Host "========================================`n" -ForegroundColor Cyan
 
@@ -1596,6 +1610,16 @@ $cyanripArgs = @(
     "-s", "0"
 )
 
+# Add paranoia level flag (cyanrip default is 3; lower values skip bad sectors faster)
+if ($ParanoiaLevel -ge 0) {
+    $cyanripArgs += @("-P", "$ParanoiaLevel")
+}
+
+# Add retries flag (cyanrip default is 10; lower values give up on unreadable frames sooner)
+if ($Retries -ge 1) {
+    $cyanripArgs += @("-r", "$Retries")
+}
+
 # Add bitrate flag for lossy formats
 $hasLossy = ($formatList | Where-Object { $_ -in $lossyFormats }).Count -gt 0
 if ($Quality -gt 0 -and $hasLossy) {
@@ -1617,10 +1641,12 @@ if ($script:ResumeTrackList) {
     $cyanripArgs += @("-l", $script:ResumeTrackList)
 }
 
+$paranoiaFlag = if ($ParanoiaLevel -ge 0) { " -P $ParanoiaLevel" } else { "" }
+$retriesFlag = if ($Retries -ge 1) { " -r $Retries" } else { "" }
 $qualityFlag = if ($Quality -gt 0 -and $hasLossy) { " -b $Quality" } else { "" }
 $releaseFlag = if ($script:ReleaseChoice) { " -R $($script:ReleaseChoice)" } else { "" }
 $resumeFlag = if ($script:ResumeTrackList) { " -l $($script:ResumeTrackList)" } else { "" }
-$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$qualityFlag$(if ($skipMusicBrainz) { ' -N' })$releaseFlag$resumeFlag"
+$cmdDisplay = "cyanrip -D `"$albumFolder`" -o $format -d $driveLetter -s 0$paranoiaFlag$retriesFlag$qualityFlag$(if ($skipMusicBrainz) { ' -N' })$releaseFlag$resumeFlag"
 Write-Host "Working directory: $parentDir" -ForegroundColor Gray
 Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
 Write-Log "cyanrip working directory: $parentDir"
