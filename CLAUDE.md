@@ -850,3 +850,66 @@ These branches have no commits ahead of master and were pruned from local tracki
 **Priority for Next Session:**
 1. End-to-end test: verify no false data error is reported on a clean rip after PR #106
 2. PSGallery publish still pending — get API key from powershellgallery.com and run `Publish-Module`
+
+---
+
+### 2026-04-23 - Silent Cyanrip Failure Root Cause (PRs #110, #111, #112, #113)
+
+**Symptom reported by user:**
+- `rip-audio.ps1` failed to even parse with `Variable reference is not valid. ':' was not followed by a valid variable name character` at line 1728
+- After parse fix, cyanrip "completed" in 2-30 seconds but produced zero audio files, no console output between `Executing cyanrip command...` and `cyanrip complete!`
+- Affected every rip on every disc/drive combination, with or without multi-release selection
+
+**PR #110 merged: `fix/failed-track-variable-parse-error`**
+- Bug: `Write-Log "Track $failedTrack: unreadable ..."` at line 1728 — PowerShell 5.1 parser treats `$failedTrack:` as a drive-qualified variable reference (same syntax as `$env:PATH`), causing an unconditional ParserError before the script can run at all
+- Fix: wrap variable in `${}` so the colon is a literal string character — `${failedTrack}:`
+
+**PR #111 merged: `fix/cyanrip-silent-failure-detection`** (symptom-level guardrails)
+- Three related issues where cyanrip appeared to succeed but wrote no audio:
+  1. Added post-cyanrip verification: if the output dir contains zero non-empty audio files after cyanrip "complete", fail loudly with a diagnostic that distinguishes disc-read failure (TOC errors) from stale-files scenario
+  2. When user chooses *Continue (rip all tracks)* at the no-valid-tracks prompt, delete pre-existing stale audio files before re-running cyanrip — cyanrip will not overwrite existing files, so leaving them produced a silent 0-byte failure on the next rip
+  3. Step 2 verification now filters `Length -gt 0` — zero-byte files are no longer counted as "ripped"
+- These guardrails correctly surfaced the silent failure but did not address its cause. Kept in place because they still defend against future silent-failure classes (e.g. stale 0-byte files from an interrupted rip).
+
+**PR #112 merged: `fix/cyanrip-argumentlist-ps51-incompatibility`** (secondary bug, kept)
+- `ProcessStartInfo.ArgumentList` is a **.NET Core / .NET 5+ API**. On Windows PowerShell 5.1 (backed by .NET Framework 4.8), the property returns `$null`, not an `IList<string>`.
+- In `Start-CyanripWithErrorDetection`, the launch loop `foreach ($a in $Args) { $psi.ArgumentList.Add($a) }` called `.Add()` on the null collection. The error was silently absorbed so even if the arg array had been visible, it would never have been applied to the process.
+- Fix: build a quoted argument string and assign to `$psi.Arguments` directly. Manual quoting: wrap in double quotes if the value contains whitespace or quotes, escape embedded quotes with `\"`, otherwise pass through verbatim. Works on both .NET Framework 4.x and .NET Core/.NET 5+.
+- This is a real compatibility fix on its own, but it did not fix the rip in isolation because the outer parameter binding (see PR #113) was discarding the arg array one layer earlier.
+
+**PR #113 merged: `fix/cyanrip-args-reserved-variable`** (TRUE root cause)
+- `$Args` is a **reserved PowerShell automatic variable**. Declaring a function parameter named `$Args` is silently overridden by the (empty) automatic `$args` at call time, so the caller's array is *discarded at parameter binding*. The body of `Start-CyanripWithErrorDetection` saw an empty `$Args` on every invocation.
+- Result: every cyanrip call since PR #56 (2026-02-22, real-time streaming rewrite) launched with zero arguments. cyanrip printed its internal usage and exited 0 within a couple of seconds, producing the classic silent failure.
+- Fix: rename the parameter from `$Args` to `$CyanripArgs`, update all 8 call sites (`Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir`).
+- Reproduction in isolation:
+  ```
+  function Test-Args { param([string[]]$Args); "count=$($Args.Count)" }
+  Test-Args -Args @('a','b','c')        # count=0 (silently wrong)
+
+  function Test-CA { param([string[]]$CyanripArgs); "count=$($CyanripArgs.Count)" }
+  Test-CA -CyanripArgs @('a','b','c')   # count=3 (correct)
+  ```
+
+**Why three PRs were needed to get to the root cause:**
+- The symptom (silent 2-second exit, no output) is consistent with several failure classes: bad args, empty args, binary crash, stdin block, stream redirection hang. Working outward from symptom to cause:
+  - PR #111 made the silent failure visible in the right place (post-cyanrip verification) rather than collapsing into a confusing Step 2 "No audio files found" much later
+  - PR #112 correctly identified that `ArgumentList` is null on .NET Framework 4.8. Smoke-testing the replacement with `cmd.exe` worked, confirming the new arg path was sound — but the rip still failed on retry, ruling out the "wrong args reaching the process" theory as the primary cause
+  - PR #113 found the layer above: PowerShell's reserved-variable collision was discarding the args *before* they reached the ProcessStartInfo at all
+
+**Technical Notes:**
+- PowerShell reserved automatic variables that should NEVER be used as param names: `$Args`, `$Error`, `$Host`, `$Home`, `$Input`, `$PSBoundParameters`, `$PSCommandPath`, `$PSCmdlet`, `$PSCulture`, `$PSDebugContext`, `$PSHome`, `$PSItem`, `$PSScriptRoot`, `$PSUICulture`, `$PSVersionTable`, `$This`, `$True`, `$False`, `$Null`, `$Matches`, `$MyInvocation`. A function parameter named after any of these is silently discarded.
+- `ProcessStartInfo.ArgumentList` availability: .NET Core 2.1+, .NET 5+. Not in any .NET Framework version (including 4.8 and 4.8.1). Use `$psi.Arguments` (string) with manual quoting on PS 5.1.
+- The replacement argument-quoting logic handles the common cyanrip arg set correctly: `-D "Reload with space" -o flac -d E: -s 0 -R 1`
+
+**Session Verified Clean:**
+- All 4 PRs (#110, #111, #112, #113) squash-merged to master
+- Working tree: docs-only modifications (CLAUDE.md, CHANGELOG.md)
+- No unpushed code commits (master is at 6e585e0)
+- No open PRs
+
+**Priority for Next Session:**
+1. **End-to-end smoke test** — re-run `.\rip-audio.ps1 -Drive E: -OutputDrive C:` on the Tom Jones / Dusty Springfield discs. With `$CyanripArgs` now wired up, cyanrip should actually stream real output to the console and produce real FLAC files. This is the user-facing validation that the three-PR chain is complete.
+2. Confirm the multi-release selection path (`-R N` arg passthrough) works end-to-end with the new parameter name.
+3. PSGallery publish still pending — get API key from powershellgallery.com and run `Publish-Module`.
+4. **Follow-up (cosmetic):** `rip-audio.ps1:2416` prints `Tagged: X` after a `& metaflac` call without checking `$LASTEXITCODE`, so tagging failures still produce misleading "Tagged:" lines. Not harmful but confusing in logs.
+5. **Audit other scripts** (`search-metadata.ps1`, `audit-metadata.ps1`, `get-metadata.ps1`, `undo-metadata.ps1`) for similar reserved-variable parameter bugs — grep for `param(` followed by reserved names.

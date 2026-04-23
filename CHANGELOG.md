@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## 2026-04-23
+
+### Fixed
+- **Silent cyanrip failures (true root cause)** - `$Args` is a reserved PowerShell automatic variable; the `Start-CyanripWithErrorDetection` param `[string[]]$Args` was silently overridden by the (empty) automatic `$args` at call time, so every cyanrip invocation since the streaming rewrite (PR #56, 2026-02-22) launched with zero arguments and exited 0 within seconds without ripping. Renamed the parameter to `$CyanripArgs` and updated all 8 call sites (PR #113).
+- **ProcessStartInfo.ArgumentList on .NET Framework 4.8** - The property does not exist on the .NET Framework that backs Windows PowerShell 5.1 (it's a .NET Core / .NET 5+ API), returning `$null` instead of an `IList<string>`. Replaced the `ArgumentList.Add()` loop with a manually quoted `$psi.Arguments` string so the launch path works on both .NET Framework and modern .NET (PR #112).
+- **Silent cyanrip failure detection** - Added three guardrails in the cyanrip launch path: (1) post-rip verification that the output directory contains at least one non-empty audio file, with a diagnostic that distinguishes disc-read failure from stale-files scenarios; (2) automatic cleanup of stale audio files when the user chooses *Continue (rip all tracks)* at the no-valid-tracks prompt, so cyanrip does not refuse to overwrite them; (3) Step 2 verification now filters `Length -gt 0` so zero-byte files are not counted as ripped (PR #111).
+- **PS 5.1 parse error in `Track $failedTrack:` log line** - PowerShell 5.1 parsed `$failedTrack:` as a drive-qualified variable reference (same syntax as `$env:PATH`), producing a ParserError that prevented the script from loading at all. Wrapped the variable in `${}` so the colon is a literal string character (PR #110).
+
 ## 2026-03-23
 
 ### Fixed
