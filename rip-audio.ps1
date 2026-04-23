@@ -1681,7 +1681,23 @@ function Start-CyanripWithErrorDetection {
 
     $cyanripPath = (Get-Command cyanrip -ErrorAction Stop).Source
     $psi = [System.Diagnostics.ProcessStartInfo]::new($cyanripPath)
-    foreach ($a in $Args) { $psi.ArgumentList.Add($a) }
+    # ProcessStartInfo.ArgumentList is a .NET Core / .NET 5+ API and is NULL
+    # on PowerShell 5.1 (.NET Framework 4.x). Calling .Add() on the null
+    # collection silently fails inside a try/catch and the process launches
+    # with zero arguments -- cyanrip then exits 0 without doing anything.
+    # Build a quoted argument string and set $psi.Arguments instead (works
+    # on both .NET Framework and .NET Core).
+    $quotedArgs = @()
+    foreach ($a in $Args) {
+        if ([string]::IsNullOrEmpty($a)) {
+            $quotedArgs += '""'
+        } elseif ($a -match '[\s"]') {
+            $quotedArgs += '"' + ($a -replace '"', '\"') + '"'
+        } else {
+            $quotedArgs += $a
+        }
+    }
+    $psi.Arguments = $quotedArgs -join ' '
     $psi.WorkingDirectory = $WorkDir
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
