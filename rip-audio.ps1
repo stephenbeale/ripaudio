@@ -1725,7 +1725,7 @@ function Start-CyanripWithErrorDetection {
             if ($consecutiveCdioErrors -ge $cdioErrorThreshold) {
                 $failedTrack = $lastCompletedTrack + 1
                 Write-Host "`n*** CDIO ERROR: Track $failedTrack is unreadable -- skipping ***" -ForegroundColor Red
-                Write-Log "Track $failedTrack: unreadable (cdio error threshold exceeded) -- killing cyanrip"
+                Write-Log "Track ${failedTrack}: unreadable (cdio error threshold exceeded) -- killing cyanrip"
                 $killedDueToErrors = $true
                 try { $proc.Kill() } catch {}
                 break
