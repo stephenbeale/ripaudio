@@ -263,7 +263,8 @@ function Get-DiscMetadata {
                 }
             }
 
-            Write-Host "`nMultiple releases found. Select one:" -ForegroundColor Cyan
+            Show-QuestionHint
+            Write-Host "Multiple releases found. Select one:" -ForegroundColor Cyan
             foreach ($rel in $releases) {
                 $info = "  $($rel.Index): $($rel.Description)"
                 if ($rel.TrackCount) {
@@ -381,6 +382,15 @@ function Write-Log {
         $entry = "[$timestamp] $Message"
         Add-Content -Path $script:LogFile -Value $entry
     }
+}
+
+# Shown before any interactive prompt so the user knows input is still
+# needed and does not walk away thinking the script has stalled. Called
+# once per prompt block (outside retry-on-bad-input loops so it does
+# not spam).
+function Show-QuestionHint {
+    Write-Host ""
+    Write-Host "[ A few more questions to answer... ]" -ForegroundColor Yellow
 }
 
 function Write-Timestamp {
@@ -1019,7 +1029,8 @@ if ((Test-Path $finalOutputDir) -and -not $script:IsProcessingQueue) {
     }
 
     if ($hasAudioFiles) {
-        Write-Host "`n========================================" -ForegroundColor Yellow
+        Show-QuestionHint
+        Write-Host "========================================" -ForegroundColor Yellow
         Write-Host "ALBUM FOLDER ALREADY EXISTS" -ForegroundColor Yellow
         Write-Host "========================================" -ForegroundColor Yellow
         Write-Host "`n  $finalOutputDir" -ForegroundColor White
@@ -1124,6 +1135,7 @@ if ($RequireMusicBrainz) {
 Write-Host "========================================" -ForegroundColor Cyan
 if (-not $script:IsProcessingQueue) {
     $host.UI.RawUI.WindowTitle = "rip-audio - INPUT"
+    Show-QuestionHint
     $response = Read-Host "Press Enter to continue, or Ctrl+C to abort"
 }
 
@@ -1351,7 +1363,8 @@ if (!(Test-Path $finalOutputDir)) {
                     $script:ResumeTrackList = $null
                     $script:SkipRip = $true
                 } else {
-                    Write-Host "`nSkip rip? (all tracks present)" -ForegroundColor Cyan
+                    Show-QuestionHint
+                    Write-Host "Skip rip? (all tracks present)" -ForegroundColor Cyan
                     Write-Host "  [1] Skip (keep existing files)" -ForegroundColor Yellow
                     Write-Host "  [2] Re-rip all tracks from scratch" -ForegroundColor Yellow
                     Write-Host "  [3] Abort" -ForegroundColor Yellow
@@ -1387,7 +1400,8 @@ if (!(Test-Path $finalOutputDir)) {
                 if ($script:IsProcessingQueue) {
                     Write-Host "ProcessQueue mode: auto-continuing (full rip)..." -ForegroundColor Yellow
                 } else {
-                    Write-Host "`nChoose an option:" -ForegroundColor Cyan
+                    Show-QuestionHint
+                    Write-Host "Choose an option:" -ForegroundColor Cyan
                     Write-Host "  [1] Continue (rip all tracks)" -ForegroundColor Yellow
                     Write-Host "  [2] Abort" -ForegroundColor Yellow
 
@@ -1441,7 +1455,8 @@ if (!(Test-Path $finalOutputDir)) {
                     $script:ResumeTrackList = ($missingTracks | ForEach-Object { $_.ToString() }) -join ","
                     Write-Log "Auto-resuming: ripping tracks $missingList ($($missingTracks.Count) of $totalTrackCount)"
                 } else {
-                    Write-Host "`nChoose an option:" -ForegroundColor Cyan
+                    Show-QuestionHint
+                    Write-Host "Choose an option:" -ForegroundColor Cyan
                     Write-Host "  [1] Resume (rip tracks $missingList only)" -ForegroundColor Yellow
                     Write-Host "  [2] Re-rip all tracks from scratch" -ForegroundColor Yellow
                     Write-Host "  [3] Abort" -ForegroundColor Yellow
@@ -1473,7 +1488,8 @@ if (!(Test-Path $finalOutputDir)) {
             if ($script:IsProcessingQueue) {
                 Write-Host "ProcessQueue mode: auto-continuing with existing directory..." -ForegroundColor Yellow
             } else {
-                Write-Host "`nChoose an option:" -ForegroundColor Cyan
+                Show-QuestionHint
+                Write-Host "Choose an option:" -ForegroundColor Cyan
                 Write-Host "  [1] Continue (may overwrite existing files)" -ForegroundColor Yellow
                 Write-Host "  [2] Abort" -ForegroundColor Yellow
 
@@ -1609,7 +1625,14 @@ if ($discMeta -and $discMeta.DiscId) {
     Write-Log "Saved .discid file: $($discMeta.DiscId)"
 }
 
-Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host "  It's ripping time! No more inputs needed." -ForegroundColor Cyan
+Write-Host "  Make a coffee and come back later." -ForegroundColor Cyan
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "Executing cyanrip command..." -ForegroundColor Yellow
 
 # cyanrip's -D option is a naming scheme, not an absolute path
 # We need to: 1) cd to parent directory, 2) use album folder name for -D
@@ -1761,21 +1784,6 @@ function Start-CyanripWithErrorDetection {
 
             $anyRead = $true
             [void]$outputLines.Add($line)
-
-            # Fire the "ripping time" walk-away banner the first time we see
-            # actual rip activity, so it only appears after all interactive
-            # prompts (multi-release selection, continue/abort, etc.) are
-            # resolved. Script-scope flag ensures it fires at most once per
-            # session, even across multiple cyanrip invocations.
-            if (-not $script:RipBannerShown -and $line -match 'Ripping and encoding track\s+\d') {
-                $script:RipBannerShown = $true
-                Write-Host ""
-                Write-Host "==========================================================" -ForegroundColor Cyan
-                Write-Host "  It's ripping time! No more inputs needed." -ForegroundColor Cyan
-                Write-Host "  Make a coffee and come back later." -ForegroundColor Cyan
-                Write-Host "==========================================================" -ForegroundColor Cyan
-                Write-Host ""
-            }
 
             # Collapse cyanrip's per-sector progress ticker down to one line
             # per 10% milestone per track. Suppress the 0-9% bucket -- at
@@ -1968,6 +1976,7 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
             $choice = "1"
             Write-Host "ProcessQueue mode: auto-selecting release 1" -ForegroundColor Yellow
         } else {
+            Show-QuestionHint
             $validChoice = $false
             while (-not $validChoice) {
                 $choice = Read-Host "Enter release number (1-$($releases.Count))"
@@ -2254,6 +2263,7 @@ if ($dataErrorTracks.Count -gt 0) {
             Write-Log "Track ${trackPadded}: data error, auto-skipped (queue mode)"
             $script:DataErrorTracks += $errorTrack
         } else {
+            Show-QuestionHint
             $resolved = $false
             while (-not $resolved) {
                 Write-Host ""
