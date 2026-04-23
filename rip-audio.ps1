@@ -1738,6 +1738,12 @@ function Start-CyanripWithErrorDetection {
     $stdoutEof = $false
     $stderrEof = $false
 
+    # Progress milestone tracking: cyanrip emits a progress line per sector
+    # (hundreds per second). Only surface the first time each track crosses
+    # a 10% boundary so the console stays informative without being spammy.
+    $progressTrack = -1
+    $progressBucket = -1
+
     while (-not ($proc.HasExited -and $stdoutEof -and $stderrEof)) {
         $anyRead = $false
 
@@ -1763,11 +1769,27 @@ function Start-CyanripWithErrorDetection {
             $anyRead = $true
             [void]$outputLines.Add($line)
 
-            # Always verbose: stream every line cyanrip emits, including the
-            # per-sector "progress - XX.XX%" ticker. The ticker is the only
-            # live signal that ripping is actually happening during the
-            # 1-2 minutes it takes to rip each track.
-            Write-Host $line
+            # Collapse cyanrip's per-sector progress ticker down to one line
+            # per 10% milestone per track. Non-progress lines pass through
+            # verbatim so all other cyanrip messages stay visible.
+            $suppress = $false
+            if ($line -match 'track\s+(\d+).*progress\s*-\s*(\d+)\.\d+%') {
+                $trackNum = [int]$Matches[1]
+                $pct = [int]$Matches[2]
+                $bucket = [Math]::Floor($pct / 10) * 10
+                if ($trackNum -ne $progressTrack) {
+                    $progressTrack = $trackNum
+                    $progressBucket = -1
+                }
+                if ($bucket -le $progressBucket) {
+                    $suppress = $true
+                } else {
+                    $progressBucket = $bucket
+                }
+            }
+            if (-not $suppress) {
+                Write-Host $line
+            }
 
             if ($line -match 'Track\s+(\d+)\s+ripped and encoded successfully') {
                 $lastCompletedTrack = [int]$Matches[1]
