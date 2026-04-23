@@ -913,3 +913,72 @@ These branches have no commits ahead of master and were pruned from local tracki
 3. PSGallery publish still pending — get API key from powershellgallery.com and run `Publish-Module`.
 4. **Follow-up (cosmetic):** `rip-audio.ps1:2416` prints `Tagged: X` after a `& metaflac` call without checking `$LASTEXITCODE`, so tagging failures still produce misleading "Tagged:" lines. Not harmful but confusing in logs.
 5. **Audit other scripts** (`search-metadata.ps1`, `audit-metadata.ps1`, `get-metadata.ps1`, `undo-metadata.ps1`) for similar reserved-variable parameter bugs — grep for `param(` followed by reserved names.
+
+---
+
+### 2026-04-23 (pt 2) - Console Output, UX Polish, and Disc Backup/Restore (PRs #115-#122)
+
+Continuation of the same session. Root cause (`$CyanripArgs` rename) was fixed in PR #113; these PRs addressed the console being silent during a working rip, added UX improvements, and hardened the script against disc-read failures destroying already-ripped tracks.
+
+**PRs Merged:**
+
+- **PR #115** — fix(rip): stream cyanrip output live via `StreamReader.ReadLineAsync()` polling
+  - After PR #113, cyanrip was ripping correctly but the console was completely silent throughout
+  - Root cause: `$proc.add_OutputDataReceived({...})` scriptblock events in PowerShell 5.1 run in a different scope from the caller and cannot access closure variables (e.g. a `$outLines` queue declared in the outer function); lines were silently dropped
+  - Fix: replaced event-based output with a polling loop calling `StreamReader.ReadLineAsync()` and checking `Task.IsCompleted` on the main thread — no cross-scope closure needed
+  - `StreamReader` polling is the reliable pattern for PS 5.1; `add_OutputDataReceived` scriptblock events are not.
+
+- **PR #116** — feat(rip): always-verbose cyanrip output (removed `progress - XX.XX%` suppression)
+  - Removed the filter added in PR #58 that was suppressing cyanrip progress lines
+  - Rationale: with the streaming rewrite now working, users need to see something; progress % lines are better than a silent console
+
+- **PR #117** — feat(rip): "It's ripping time!" walk-away banner before cyanrip launch
+  - Added a coloured walk-away banner (`It's ripping time!`, cyanrip command summary) displayed immediately before cyanrip launches
+  - Signals to the user they can step away from the keyboard
+
+- **PR #118** — feat(rip): collapse cyanrip progress ticker to one line per 10% bucket per track
+  - Reintroduced selective suppression: each `progress - XX.XX%` line is compared to the last-printed bucket; only printed when the percentage crosses a 10% threshold (0%, 10%, 20%, ..., 100%)
+  - Result: one milestone line per track per 10% rather than hundreds of lines or complete silence
+  - Undoes the over-correction in PR #116
+
+- **PR #119** — fix(rip): defer walk-away banner and skip bogus 0% ETA
+  - Moved the walk-away banner to trigger on the first `Ripping and encoding track N` line inside the streaming loop, not at launch, because early ETAs before the drive spins up can be nonsensical (e.g. "424h 29m")
+  - Skipped the 0–9% bucket so the first milestone shown is 10%
+
+- **PR #120** — feat(rip): `Show-QuestionHint` helper + banner back to pre-launch
+  - Added `Show-QuestionHint` function that prints `[ A few more questions to answer... ]` before every major interactive prompt block (disc discovery, track selection, directory conflict), so users know they need to answer before the rip starts
+  - Moved the walk-away banner back to pre-cyanrip launch (PR #119 had moved it too conservatively); the ETA problem is solved by the 0% skip in PR #119 instead
+
+- **PR #121** — fix(rip): tolerate partial rips (non-zero exit code + some good tracks)
+  - cyanrip exits non-zero even when some tracks ripped successfully (e.g. on a scratched disc where one track is unreadable)
+  - Previous behaviour: hard-abort on any non-zero exit code, losing the good tracks
+  - New behaviour: if any non-empty audio files exist post-cyanrip, print a yellow `WARNING: cyanrip exited N — partial rip` message and continue to Step 2+ (verify, tag, cover art) rather than aborting
+  - Full abort only if zero audio files were produced
+
+- **PR #122** — fix(rip): back up existing audio before cyanrip, restore any truncated files on failure
+  - Before cyanrip launches, backs up all existing non-empty audio files from the output directory to a temp folder (`%TEMP%\ripaudio-backup-XXXX\`)
+  - After cyanrip completes, checks whether any previously-backed-up files are now 0 bytes (cyanrip can truncate existing files when it hits a TOC read failure)
+  - Any truncated files are restored from the backup; files cyanrip ripped successfully are left as-is
+  - Protects already-ripped tracks on a damaged multi-rip session from being destroyed by a subsequent failed cyanrip invocation
+
+**Three Durable Lessons from This Session:**
+
+1. **PowerShell reserved automatic variables** — never use `$Args`, `$Error`, `$Host`, `$Input`, `$Matches`, `$MyInvocation`, `$PSBoundParameters`, `$PSCmdlet`, `$This`, `$True`, `$False`, `$Null` (and others) as function parameter names. PowerShell silently overrides the parameter binding with the (usually empty) automatic variable. PR #113 spent three iterations of debugging to uncover this.
+
+2. **`ProcessStartInfo.ArgumentList` is not on .NET Framework** — only .NET Core 2.1+ / .NET 5+. On PS 5.1 the property is `$null` and `.Add()` silently fails under a try/catch. Use `$psi.Arguments = <quoted string>` instead.
+
+3. **PowerShell 5.1 async event scriptblocks cannot see the caller's closure variables** — `$proc.add_OutputDataReceived({...})` registered from PS 5.1 runs in a different scope; it cannot access a `$queue` or any variable declared in the outer function. Use `StreamReader.ReadLineAsync()` and poll `Task.IsCompleted` from the main thread instead.
+
+**Hardware Note:**
+- The Alanis Morissette "Jagged Little Pill" disc tested during this session has an unreadable TOC regardless of script settings. This is a hardware reality (damaged disc), not a script bug. The disc needs cleaning or is unrippable.
+
+**Known Follow-up Items:**
+- Cosmetic: `rip-audio.ps1:2416` prints `Tagged: X` after `& metaflac` without checking `$LASTEXITCODE` — misleading log lines on metaflac failure.
+- PSGallery publish still pending.
+- Audit `search-metadata.ps1`, `audit-metadata.ps1`, `get-metadata.ps1`, `undo-metadata.ps1` for the same `$Args` reserved-variable bug and `.add_*Received` async event scope bug.
+
+**Session Verified Clean:**
+- All 13 PRs (#110–#122) squash-merged to master
+- Working tree: clean, no uncommitted changes
+- No unpushed commits (master is up to date with origin/master at `bf29db9`)
+- No open PRs
