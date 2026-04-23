@@ -1609,7 +1609,14 @@ if ($discMeta -and $discMeta.DiscId) {
     Write-Log "Saved .discid file: $($discMeta.DiscId)"
 }
 
-Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
+Write-Host ""
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host "  It's ripping time! No more inputs needed." -ForegroundColor Cyan
+Write-Host "  Make a coffee and come back later." -ForegroundColor Cyan
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "Executing cyanrip command..." -ForegroundColor Yellow
 
 # cyanrip's -D option is a naming scheme, not an absolute path
 # We need to: 1) cd to parent directory, 2) use album folder name for -D
