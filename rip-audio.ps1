@@ -1756,9 +1756,11 @@ function Start-CyanripWithErrorDetection {
             $anyRead = $true
             [void]$outputLines.Add($line)
 
-            if ($line -notmatch 'progress - \d+\.\d+%') {
-                Write-Host $line
-            }
+            # Always verbose: stream every line cyanrip emits, including the
+            # per-sector "progress - XX.XX%" ticker. The ticker is the only
+            # live signal that ripping is actually happening during the
+            # 1-2 minutes it takes to rip each track.
+            Write-Host $line
 
             if ($line -match 'Track\s+(\d+)\s+ripped and encoded successfully') {
                 $lastCompletedTrack = [int]$Matches[1]
