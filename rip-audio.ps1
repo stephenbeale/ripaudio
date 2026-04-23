@@ -1405,6 +1405,21 @@ if (!(Test-Path $finalOutputDir)) {
                         exit 0
                     }
                 }
+                # Remove the stale/invalid audio files so cyanrip can rip fresh.
+                # cyanrip will not overwrite existing files, so leaving them
+                # behind produces a silent failure with 0-byte outputs.
+                $staleAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+                if ($staleAudio -and $staleAudio.Count -gt 0) {
+                    Write-Host "Removing $($staleAudio.Count) stale audio file(s) before fresh rip..." -ForegroundColor Yellow
+                    foreach ($stale in $staleAudio) {
+                        try {
+                            Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction Stop
+                        } catch {
+                            Write-Host "  Failed to remove $($stale.Name): $_" -ForegroundColor Red
+                        }
+                    }
+                    Write-Log "Removed $($staleAudio.Count) stale audio file(s) before fresh rip"
+                }
                 Write-Log "No valid tracks found - continuing with full rip"
             } else {
                 # Partial rip -- offer resume
@@ -2102,6 +2117,25 @@ if ($cyanripExitCode -ne 0) {
     Stop-WithError -Step "STEP 1/4: cyanrip" -Message $errorMessage
 }
 
+# Verify cyanrip actually wrote audio files. Exit code alone is unreliable:
+# cyanrip can exit 0 after failing to read the TOC, or when the destination
+# directory contains stale 0-byte files from a prior aborted rip that it
+# refused to overwrite.
+$postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+$postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
+if ($postRipNonEmpty.Count -eq 0) {
+    $silentFailureMessage = if ($cyanripOutputText -match 'could not read TOC|Invalid number of tracks|Could not determine disc ID') {
+        "cyanrip could not read the disc TOC -- disc may be dirty, damaged, or the wrong type. Try cleaning the disc or trying another drive."
+    } elseif ($postRipAudio.Count -gt 0) {
+        "cyanrip produced $($postRipAudio.Count) zero-byte file(s) -- existing stale files in the output directory were not overwritten. Delete $finalOutputDir and retry."
+    } else {
+        "cyanrip exited with code 0 but produced no audio files in $finalOutputDir -- the rip silently failed. Check the cyanrip output above for errors."
+    }
+    Write-Host "`nERROR: $silentFailureMessage" -ForegroundColor Red
+    Write-Log "Silent cyanrip failure: $silentFailureMessage"
+    Stop-WithError -Step "STEP 1/4: cyanrip" -Message $silentFailureMessage
+}
+
 Write-Host "`ncyanrip complete!" -ForegroundColor Green
 Write-Timestamp "Step 1 complete"
 Write-Log "STEP 1/4: cyanrip complete"
@@ -2452,13 +2486,15 @@ Write-Log "STEP 2/4: Verifying output..."
 Write-Host "`n[STEP 2/4] Verifying output..." -ForegroundColor Green
 Write-Timestamp "Step 2 started"
 
-# Check for ripped files based on format(s)
+# Check for ripped files based on format(s). Zero-byte files are treated
+# as not ripped -- they indicate a silent cyanrip failure where the output
+# file was created but never written to.
 $formatExtMap = @{ "flac" = "*.flac"; "mp3" = "*.mp3"; "opus" = "*.opus"; "aac" = "*.m4a"; "wav" = "*.wav"; "alac" = "*.m4a" }
 $rippedFiles = @()
 foreach ($f in $formatList) {
     $ext = $formatExtMap[$f]
     if ($ext) {
-        $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -Recurse -ErrorAction SilentlyContinue
+        $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 }
         if ($files) { $rippedFiles += $files }
     }
 }
