@@ -1848,6 +1848,28 @@ function Start-CyanripWithErrorDetection {
     }
 }
 
+# Back up any non-empty audio files already in the output directory. If
+# cyanrip fails to read the TOC on a damaged disc it opens (and thereby
+# truncates) output files BEFORE it fails, which destroys any existing
+# good tracks from a prior successful rip. Backing them up lets us
+# restore on failure so the user does not lose work.
+$script:PreRipBackupDir = $null
+$preRipAudio = @(Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 })
+if ($preRipAudio.Count -gt 0) {
+    $script:PreRipBackupDir = Join-Path $env:TEMP ("ripaudio-backup-" + [guid]::NewGuid().ToString('N').Substring(0,8))
+    try {
+        New-Item -ItemType Directory -Path $script:PreRipBackupDir -Force | Out-Null
+        foreach ($f in $preRipAudio) {
+            Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $script:PreRipBackupDir $f.Name) -Force
+        }
+        Write-Log "Backed up $($preRipAudio.Count) existing non-empty audio file(s) to $script:PreRipBackupDir"
+    } catch {
+        Write-Host "Could not back up existing audio files: $_" -ForegroundColor Yellow
+        Write-Log "Backup failed: $_"
+        $script:PreRipBackupDir = $null
+    }
+}
+
 Push-Location $parentDir
 try {
     $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
@@ -2184,6 +2206,35 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 # only warn. We hard-abort only when nothing was ripped at all.
 $postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
 $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
+
+# Restore any pre-rip audio files that cyanrip destroyed (truncated to 0
+# bytes) before failing. For each backed-up file, if the corresponding
+# file in the output directory is missing or 0 bytes, copy the backup
+# back. Tracks cyanrip successfully re-ripped are left alone.
+if ($script:PreRipBackupDir -and (Test-Path $script:PreRipBackupDir)) {
+    $restored = 0
+    foreach ($bk in Get-ChildItem -Path $script:PreRipBackupDir -File) {
+        $target = Join-Path $finalOutputDir $bk.Name
+        $currentSize = if (Test-Path $target) { (Get-Item -LiteralPath $target).Length } else { -1 }
+        if ($currentSize -le 0) {
+            try {
+                Copy-Item -LiteralPath $bk.FullName -Destination $target -Force
+                $restored++
+            } catch {
+                Write-Log "Failed to restore $($bk.Name) from backup: $_"
+            }
+        }
+    }
+    if ($restored -gt 0) {
+        Write-Host "Restored $restored existing audio file(s) that were destroyed by the failed rip attempt." -ForegroundColor Yellow
+        Write-Log "Restored $restored audio file(s) from pre-rip backup"
+        # Refresh the post-rip state now that files have been restored
+        $postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+        $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
+    }
+    try { Remove-Item -LiteralPath $script:PreRipBackupDir -Recurse -Force -ErrorAction Stop } catch { Write-Log "Could not remove backup dir $($script:PreRipBackupDir): $_" }
+    $script:PreRipBackupDir = $null
+}
 
 if ($postRipNonEmpty.Count -eq 0) {
     # Nothing ripped -- fail hard with the best diagnostic we can muster
