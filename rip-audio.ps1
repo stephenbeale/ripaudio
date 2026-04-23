@@ -2176,40 +2176,43 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
     }
 }
 
-# Check if cyanrip succeeded
-if ($cyanripExitCode -ne 0) {
-    $errorMessage = "cyanrip exited with code $cyanripExitCode"
-
-    # Analyze output for specific errors
-    if ($cyanripOutputText -match "no disc" -or $cyanripOutputText -match "no medium" -or $cyanripOutputText -match "drive is empty") {
-        $errorMessage = "No disc in drive $driveLetter - please insert an audio CD"
-    } elseif ($cyanripOutputText -match "not an audio" -or $cyanripOutputText -match "data disc") {
-        $errorMessage = "Disc in $driveLetter is not an audio CD"
-    } elseif ($cyanripOutputText -match "drive not found" -or $cyanripOutputText -match "cannot open") {
-        $errorMessage = "Could not access drive $driveLetter - verify drive letter is correct"
-    }
-
-    Write-Host "`nERROR: $errorMessage" -ForegroundColor Red
-    Stop-WithError -Step "STEP 1/4: cyanrip" -Message $errorMessage
-}
-
-# Verify cyanrip actually wrote audio files. Exit code alone is unreliable:
-# cyanrip can exit 0 after failing to read the TOC, or when the destination
-# directory contains stale 0-byte files from a prior aborted rip that it
-# refused to overwrite.
+# Check post-rip state. A non-zero exit code alone is not enough to abort:
+# cyanrip often exits 1 when resume is requested on an unreadable TOC even
+# after it successfully ripped most of the disc on the first pass. Prefer
+# "did any audio actually land on disk" over the exit code -- if we have
+# at least one non-empty audio file we proceed with the partial rip and
+# only warn. We hard-abort only when nothing was ripped at all.
 $postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
 $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
+
 if ($postRipNonEmpty.Count -eq 0) {
-    $silentFailureMessage = if ($cyanripOutputText -match 'could not read TOC|Invalid number of tracks|Could not determine disc ID') {
+    # Nothing ripped -- fail hard with the best diagnostic we can muster
+    $silentFailureMessage = if ($cyanripOutputText -match "no disc" -or $cyanripOutputText -match "no medium" -or $cyanripOutputText -match "drive is empty") {
+        "No disc in drive $driveLetter - please insert an audio CD"
+    } elseif ($cyanripOutputText -match "not an audio" -or $cyanripOutputText -match "data disc") {
+        "Disc in $driveLetter is not an audio CD"
+    } elseif ($cyanripOutputText -match "drive not found" -or $cyanripOutputText -match "cannot open") {
+        "Could not access drive $driveLetter - verify drive letter is correct"
+    } elseif ($cyanripOutputText -match 'could not read TOC|Invalid number of tracks|Could not determine disc ID') {
         "cyanrip could not read the disc TOC -- disc may be dirty, damaged, or the wrong type. Try cleaning the disc or trying another drive."
     } elseif ($postRipAudio.Count -gt 0) {
         "cyanrip produced $($postRipAudio.Count) zero-byte file(s) -- existing stale files in the output directory were not overwritten. Delete $finalOutputDir and retry."
+    } elseif ($cyanripExitCode -ne 0) {
+        "cyanrip exited with code $cyanripExitCode and produced no audio files. Check the cyanrip output above for errors."
     } else {
         "cyanrip exited with code 0 but produced no audio files in $finalOutputDir -- the rip silently failed. Check the cyanrip output above for errors."
     }
     Write-Host "`nERROR: $silentFailureMessage" -ForegroundColor Red
     Write-Log "Silent cyanrip failure: $silentFailureMessage"
     Stop-WithError -Step "STEP 1/4: cyanrip" -Message $silentFailureMessage
+} elseif ($cyanripExitCode -ne 0) {
+    # Partial rip -- some audio landed on disk but cyanrip reported a
+    # non-zero exit (typically from the resume pass hitting an unreadable
+    # sector). Warn the user but keep what we have and continue to the
+    # rest of the pipeline; they'd rather have 13/17 tracks than nothing.
+    Write-Host "`nWARNING: cyanrip exited with code $cyanripExitCode but $($postRipNonEmpty.Count) track(s) were ripped successfully." -ForegroundColor Yellow
+    Write-Host "Continuing with partial rip -- damaged tracks (if any) will be missing from the output." -ForegroundColor Yellow
+    Write-Log "Partial rip accepted: exit=$cyanripExitCode, $($postRipNonEmpty.Count) non-empty audio file(s) in $finalOutputDir"
 }
 
 Write-Host "`ncyanrip complete!" -ForegroundColor Green
