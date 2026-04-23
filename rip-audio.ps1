@@ -1609,14 +1609,7 @@ if ($discMeta -and $discMeta.DiscId) {
     Write-Log "Saved .discid file: $($discMeta.DiscId)"
 }
 
-Write-Host ""
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "  It's ripping time! No more inputs needed." -ForegroundColor Cyan
-Write-Host "  Make a coffee and come back later." -ForegroundColor Cyan
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host ""
-
-Write-Host "Executing cyanrip command..." -ForegroundColor Yellow
+Write-Host "`nExecuting cyanrip command..." -ForegroundColor Yellow
 
 # cyanrip's -D option is a naming scheme, not an absolute path
 # We need to: 1) cd to parent directory, 2) use album folder name for -D
@@ -1769,9 +1762,25 @@ function Start-CyanripWithErrorDetection {
             $anyRead = $true
             [void]$outputLines.Add($line)
 
+            # Fire the "ripping time" walk-away banner the first time we see
+            # actual rip activity, so it only appears after all interactive
+            # prompts (multi-release selection, continue/abort, etc.) are
+            # resolved. Script-scope flag ensures it fires at most once per
+            # session, even across multiple cyanrip invocations.
+            if (-not $script:RipBannerShown -and $line -match 'Ripping and encoding track\s+\d') {
+                $script:RipBannerShown = $true
+                Write-Host ""
+                Write-Host "==========================================================" -ForegroundColor Cyan
+                Write-Host "  It's ripping time! No more inputs needed." -ForegroundColor Cyan
+                Write-Host "  Make a coffee and come back later." -ForegroundColor Cyan
+                Write-Host "==========================================================" -ForegroundColor Cyan
+                Write-Host ""
+            }
+
             # Collapse cyanrip's per-sector progress ticker down to one line
-            # per 10% milestone per track. Non-progress lines pass through
-            # verbatim so all other cyanrip messages stay visible.
+            # per 10% milestone per track. Suppress the 0-9% bucket -- at
+            # ~0.01% cyanrip has no sample history so its ETA is nonsense
+            # (e.g. "424h 29m"). First milestone shown is 10%.
             $suppress = $false
             if ($line -match 'track\s+(\d+).*progress\s*-\s*(\d+)\.\d+%') {
                 $trackNum = [int]$Matches[1]
@@ -1781,7 +1790,7 @@ function Start-CyanripWithErrorDetection {
                     $progressTrack = $trackNum
                     $progressBucket = -1
                 }
-                if ($bucket -le $progressBucket) {
+                if ($bucket -lt 10 -or $bucket -le $progressBucket) {
                     $suppress = $true
                 } else {
                     $progressBucket = $bucket
