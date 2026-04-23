@@ -1713,51 +1713,64 @@ function Start-CyanripWithErrorDetection {
     $proc = [System.Diagnostics.Process]::new()
     $proc.StartInfo = $psi
 
-    $outLines = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
-    $proc.add_OutputDataReceived({
-        param($sender, $e)
-        if ($null -ne $e.Data) { $outLines.Enqueue($e.Data) }
-    })
-    $proc.add_ErrorDataReceived({
-        param($sender, $e)
-        if ($null -ne $e.Data) { $outLines.Enqueue($e.Data) }
-    })
-
+    # Use Task-based async reads instead of OutputDataReceived events.
+    # In PowerShell 5.1 the scriptblock registered via .add_OutputDataReceived
+    # runs in a different scope and cannot see the local ConcurrentQueue, so
+    # lines are silently dropped and the rip appears to hang with no console
+    # output. StreamReader.ReadLineAsync() returns a Task we can poll directly
+    # on the main thread, which sidesteps the scope problem.
     [void]$proc.Start()
-    $proc.BeginOutputReadLine()
-    $proc.BeginErrorReadLine()
 
     $outputLines = [System.Collections.ArrayList]::new()
     $consecutiveCdioErrors = 0
     $lastCompletedTrack = 0
     $killedDueToErrors = $false
 
-    while (-not $proc.HasExited) {
-        $line = $null
-        $drained = $false
-        while ($outLines.TryDequeue([ref]$line)) {
-            $drained = $true
+    $stdoutTask = $proc.StandardOutput.ReadLineAsync()
+    $stderrTask = $proc.StandardError.ReadLineAsync()
+    $stdoutEof = $false
+    $stderrEof = $false
+
+    while (-not ($proc.HasExited -and $stdoutEof -and $stderrEof)) {
+        $anyRead = $false
+
+        foreach ($taskRef in @('stdout', 'stderr')) {
+            if ($taskRef -eq 'stdout') {
+                if ($stdoutEof) { continue }
+                $task = $stdoutTask
+                $reader = $proc.StandardOutput
+            } else {
+                if ($stderrEof) { continue }
+                $task = $stderrTask
+                $reader = $proc.StandardError
+            }
+
+            if (-not $task.IsCompleted) { continue }
+
+            $line = $task.Result
+            if ($null -eq $line) {
+                if ($taskRef -eq 'stdout') { $stdoutEof = $true } else { $stderrEof = $true }
+                continue
+            }
+
+            $anyRead = $true
             [void]$outputLines.Add($line)
 
-            # Suppress progress spam
             if ($line -notmatch 'progress - \d+\.\d+%') {
                 Write-Host $line
             }
 
-            # Track which track completed successfully
             if ($line -match 'Track\s+(\d+)\s+ripped and encoded successfully') {
                 $lastCompletedTrack = [int]$Matches[1]
                 $consecutiveCdioErrors = 0
             }
 
-            # Count consecutive cdio errors
             if ($line -match 'cdio error|Unknown, unrecoverable error reading data') {
                 $consecutiveCdioErrors++
             } elseif ($line -match '\S' -and $line -notmatch 'cdio error|Unknown, unrecoverable error') {
                 $consecutiveCdioErrors = 0
             }
 
-            # Kill if threshold exceeded
             if ($consecutiveCdioErrors -ge $cdioErrorThreshold) {
                 $failedTrack = $lastCompletedTrack + 1
                 Write-Host "`n*** CDIO ERROR: Track $failedTrack is unreadable -- skipping ***" -ForegroundColor Red
@@ -1766,23 +1779,16 @@ function Start-CyanripWithErrorDetection {
                 try { $proc.Kill() } catch {}
                 break
             }
+
+            # Start the next read on this stream
+            $nextTask = $reader.ReadLineAsync()
+            if ($taskRef -eq 'stdout') { $stdoutTask = $nextTask } else { $stderrTask = $nextTask }
         }
 
-        if (-not $killedDueToErrors -and -not $drained) {
-            Start-Sleep -Milliseconds 100
-        }
-    }
+        if ($killedDueToErrors) { break }
 
-    # Drain remaining output after exit
-    Start-Sleep -Milliseconds 200
-    $line = $null
-    while ($outLines.TryDequeue([ref]$line)) {
-        [void]$outputLines.Add($line)
-        if ($line -notmatch 'progress - \d+\.\d+%') {
-            Write-Host $line
-        }
-        if ($line -match 'Track\s+(\d+)\s+ripped and encoded successfully') {
-            $lastCompletedTrack = [int]$Matches[1]
+        if (-not $anyRead) {
+            Start-Sleep -Milliseconds 50
         }
     }
 
