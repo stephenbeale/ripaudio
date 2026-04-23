@@ -1675,7 +1675,7 @@ $script:SkippedTracks = @()
 
 function Start-CyanripWithErrorDetection {
     param(
-        [string[]]$Args,
+        [string[]]$CyanripArgs,
         [string]$WorkDir
     )
 
@@ -1687,8 +1687,13 @@ function Start-CyanripWithErrorDetection {
     # with zero arguments -- cyanrip then exits 0 without doing anything.
     # Build a quoted argument string and set $psi.Arguments instead (works
     # on both .NET Framework and .NET Core).
+    #
+    # The parameter is deliberately NOT named $Args -- $Args is a reserved
+    # PowerShell automatic variable, and a function parameter with that name
+    # is silently overridden by the (empty) automatic $args, so the caller's
+    # argument array never reaches the body of the function.
     $quotedArgs = @()
-    foreach ($a in $Args) {
+    foreach ($a in $CyanripArgs) {
         if ([string]::IsNullOrEmpty($a)) {
             $quotedArgs += '""'
         } elseif ($a -match '[\s"]') {
@@ -1791,7 +1796,7 @@ function Start-CyanripWithErrorDetection {
 
 Push-Location $parentDir
 try {
-    $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+    $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
 
     # If killed due to cdio errors, skip the failed track and resume remaining tracks
     while ($result.Killed) {
@@ -1839,7 +1844,7 @@ try {
         if ($skipMusicBrainz) { $resumeArgs += @("-N") }
         if ($script:ReleaseChoice) { $resumeArgs += @("-R", $script:ReleaseChoice) }
 
-        $result = Start-CyanripWithErrorDetection -Args $resumeArgs -WorkDir $parentDir
+        $result = Start-CyanripWithErrorDetection -CyanripArgs $resumeArgs -WorkDir $parentDir
     }
 
     $cyanripExitCode = $result.ExitCode
@@ -1939,7 +1944,7 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
 
         Push-Location $parentDir
         try {
-            $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+            $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
             $cyanripExitCode = $result.ExitCode
             $cyanripOutput = $result.Output
             if ($result.Killed) {
@@ -1978,7 +1983,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
 
             Push-Location $parentDir
             try {
-                $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+                $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
                 $cyanripOutput = $result.Output
                 if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
@@ -2008,7 +2013,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             $cyanripArgs += @("-N")
             Push-Location $parentDir
             try {
-                $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+                $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
                 $cyanripOutput = $result.Output
                 if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
@@ -2064,7 +2069,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 
         Push-Location $parentDir
         try {
-            $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+            $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
             $cyanripExitCode = $result.ExitCode
             $cyanripOutput = $result.Output
             if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
@@ -2101,7 +2106,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 
             Push-Location $parentDir
             try {
-                $result = Start-CyanripWithErrorDetection -Args $cyanripArgs -WorkDir $parentDir
+                $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
                 $cyanripOutput = $result.Output
                 if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
@@ -2254,7 +2259,7 @@ if ($dataErrorTracks.Count -gt 0) {
 
                     Push-Location $parentDir
                     try {
-                        $retryResult = Start-CyanripWithErrorDetection -Args $retryArgs -WorkDir $parentDir
+                        $retryResult = Start-CyanripWithErrorDetection -CyanripArgs $retryArgs -WorkDir $parentDir
                         $retryExitCode = $retryResult.ExitCode
                         $retryOutput = $retryResult.Output -join "`n"
                         if ($retryResult.Killed) {
