@@ -2578,8 +2578,16 @@ if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
                 # Set new tags
                 & metaflac --set-tag="ARTIST=$tagArtist" --set-tag="ALBUM=$tagAlbum" --set-tag="ALBUMARTIST=$tagArtist" --set-tag="TITLE=$trackTitle" --set-tag="TRACKNUMBER=$trackNum" --set-tag="TRACKTOTAL=$totalTracks" $track.FullName
 
-                Write-Host "  Tagged: $($track.Name)" -ForegroundColor Gray
-                Write-Log "Tagged: $($track.Name) [Artist=$tagArtist, Album=$tagAlbum, Title=$trackTitle, Track=$trackNum/$totalTracks]"
+                # metaflac is an external exe: a non-zero exit does not throw, so the
+                # catch below never sees it. Check $LASTEXITCODE or we report success
+                # on a failed tag. Same pattern as search-metadata.ps1 (-Reset path).
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "  Tagged: $($track.Name)" -ForegroundColor Gray
+                    Write-Log "Tagged: $($track.Name) [Artist=$tagArtist, Album=$tagAlbum, Title=$trackTitle, Track=$trackNum/$totalTracks]"
+                } else {
+                    Write-Host "  Failed to tag: $($track.Name) (metaflac exit $LASTEXITCODE)" -ForegroundColor Yellow
+                    Write-Log "WARNING: Failed to tag $($track.Name): metaflac exited $LASTEXITCODE"
+                }
             } catch {
                 Write-Host "  Failed to tag: $($track.Name)" -ForegroundColor Yellow
                 Write-Log "WARNING: Failed to tag $($track.Name): $_"

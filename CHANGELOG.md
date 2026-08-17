@@ -5,6 +5,7 @@ All notable changes to this project are documented here.
 ## 2026-08-17
 
 ### Fixed
+- **False `Tagged:` success lines** - `rip-audio.ps1` printed `Tagged: <file>` to the console and the log immediately after calling `& metaflac --set-tag=...`, without checking the result. A non-zero exit from an external executable does not raise a terminating error, so the surrounding `try/catch` never fired and tagging failures were reported as successes. Now gated on `$LASTEXITCODE`, with a yellow warning and a `WARNING:` log line on failure — the same pattern already used by the `-Reset` path in `search-metadata.ps1`.
 - **Paths with spaces broke the search-metadata.ps1 handoff** - `Start-Process -ArgumentList @(...)` joins its array on spaces before handing the string to the child process, so an unquoted path was split into separate tokens. Launching `search-metadata.ps1` for an album in `C:\Music\Dylan Thomas\Under Milk Wood` bound `-Path` to `C:\Music\Dylan` and then fed `Thomas\Under`, `Milk` and `Wood` to the positional `-Artist`/`-Album` parameters, failing with *A positional parameter cannot be found that accepts argument 'Wood'*. The album then fell through to the Mp3tag manual-tagging prompt. All four affected call sites now wrap their paths in embedded quotes (with a trailing-backslash trim so the closing quote is never escaped): the `search-metadata.ps1` handoff in `rip-audio.ps1`, the same handoff in `audit-metadata.ps1` step 4, and both `explorer.exe` open-directory calls.
 
 ## 2026-04-23
