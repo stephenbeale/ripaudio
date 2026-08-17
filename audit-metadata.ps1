@@ -415,9 +415,12 @@ if ($ReportOnly) {
                     Write-Host "  Running: search-metadata.ps1 -Path `"$OutputPath`" -Recurse" -ForegroundColor Gray
                     Write-Log "Running: $searchScript -Path `"$OutputPath`" -Recurse"
 
+                    # Quote paths: Start-Process joins -ArgumentList on spaces, so an
+                    # unquoted path with spaces is split into positional parameters.
                     $proc = Start-Process powershell.exe -ArgumentList @(
-                        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $searchScript,
-                        "-Path", $OutputPath, "-Recurse"
+                        "-NoProfile", "-ExecutionPolicy", "Bypass",
+                        "-File", "`"$($searchScript.TrimEnd('\'))`"",
+                        "-Path", "`"$($OutputPath.TrimEnd('\'))`"", "-Recurse"
                     ) -Wait -PassThru -NoNewWindow
 
                     $processExitCode = $proc.ExitCode

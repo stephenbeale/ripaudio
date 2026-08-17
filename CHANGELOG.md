@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-17
+
+### Fixed
+- **Paths with spaces broke the search-metadata.ps1 handoff** - `Start-Process -ArgumentList @(...)` joins its array on spaces before handing the string to the child process, so an unquoted path was split into separate tokens. Launching `search-metadata.ps1` for an album in `C:\Music\Dylan Thomas\Under Milk Wood` bound `-Path` to `C:\Music\Dylan` and then fed `Thomas\Under`, `Milk` and `Wood` to the positional `-Artist`/`-Album` parameters, failing with *A positional parameter cannot be found that accepts argument 'Wood'*. The album then fell through to the Mp3tag manual-tagging prompt. All four affected call sites now wrap their paths in embedded quotes (with a trailing-backslash trim so the closing quote is never escaped): the `search-metadata.ps1` handoff in `rip-audio.ps1`, the same handoff in `audit-metadata.ps1` step 4, and both `explorer.exe` open-directory calls.
+
 ## 2026-04-23
 
 ### Added

@@ -1229,7 +1229,7 @@ function Stop-WithError {
     if (-not $script:IsProcessingQueue -and (Test-Path $finalOutputDir)) {
         Write-Host "`n--- OPENING DIRECTORY ---" -ForegroundColor Cyan
         Write-Host "Opening: $finalOutputDir" -ForegroundColor Yellow
-        Start-Process explorer.exe -ArgumentList $finalOutputDir
+        Start-Process explorer.exe -ArgumentList "`"$($finalOutputDir.TrimEnd('\'))`""
     }
 
     Write-Host "`nLog file: $($script:LogFile)" -ForegroundColor Yellow
@@ -2914,7 +2914,7 @@ Write-Log "STEP 4/4: Opening directory..."
 Write-Host "`n[STEP 4/4] Opening output directory..." -ForegroundColor Green
 Write-Timestamp "Step 4 started"
 Write-Host "Opening: $finalOutputDir" -ForegroundColor Yellow
-Start-Process explorer.exe -ArgumentList $finalOutputDir
+Start-Process explorer.exe -ArgumentList "`"$($finalOutputDir.TrimEnd('\'))`""
 Write-Timestamp "Step 4 complete"
 Complete-CurrentStep
 
@@ -3005,10 +3005,12 @@ if (-not $script:IsProcessingQueue) {
             Write-Host "  Launching search-metadata.ps1..." -ForegroundColor Cyan
             Write-Log "Launching search-metadata.ps1 for untagged disc: $finalOutputDir"
             $searchScript = Join-Path $PSScriptRoot "search-metadata.ps1"
+            # Quote paths: Start-Process joins -ArgumentList on spaces, so an
+            # unquoted path with spaces is split into positional parameters.
             Start-Process powershell.exe -ArgumentList @(
                 "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", $searchScript,
-                "-Path", $finalOutputDir
+                "-File", "`"$($searchScript.TrimEnd('\'))`"",
+                "-Path", "`"$($finalOutputDir.TrimEnd('\'))`""
             ) -Wait -NoNewWindow
         }
     }
