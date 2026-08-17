@@ -982,3 +982,73 @@ Continuation of the same session. Root cause (`$CyanripArgs` rename) was fixed i
 - Working tree: clean, no uncommitted changes
 - No unpushed commits (master is up to date with origin/master at `bf29db9`)
 - No open PRs
+
+---
+
+### 2026-08-17 - Dylan Thomas Handoff Failure: Start-Process Quoting, metaflac Exit Code (PRs #124, #125)
+
+**Trigger:**
+User ripped a Dylan Thomas album to `C:\Music\Dylan Thomas\Under Milk Wood`. The automatic handoff from `rip-audio.ps1` to `search-metadata.ps1` died with:
+```
+search-metadata.ps1 : A positional parameter cannot be found that accepts argument 'Wood'.
+```
+The album fell through to the Mp3tag manual-tagging prompt instead of being tagged automatically.
+
+**PR #124 — `fix/start-process-path-quoting`: root cause of the reported bug**
+
+`Start-Process -ArgumentList @(...)` joins its array elements on spaces into a single command-line string and does **not** quote them. `"-Path", "C:\Music\Dylan Thomas\Under Milk Wood"` therefore reached the child process as `-Path C:\Music\Dylan Thomas\Under Milk Wood` — unquoted. `search-metadata.ps1` bound `$Path` to `C:\Music\Dylan`, then bound its positional `$Artist`/`$Album` params to `Thomas\Under` and `Milk`, leaving `Wood` with no positional slot to bind to.
+
+Four call sites carry the same defect class, all fixed by wrapping the path in embedded quotes via `` "`"$($var.TrimEnd('\'))`""``:
+- `rip-audio.ps1` ~line 3008 — the `search-metadata.ps1` handoff (the reported failure)
+- `audit-metadata.ps1` ~line 418 — the same handoff in the step 4 audit + fix pipeline
+- `rip-audio.ps1` ~line 1232 — `Start-Process explorer.exe` in `Stop-WithError`
+- `rip-audio.ps1` ~line 2917 — `Start-Process explorer.exe` in step 4
+
+`TrimEnd('\')` is load-bearing: a trailing backslash immediately before a closing quote is parsed as an escaped quote on a Windows command line, which would reintroduce exactly the splitting the fix removes.
+
+Verified by reproducing the exact failure against a stub script carrying `search-metadata.ps1`'s param block with the old unquoted pattern (`A positional parameter cannot be found that accepts argument 'Wood'`), then confirming the new quoted pattern binds correctly: `Path=[C:\Music\Dylan Thomas\Under Milk Wood]`, `Artist=[]`, `Album=[]`.
+
+**PR #125 — `fix/metaflac-exit-code-check`, stacked on #124: closes a follow-up item carried since 2026-04-23**
+
+`rip-audio.ps1` ~line 2579 printed `Tagged: <file>` to console and log immediately after `& metaflac --set-tag=...` without checking the result. A non-zero exit from an external exe does not raise a terminating error in PowerShell, so the surrounding try/catch never fired and tagging failures were logged as successes. Now gated on `$LASTEXITCODE -eq 0`, with a yellow console warning and a `WARNING:` log line on the else branch — a direct port of the pattern already used at `search-metadata.ps1:1319-1320`.
+
+Demonstrated the underlying semantics directly: `& cmd.exe /c "exit 3"` inside a try/catch threw no exception and left `$LASTEXITCODE = 3` — proof the old catch block could never have seen a metaflac failure.
+
+**Proactive sibling-repo find:** the same `Start-Process -ArgumentList` quoting defect was found in `ripdisc` (rip-disc.ps1:931, continue-rip.ps1:646) and fixed there today as PR #112. See ripdisc's CLAUDE.md for details.
+
+**Follow-up items formally closed this session (portfolio review, not new fixes):**
+- **`$Args` reserved-variable parameter bug** — audited `search-metadata.ps1`, `audit-metadata.ps1`, `get-metadata.ps1`, and `undo-metadata.ps1`; none declares a `param()` using `$Args` or any other reserved automatic variable name. Clean. This item should stop being re-listed.
+- **`.add_*Received` async-event scope bug** — only `rip-audio.ps1` spawns subprocesses with output capture, and it was already fixed by the `StreamReader.ReadLineAsync()` rewrite in PR #115 (2026-04-23). Clean. This item should stop being re-listed.
+
+**Validation status — nothing is hardware-validated:**
+All three fixes (quoting in #124, exit-code check in #125) were verified by parse checks, stub-script reproduction, and direct demonstration of PowerShell semantics. No disc was ripped, no real metaflac failure was forced, no `explorer.exe` was launched against a spaced path. The next real rip exercises all three at once.
+
+**The Dylan Thomas album itself is still untagged on disk.** The code is fixed but that album was never re-processed. Next session should run:
+```powershell
+.\search-metadata.ps1 -Path "C:\Music\Dylan Thomas\Under Milk Wood"
+```
+
+**Pre-existing conflicting branches — left alone, need a decision:**
+- `feature/shareable` (1 ahead / 23 behind origin/master) — adds MIT license, a PSGallery manifest, removes SiteGround affiliate art
+- `fix/restore-siteground-art` (1 ahead / 22 behind origin/master) — restores that same SiteGround affiliate art
+- Each holds one unique commit and they make opposite changes to the same content, so neither can be deleted without losing work. Needs a direction decision from the user plus a rebase of whichever branch is kept. Note: the PSGallery manifest in `feature/shareable` overlaps with the long-pending PSGallery publish item below — resolving the branch may resolve that item too.
+
+**Process note — self-approval:**
+`gh pr review --approve` cannot succeed on this repo; GitHub rejects self-approval because the user authors all PRs under the same account. Confirmed again this session. Sign-off was recorded as a PR comment instead, and both PRs were merged with zero formal approvals — this is expected, not an error.
+
+**Files changed:** `rip-audio.ps1`, `audit-metadata.ps1`, `CHANGELOG.md` (PRs #124, #125)
+
+**Session Verified Clean:**
+- Both PRs (#124, #125) squash-merged to master, feature branches deleted locally and remotely
+- Working tree: clean, no uncommitted changes
+- No unpushed commits
+- No open PRs
+- No stash entries
+- `feature/shareable` and `fix/restore-siteground-art` remain as pre-existing conflicting local/remote branches (see above) — not touched this session, not stale (each has a unique unmerged commit)
+
+**Priority for Next Session:**
+1. Run `.\search-metadata.ps1 -Path "C:\Music\Dylan Thomas\Under Milk Wood"` to actually tag the album that triggered this session.
+2. Live end-to-end validation: rip a disc to a spaced-path album folder and confirm the `search-metadata.ps1` handoff now runs automatically instead of falling through to Mp3tag.
+3. Force a real metaflac failure (or otherwise get one to occur) and confirm the yellow console warning and `WARNING:` log line both appear.
+4. Decide the fate of `feature/shareable` vs `fix/restore-siteground-art` — pick a direction, rebase, merge or close.
+5. PSGallery publish still pending — get API key from powershellgallery.com and run `Publish-Module`. (May be partly resolved by the `feature/shareable` decision above.)
