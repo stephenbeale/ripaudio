@@ -821,8 +821,10 @@ foreach ($proc in (Get-Process -Name "cyanrip" -ErrorAction SilentlyContinue)) {
 
 # Disc label (volume label) for a drive, if a disc is present and Windows can read one -
 # shown in the listing the same way ripdisc shows the disc name in brackets per drive.
-# Audio CDs frequently have no ISO9660 label at all, in which case this returns $null and
-# the listing simply omits it rather than showing a misleading blank/placeholder.
+# Audio CDs (CDDA) have no filesystem at all, so Windows always reports the generic
+# "Audio CD" here regardless of what's actually on the disc - there is no real per-disc
+# label to read, unlike a DVD/data disc's ISO9660/UDF volume name. Get-QuickDiscIdentity
+# below is what tries to do better than that specific generic case.
 function Get-RipAudioDiscLabel {
     param([string]$DriveLetter)
     try {
@@ -832,13 +834,59 @@ function Get-RipAudioDiscLabel {
     return $null
 }
 
+# Bounded, silent MusicBrainz-backed disc identification for the generic "Audio CD" case -
+# runs `cyanrip -I` (discovery only, no rip) as a real Process rather than the `&` operator
+# so it can be killed on timeout. Async output reads are started before WaitForExit, not
+# after, so a chatty child can't deadlock on a full pipe buffer while nothing is draining it.
+# Returns "Artist - Album", "Album" alone, or $null on timeout/failure/no match - callers
+# fall back to the existing generic label on $null, so a slow or unreachable MusicBrainz
+# never blocks drive discovery, just skips the enhancement.
+function Get-QuickDiscIdentity {
+    param([string]$DriveLetter, [int]$TimeoutSeconds = 5)
+    $cyanripCmd = Get-Command cyanrip -ErrorAction SilentlyContinue
+    if (-not $cyanripCmd) { return $null }
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new($cyanripCmd.Source)
+        $psi.Arguments = "-I -d $DriveLetter -s 0"
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $exited = $proc.WaitForExit($TimeoutSeconds * 1000)
+        if (-not $exited) {
+            try { $proc.Kill() } catch { }
+            return $null
+        }
+        $combined = "$($stdoutTask.Result)`n$($stderrTask.Result)"
+        $album = $null
+        $artist = $null
+        if ($combined -match '(?m)^Album:\s+(.+)$') { $album = $Matches[1].Trim() }
+        if ($combined -match '(?m)^Album artist:\s+(.+)$') { $artist = $Matches[1].Trim() }
+        if ($album -and $artist) { return "$artist - $album" }
+        if ($album) { return $album }
+        return $null
+    } catch {
+        return $null
+    }
+}
+
 # Formats one drive listing line: letter, model, disc label if any, busy/free state.
 # $Selected marks the drive with an arrow, matching ripdisc's "<--" convention.
 function Write-DriveListLine {
     param($DriveInfo, [bool]$Selected = $false)
     $discLabel = Get-RipAudioDiscLabel -DriveLetter $DriveInfo.Drive
-    $labelText = if ($discLabel) { " [$discLabel]" } else { "" }
     $isBusy = $busyDriveLetters -contains $DriveInfo.Drive
+    if ($discLabel -eq 'Audio CD' -and -not $isBusy) {
+        # Only worth the lookup cost on the uninformative generic label - a real label
+        # (e.g. a DVD's volume name) is already useful, and a busy drive shouldn't be
+        # queried at all (it's mid-rip; don't risk contending with that read).
+        $quickIdentity = Get-QuickDiscIdentity -DriveLetter $DriveInfo.Drive
+        if ($quickIdentity) { $discLabel = $quickIdentity }
+    }
+    $labelText = if ($discLabel) { " [$discLabel]" } else { "" }
     $busyText = if ($isBusy) { " (BUSY - rip in progress)" } else { "" }
     $marker = if ($Selected) { " <--" } else { "" }
     $color = if ($isBusy) { "DarkRed" } else { "White" }

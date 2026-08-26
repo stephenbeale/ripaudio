@@ -13,6 +13,9 @@ All notable changes to this project are documented here.
 ### Fixed
 - **Busy-drive detection was silently skipped when WMI's optical-drive enumeration came back empty.** The explicit `-Drive` path's "no drives detected via WMI" branch warned and proceeded without checking busy state at all - the in-code comment claimed busy detection "can't run here," but that's not actually true: `$busyDriveLetters` is built from running `cyanrip` process command lines, entirely independent of the `Win32_CDROMDrive` list that came back empty. A drive going busy during exactly the window WMI's enumeration is transiently empty would have slipped straight through the hard block added above. Fixed: busy state is now checked on this path too, before falling through to the warn-and-proceed case.
 
+### Added
+- **Bounded, best-effort real album/artist lookup in the drive listing, replacing the generic "Audio CD" label.** Audio CDs (CDDA) have no filesystem, so `Get-Volume` always reports the literal string `"Audio CD"` for one, regardless of what's actually on the disc - unlike a DVD/data disc, which has a real ISO9660/UDF volume name. New `Get-QuickDiscIdentity` runs `cyanrip -I` (discovery only, no rip) as a real `Process` with a 5-second hard timeout: on success it shows `[Artist - Album]` in the listing instead of `[Audio CD]`; on timeout, no MusicBrainz match, or any failure, it falls straight back to the existing generic label - never blocks or errors the listing. Only attempted when the label is exactly the generic `"Audio CD"` (a real label is already useful, skip the cost) and the drive isn't busy (never queries a drive mid-rip). Verified against real hardware: a populated drive with no MusicBrainz match resolved in 920ms and correctly fell back to `null`; a deliberately slow dummy process confirmed the timeout fires at the configured bound and the child process is actually killed, not just abandoned.
+
 ## 2026-08-17
 
 ### Fixed
