@@ -38,6 +38,16 @@ All notable changes to this project are documented here.
 ### Fixed
 - **False data error detection** - Regex `rip(ping)? error` matched inside cyanrip's `Ripping errors: 0` summary line, causing every rip to falsely flag the last track as having a data error; fixed with a negative lookahead (PR #106)
 
+## 2026-03-11
+
+### Added
+- **MIT License** - Added `LICENSE` (MIT, (c) 2026 Stephen Beale), making the project's terms explicit rather than "provided as-is for personal use" (PR #102)
+- **PowerShell Gallery manifest** - Added `RipAudio.psd1` with module metadata, `PowerShellVersion = '5.1'`, `CompatiblePSEditions = @('Desktop', 'Core')`, a `FileList` covering all five scripts and the docs, and a `PrivateData.PSData` block carrying PSGallery tags, `LicenseUri`, `ProjectUri`, and release notes (PR #102)
+- **README installation options** - The Installation section now offers *Option A: PowerShell Gallery (recommended)* (`Install-Module RipAudio`) above the existing manual steps, which became *Option B: Manual*; the License section now points at the MIT `LICENSE` file (PR #102)
+
+### Fixed
+- **SiteGround affiliate art removed in error** - PR #102 also stripped the six-line SiteGround affiliate block from `Show-CoffeeBadge` in `rip-audio.ps1`, `audit-metadata.ps1`, `search-metadata.ps1`, and `undo-metadata.ps1`. That removal was not intended: the licence/manifest prep and the affiliate art are independent, and the art was meant to stay. Restored in all four scripts (PR #103)
+
 ## 2026-03-02
 
 ### Added
