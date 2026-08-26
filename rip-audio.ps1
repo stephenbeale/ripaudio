@@ -792,9 +792,58 @@ if ($Queue -and $ProcessQueue) {
 
 # ========== CONFIGURATION ==========
 
-# Query optical drives once - used both to auto-detect when -Drive is omitted, and to
-# validate an explicit -Drive value against what Windows actually sees right now.
+# ========== DRIVE DISCOVERY ==========
+# Query optical drives and busy state once - used for auto-detect, explicit -Drive
+# validation, and the drive listing shown either way (mirrors ripdisc's MakeMKV drive list:
+# drive letter, model, disc label, busy state, and an arrow on the selected drive).
 $opticalDrives = @(Get-CimInstance Win32_CDROMDrive -ErrorAction SilentlyContinue | Where-Object { $_.Drive })
+
+# Which drive letters are currently busy with another cyanrip rip, read from the real
+# running process command lines rather than trusted from the user - this is what makes a
+# hard block possible instead of just a warning the user could click past.
+$busyDriveLetters = @()
+foreach ($proc in (Get-Process -Name "cyanrip" -ErrorAction SilentlyContinue)) {
+    try {
+        $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)" -ErrorAction SilentlyContinue).CommandLine
+        # -cmatch: cyanrip's -d (drive) and -D (output directory) flags are case-distinct;
+        # a case-insensitive match here would find -D's directory argument instead.
+        if ($cmdLine -cmatch '-d\s+(\S+)') {
+            # Capture into its own variable before checking it further - $Matches is a single
+            # global variable, and a second -match inline (e.g. on this same capture) would
+            # silently overwrite it and discard what was just captured.
+            $rawDriveArg = $Matches[1]
+            $busyDriveLetters += if ($rawDriveArg -match ':$') { $rawDriveArg } else { "${rawDriveArg}:" }
+        }
+    } catch {
+        # Best-effort - an unreadable command line just means this process isn't counted as busy
+    }
+}
+
+# Disc label (volume label) for a drive, if a disc is present and Windows can read one -
+# shown in the listing the same way ripdisc shows the disc name in brackets per drive.
+# Audio CDs frequently have no ISO9660 label at all, in which case this returns $null and
+# the listing simply omits it rather than showing a misleading blank/placeholder.
+function Get-RipAudioDiscLabel {
+    param([string]$DriveLetter)
+    try {
+        $vol = Get-Volume -DriveLetter ($DriveLetter.TrimEnd(':')) -ErrorAction Stop
+        if ($vol.FileSystemLabel) { return $vol.FileSystemLabel }
+    } catch { }
+    return $null
+}
+
+# Formats one drive listing line: letter, model, disc label if any, busy/free state.
+# $Selected marks the drive with an arrow, matching ripdisc's "<--" convention.
+function Write-DriveListLine {
+    param($DriveInfo, [bool]$Selected = $false)
+    $discLabel = Get-RipAudioDiscLabel -DriveLetter $DriveInfo.Drive
+    $labelText = if ($discLabel) { " [$discLabel]" } else { "" }
+    $isBusy = $busyDriveLetters -contains $DriveInfo.Drive
+    $busyText = if ($isBusy) { " (BUSY - rip in progress)" } else { "" }
+    $marker = if ($Selected) { " <--" } else { "" }
+    $color = if ($isBusy) { "DarkRed" } else { "White" }
+    Write-Host "  $($DriveInfo.Drive) - $($DriveInfo.Name)$labelText$busyText$marker" -ForegroundColor $color
+}
 
 if (-not $Drive) {
     # Auto-detect CD/optical drive
@@ -802,18 +851,31 @@ if (-not $Drive) {
         Write-Host "ERROR: No optical drive detected. Use -Drive to specify the drive letter." -ForegroundColor Red
         exit 1
     } elseif ($opticalDrives.Count -eq 1) {
-        $Drive = $opticalDrives[0].Drive
-        Write-Host "Detected optical drive: $Drive ($($opticalDrives[0].Name))" -ForegroundColor Gray
+        $onlyDrive = $opticalDrives[0]
+        if ($busyDriveLetters -contains $onlyDrive.Drive) {
+            Write-Host "ERROR: $($onlyDrive.Drive) ($($onlyDrive.Name)) is busy - another cyanrip rip is already using it." -ForegroundColor Red
+            Write-Host "Wait for that rip to finish, or free up the drive before retrying." -ForegroundColor Yellow
+            exit 1
+        }
+        $Drive = $onlyDrive.Drive
+        Write-Host "Detected optical drive:" -ForegroundColor Gray
+        Write-DriveListLine -DriveInfo $onlyDrive -Selected $true
     } else {
         Write-Host "Multiple optical drives detected:" -ForegroundColor Cyan
         for ($i = 0; $i -lt $opticalDrives.Count; $i++) {
-            Write-Host "  $($i + 1): $($opticalDrives[$i].Drive) - $($opticalDrives[$i].Name)" -ForegroundColor White
+            Write-Host -NoNewline "  $($i + 1): " -ForegroundColor White
+            Write-DriveListLine -DriveInfo $opticalDrives[$i]
         }
         $driveChoice = $null
         while (-not $driveChoice) {
             $input = Read-Host "Select drive (1-$($opticalDrives.Count))"
             if ($input -match '^\d+$' -and [int]$input -ge 1 -and [int]$input -le $opticalDrives.Count) {
-                $Drive = $opticalDrives[[int]$input - 1].Drive
+                $candidate = $opticalDrives[[int]$input - 1]
+                if ($busyDriveLetters -contains $candidate.Drive) {
+                    Write-Host "$($candidate.Drive) is busy - another cyanrip rip is already using it. Choose a different drive." -ForegroundColor Red
+                    continue
+                }
+                $Drive = $candidate.Drive
                 $driveChoice = $Drive
             } else {
                 Write-Host "Invalid selection. Enter a number between 1 and $($opticalDrives.Count)" -ForegroundColor Yellow
@@ -822,29 +884,37 @@ if (-not $Drive) {
     }
 } else {
     # -Drive was passed explicitly - validate it against the drives Windows actually sees,
-    # rather than trusting it blindly. Without this, a stale or mistyped drive letter (e.g.
-    # a drive that isn't connected right now) sails straight through every step up to
-    # cyanrip, which then fails with "could not read the disc TOC" - indistinguishable from
-    # a genuinely dirty or damaged disc, when the real problem is the drive doesn't exist.
+    # and against which drives are currently busy with another cyanrip rip, rather than
+    # trusting it blindly. Without this: a stale/mistyped drive letter sails straight through
+    # to cyanrip's misleading "disc may be damaged" error, and a busy drive collides with
+    # another rip already using the same physical hardware.
     $explicitDriveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
     $matchedDrive = $opticalDrives | Where-Object { $_.Drive -eq $explicitDriveLetter } | Select-Object -First 1
-    if ($matchedDrive) {
-        Write-Host "Using optical drive: $explicitDriveLetter ($($matchedDrive.Name))" -ForegroundColor Gray
+
+    if ($matchedDrive -and ($busyDriveLetters -contains $explicitDriveLetter)) {
+        Write-Host "ERROR: $explicitDriveLetter ($($matchedDrive.Name)) is busy - another cyanrip rip is already using it." -ForegroundColor Red
+        Write-Host "Optical drives right now:" -ForegroundColor Yellow
+        foreach ($d in $opticalDrives) { Write-DriveListLine -DriveInfo $d -Selected ($d.Drive -eq $explicitDriveLetter) }
+        Write-Host "Wait for that rip to finish, or re-run with a different -Drive." -ForegroundColor Yellow
+        exit 1
+    } elseif ($matchedDrive) {
+        Write-Host "Using optical drive:" -ForegroundColor Gray
+        Write-DriveListLine -DriveInfo $matchedDrive -Selected $true
     } elseif ($opticalDrives.Count -gt 0) {
         # WMI saw at least one real optical drive, just not this one - a reliable signal
         # that the requested letter is wrong, so fail fast with the actual options instead
         # of letting cyanrip produce a misleading "disc may be damaged" error a minute later.
         Write-Host "ERROR: $explicitDriveLetter is not a recognised optical drive on this machine." -ForegroundColor Red
         Write-Host "Optical drives actually detected:" -ForegroundColor Yellow
-        foreach ($d in $opticalDrives) {
-            Write-Host "  $($d.Drive) - $($d.Name)" -ForegroundColor White
-        }
+        foreach ($d in $opticalDrives) { Write-DriveListLine -DriveInfo $d }
         Write-Host "Re-run with one of the drive letters above, or omit -Drive to auto-detect / choose interactively." -ForegroundColor Yellow
         exit 1
     } else {
         # WMI enumeration returned nothing at all (can happen transiently, e.g. for some
         # external/USB optical drives) - warn rather than block, since we have no positive
         # evidence the requested drive is wrong, only an absence of confirmation either way.
+        # (Busy-drive detection also can't run here - there's no WMI drive entry to check
+        # a process command line's drive letter against, so this path is best-effort only.)
         Write-Host "WARNING: No optical drives detected via WMI right now - continuing with -Drive $explicitDriveLetter as given. If this fails, double-check the drive letter." -ForegroundColor Yellow
     }
 }
