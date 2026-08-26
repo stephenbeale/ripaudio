@@ -3184,6 +3184,117 @@ if (-not $script:IsProcessingQueue) {
         }
     }
 
+    # Drives Mp3tag's own UI to open its "Discogs Artist + Album" Tag Source dialog,
+    # pre-filled from the loaded tags, then stops - deliberately does not click "Next >",
+    # since the user wants to review/adjust the artist/album before the actual query goes
+    # out. Mp3tag has no CLI switch for this (confirmed against the installed version's
+    # full command-line changelog history - it only ever covers loading files on startup),
+    # so this drives the real GUI via UI Automation + SendKeys instead.
+    #
+    # Best-effort throughout: any failure here just logs and returns, leaving Mp3tag open
+    # for the user to drive manually - exactly the pre-existing behaviour if this function
+    # didn't exist at all, so it can only add convenience, never break the fallback.
+    #
+    # FRAGILE BY NATURE, not oversight: Mp3tag's Tag Sources menu is not exposed via
+    # standard Windows accessibility APIs (confirmed live - no MenuBar control, no
+    # UIA-visible popup even while genuinely open), so the target item can only be reached
+    # by position (4x Down from the top of the menu = 5th item = "Discogs Artist + Album"),
+    # not by name. That position was verified against this machine's real, currently
+    # installed Mp3tag and its currently configured Tag Sources list - reordering,
+    # removing, or adding a Tag Source above it in Tools > Options > Tag Sources will move
+    # it, and this will then land on the wrong item. There's no way to detect that
+    # mismatch programmatically; if the automation seems to open the wrong search, this is
+    # almost certainly why - recheck the position in the live menu and update
+    # $mp3tagDiscogsMenuPosition below.
+    function Invoke-Mp3tagDiscogsLookup {
+        param([int]$TimeoutSeconds = 15)
+
+        $mp3tagDiscogsMenuPosition = 4  # number of Down presses from the top of Tag Sources
+
+        try {
+            Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+            Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        } catch {
+            Write-Log "  Mp3tag automation: could not load UI Automation assemblies - skipping ($_)"
+            return
+        }
+
+        if (-not ("Win32Mp3tagAuto" -as [type])) {
+            Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class Win32Mp3tagAuto {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+}
+"@
+        }
+
+        try {
+            # Mp3tag is single-instance: launching it can hand the file off to an existing
+            # window under a completely different process ID than Start-Process returned,
+            # or take a moment to appear either way. Poll for any top-level window whose
+            # title starts with "Mp3tag" rather than trusting a specific launched PID.
+            $uiaRoot = [System.Windows.Automation.AutomationElement]::RootElement
+            $mp3tagWindow = $null
+            $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
+            while ($waitSw.Elapsed.TotalSeconds -lt $TimeoutSeconds -and -not $mp3tagWindow) {
+                $windowCondition = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
+                $topWindows = $uiaRoot.FindAll([System.Windows.Automation.TreeScope]::Children, $windowCondition)
+                foreach ($w in $topWindows) {
+                    if ($w.Current.Name -like "Mp3tag*") { $mp3tagWindow = $w; break }
+                }
+                if (-not $mp3tagWindow) { Start-Sleep -Milliseconds 300 }
+            }
+            $waitSw.Stop()
+
+            if (-not $mp3tagWindow) {
+                Write-Log "  Mp3tag automation: window did not appear within ${TimeoutSeconds}s - skipping"
+                return
+            }
+
+            $hwnd = [IntPtr]$mp3tagWindow.Current.NativeWindowHandle
+
+            # SetForegroundWindow alone is sometimes blocked by Windows' anti-focus-stealing
+            # protection when called from a background process (confirmed live - it failed
+            # outright on one attempt). AttachThreadInput to the currently-foreground
+            # thread first is the standard documented workaround.
+            $fgWnd = [Win32Mp3tagAuto]::GetForegroundWindow()
+            $fgThread = [Win32Mp3tagAuto]::GetWindowThreadProcessId($fgWnd, [ref]0)
+            $curThread = [Win32Mp3tagAuto]::GetCurrentThreadId()
+            [Win32Mp3tagAuto]::AttachThreadInput($curThread, $fgThread, $true) | Out-Null
+            [Win32Mp3tagAuto]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE, in case minimized
+            [Win32Mp3tagAuto]::SetForegroundWindow($hwnd) | Out-Null
+            [Win32Mp3tagAuto]::AttachThreadInput($curThread, $fgThread, $false) | Out-Null
+            Start-Sleep -Milliseconds 500
+
+            if ([Win32Mp3tagAuto]::GetForegroundWindow() -ne $hwnd) {
+                Write-Log "  Mp3tag automation: could not bring window to foreground - skipping"
+                return
+            }
+
+            # Select all tracks, open the Tag Sources menu via its Alt+S mnemonic, move down
+            # to the target item, select it. Lands on Mp3tag's own "Search by" dialog,
+            # pre-filled with Artist/Album from the loaded tags - stops there deliberately.
+            [System.Windows.Forms.SendKeys]::SendWait("^a")
+            Start-Sleep -Milliseconds 300
+            [System.Windows.Forms.SendKeys]::SendWait("%s")
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait(("{DOWN}" * $mp3tagDiscogsMenuPosition))
+            Start-Sleep -Milliseconds 200
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+
+            Write-Log "  Mp3tag automation: opened Discogs Artist + Album search dialog"
+        } catch {
+            Write-Log "  Mp3tag automation failed (non-fatal, Mp3tag left open for manual use): $_"
+        }
+    }
+
     # After search-metadata.ps1 (or if it was skipped), check if tracks are still untagged.
     # If so, offer to open Mp3tag for manual tagging.
     $stillUntagged = Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue |
@@ -3218,6 +3329,8 @@ if (-not $script:IsProcessingQueue) {
                 Write-Host "  Opening Mp3tag..." -ForegroundColor Cyan
                 Write-Log "Opening Mp3tag for manual tagging: $finalOutputDir"
                 Start-Process $mp3tagPath -ArgumentList "/fp:`"$finalOutputDir`""
+                Write-Host "  Opening Discogs Artist + Album search..." -ForegroundColor Cyan
+                Invoke-Mp3tagDiscogsLookup
             }
         } else {
             Write-Host "`n  Tracks still need metadata. Consider opening Mp3tag to tag manually." -ForegroundColor Yellow
