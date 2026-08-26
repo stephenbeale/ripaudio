@@ -244,7 +244,7 @@ When ripping, the script uses multiple sources to ensure track names and metadat
 
 1. **MusicBrainz** (via cyanrip) - Primary source, automatic lookup by disc ID
 2. **CDDB** (gnudb.org) - Fallback when MusicBrainz has no match; uses TOC-based disc ID lookup, then text search
-3. **search-metadata.ps1** - Post-rip metadata search across MusicBrainz, iTunes, and Deezer APIs
+3. **search-metadata.ps1** - Post-rip metadata search across Discogs, MusicBrainz, iTunes, and Deezer APIs
 4. **Mp3tag prompt** - When all automated sources fail, prompts to open Mp3tag desktop app for manual tagging
 5. **Generic names** - Last resort: tracks named `01 - Track 01`, `02 - Track 02`, etc.
 
@@ -395,7 +395,20 @@ This script uses [cyanrip](https://github.com/cyanreg/cyanrip), a feature-rich a
 
 ## search-metadata.ps1
 
-Standalone script that scans a folder of audio files, searches 3 metadata sources (MusicBrainz, iTunes, Deezer), shows a comparison for confirmation, then applies tags, downloads cover art, and renames files.
+Standalone script that scans a folder of audio files, searches 4 metadata sources (Discogs, MusicBrainz, iTunes, Deezer), shows a comparison for confirmation, then applies tags, downloads cover art, and renames files.
+
+### Discogs setup (optional, but preferred when present)
+
+Discogs is queried first and preferred over the other sources when it returns a track count that actually matches the local files — this needs a free Personal Access Token:
+
+1. Go to [discogs.com/settings/developers](https://www.discogs.com/settings/developers) and click **Generate new token** (no app registration needed).
+2. Set it as a persistent environment variable:
+   ```powershell
+   [Environment]::SetEnvironmentVariable("DISCOGS_TOKEN", "your-token-here", "User")
+   ```
+   Also run `$env:DISCOGS_TOKEN = "your-token-here"` in your current terminal so it takes effect immediately without restarting.
+
+Without a token set, Discogs is silently skipped and the script behaves exactly as before (MusicBrainz > Deezer > iTunes) — nothing breaks, you just don't get Discogs results until you set one up.
 
 ### Usage
 
@@ -457,10 +470,10 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 ### 6-Step Workflow (default)
 
 1. **Scan files** - Read existing tags via metaflac, identify gaps
-2. **Search metadata** - Query MusicBrainz, iTunes, Deezer; merge best results
+2. **Search metadata** - Query Discogs, MusicBrainz, iTunes, Deezer; merge best results (Discogs > MusicBrainz > Deezer > iTunes, but only when Discogs's track count actually matches the local files - otherwise it's demoted below MusicBrainz to avoid trusting a wrong edition)
 3. **Confirm changes** - Show side-by-side comparison, user approves or declines (auto-Yes in 30s)
 4. **Apply tags** - Write ARTIST, ALBUM, TITLE, TRACKNUMBER, DATE, GENRE via metaflac
-5. **Cover art** - Download best artwork (Deezer 1000x1000 > iTunes 600x600 > CAA) and embed into FLAC files
+5. **Cover art** - Download best artwork (Discogs > Deezer 1000x1000 > iTunes 600x600 > CAA) and embed into FLAC files
 6. **Rename files** - Rename to `## - Title.flac` format
 
 ### 2-Step Workflow (`-EmbedOnly`)
@@ -468,7 +481,7 @@ Standalone script that scans a folder of audio files, searches 3 metadata source
 1. **Scan files** - Read existing tags, identify FLAC files
 2. **Cover art** - Find existing art on disk, or search online and prompt to confirm, then embed into all FLACs
 
-With `-EmbedOnly`, if no art exists on disk the script searches MusicBrainz/iTunes/Deezer for artwork. Matching results auto-proceed; mismatches prompt for confirmation (default No). In batch/recurse mode, mismatches are auto-skipped.
+With `-EmbedOnly`, if no art exists on disk the script searches Discogs/MusicBrainz/iTunes/Deezer for artwork. Matching results auto-proceed; mismatches prompt for confirmation (default No). In batch/recurse mode, mismatches are auto-skipped.
 
 ### Metadata Source Priority
 

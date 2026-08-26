@@ -387,6 +387,130 @@ function Search-ByDiscId {
     return $result
 }
 
+function Search-Discogs {
+    param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount)
+
+    $token = $env:DISCOGS_TOKEN
+    if (-not $token) {
+        Write-Host "    Discogs: skipped (DISCOGS_TOKEN environment variable not set)" -ForegroundColor Gray
+        return $null
+    }
+
+    $headers = @{
+        "User-Agent" = "RipAudio/1.0 +https://github.com/stephenbeale/ripaudio"
+    }
+
+    Write-Host "    Discogs: searching..." -ForegroundColor Gray
+    Write-Log "  Discogs query: artist=$ArtistName release_title=$AlbumName"
+
+    try {
+        $encodedAlbum = [System.Web.HttpUtility]::UrlEncode($AlbumName)
+        $url = "https://api.discogs.com/database/search?release_title=$encodedAlbum&type=release&per_page=5&token=$token"
+        if ($ArtistName) {
+            $url += "&artist=$([System.Web.HttpUtility]::UrlEncode($ArtistName))"
+        }
+        $response = Invoke-RestMethod -Uri $url -Headers $headers -TimeoutSec 15
+        Start-Sleep -Milliseconds 200
+
+        if (-not $response.results -or $response.results.Count -eq 0) {
+            Write-Host "    Discogs: no results" -ForegroundColor Yellow
+            return $null
+        }
+
+        # Prefer candidates whose format mentions CD (this is a CD-ripping tool), but keep
+        # the full result set as a fallback pool rather than excluding others outright -
+        # some genuine CD releases have inconsistent format tagging on Discogs.
+        $candidates = @($response.results | Where-Object { ($_.format -join ',') -match 'CD' })
+        if ($candidates.Count -eq 0) { $candidates = $response.results }
+
+        # Discogs's search response has no track count, only the full release detail does -
+        # unlike MusicBrainz/Deezer/iTunes, which all expose it (or something close) directly
+        # in their search results. Fetch up to 3 candidate details specifically to check
+        # this, rather than trusting search rank alone: a title/artist match with the wrong
+        # track count is exactly how a partial edition (e.g. a "Part 2 only" release) gets
+        # silently matched to a complete local rip - this checks for that before trusting it.
+        $bestRelease = $null
+        $bestTracks = @()
+        foreach ($candidate in ($candidates | Select-Object -First 3)) {
+            try {
+                $detailUrl = "https://api.discogs.com/releases/$($candidate.id)?token=$token"
+                $detail = Invoke-RestMethod -Uri $detailUrl -Headers $headers -TimeoutSec 15
+                Start-Sleep -Milliseconds 200
+
+                # type_ distinguishes real tracks from headings/index entries (e.g. a
+                # vinyl side heading, or a medley's sub-part index) that Discogs includes
+                # in the same tracklist array but that don't correspond to an audio file.
+                $realTracks = @($detail.tracklist | Where-Object { -not $_.type_ -or $_.type_ -eq 'track' })
+
+                if (-not $bestRelease) {
+                    # keep the first candidate as a fallback even if no exact match is found
+                    $bestRelease = $detail
+                    $bestTracks = $realTracks
+                }
+                if ($TrackCount -gt 0 -and $realTracks.Count -eq $TrackCount) {
+                    $bestRelease = $detail
+                    $bestTracks = $realTracks
+                    break
+                }
+            } catch {
+                Write-Log "  Discogs: detail fetch failed for release $($candidate.id): $_"
+            }
+        }
+
+        if (-not $bestRelease) {
+            Write-Host "    Discogs: no results" -ForegroundColor Yellow
+            return $null
+        }
+
+        # Discogs artist names carry a disambiguation suffix like "Artist (2)" when the
+        # same name is used by multiple distinct artists in their database - strip it.
+        $artistNames = if ($bestRelease.artists) {
+            ($bestRelease.artists | ForEach-Object { $_.name -replace '\s*\(\d+\)$', '' }) -join ", "
+        } else { "" }
+
+        $genre = if ($bestRelease.styles -and $bestRelease.styles.Count -gt 0) { $bestRelease.styles[0] }
+                 elseif ($bestRelease.genres -and $bestRelease.genres.Count -gt 0) { $bestRelease.genres[0] }
+                 else { "" }
+
+        $artworkUrl = $null
+        if ($bestRelease.images -and $bestRelease.images.Count -gt 0) {
+            $primary = $bestRelease.images | Where-Object { $_.type -eq 'primary' } | Select-Object -First 1
+            $artworkUrl = if ($primary) { $primary.uri } else { $bestRelease.images[0].uri }
+        }
+
+        $trackNum = 1
+        $tracks = $bestTracks | ForEach-Object {
+            @{ Number = $trackNum; Title = $_.title; Artist = $artistNames }
+            $trackNum++
+        }
+
+        $result = @{
+            Source = "Discogs"
+            Artist = $artistNames
+            Album = $bestRelease.title
+            Date = if ($bestRelease.year) { "$($bestRelease.year)" } else { "" }
+            Genre = $genre
+            TrackCount = $bestTracks.Count
+            ArtworkUrl = $artworkUrl
+            Tracks = $tracks
+        }
+
+        $trackCountOk = ($TrackCount -le 0 -or $bestTracks.Count -eq $TrackCount)
+        if ($trackCountOk) {
+            Write-Host "    Discogs: found `"$($result.Album)`" by $($result.Artist)" -ForegroundColor Green
+            Write-Log "  Discogs: found $($result.Album) by $($result.Artist) (ID: $($bestRelease.id), tracks: $($bestTracks.Count))"
+        } else {
+            Write-Host "    Discogs: found `"$($result.Album)`" by $($result.Artist) - WARNING: $($bestTracks.Count) tracks vs $TrackCount local, likely a different edition" -ForegroundColor Yellow
+            Write-Log "  Discogs: found $($result.Album) by $($result.Artist) (ID: $($bestRelease.id)) but track count mismatch ($($bestTracks.Count) vs $TrackCount local) - not trusted as primary source"
+        }
+        return $result
+    } catch {
+        Write-Host "    Discogs: search failed - $_" -ForegroundColor Yellow
+        Write-Log "  Discogs search failed: $_"
+        return $null
+    }
+}
+
 function Search-MusicBrainz {
     param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount, [array]$LocalDurations, [int]$DiscNumber = 0)
 
@@ -664,11 +788,12 @@ function Search-Deezer {
 function Search-AllSources {
     param([string]$AlbumName, [string]$ArtistName, [int]$TrackCount, [array]$LocalDurations, [int]$DiscNumber = 0)
 
+    $discogsResult = Search-Discogs -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
     $mbResult = Search-MusicBrainz -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount -LocalDurations $LocalDurations -DiscNumber $DiscNumber
     $itunesResult = Search-iTunes -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
     $deezerResult = Search-Deezer -AlbumName $AlbumName -ArtistName $ArtistName -TrackCount $TrackCount
 
-    if (-not $mbResult -and -not $itunesResult -and -not $deezerResult) {
+    if (-not $discogsResult -and -not $mbResult -and -not $itunesResult -and -not $deezerResult) {
         return $null
     }
 
@@ -706,9 +831,17 @@ function Search-AllSources {
         }
     }
 
-    # Merge: Artist/Album/Date/Tracks from MB > Deezer > iTunes
-    #         Genre from Deezer > iTunes
-    #         Cover art: Deezer > iTunes > CAA
+    # Discogs is preferred (tried and trusted first) only when its track count actually
+    # matches the local rip, or TrackCount is unknown so there's nothing to check against.
+    # A track-count mismatch means Discogs most likely matched a different edition (e.g. a
+    # partial/abridged release) of the same title - in that case it's demoted below the
+    # existing MB > Deezer > iTunes chain rather than trusted, though it's still surfaced
+    # in Sources below so a human reviewing the comparison can see it was found.
+    $discogsTrustworthy = $discogsResult -and ($TrackCount -le 0 -or $discogsResult.TrackCount -eq $TrackCount)
+
+    # Merge: Artist/Album/Date/Tracks from Discogs > MB > Deezer > iTunes
+    #         Genre from Discogs > Deezer > iTunes
+    #         Cover art: Discogs > Deezer > iTunes > CAA
     $merged = @{
         Artist = ""
         Album = ""
@@ -721,47 +854,57 @@ function Search-AllSources {
         ArtworkUrl = ""
         ArtworkSource = ""
         Sources = @{
+            Discogs = $discogsResult
             MusicBrainz = $mbNorm
             iTunes = $itunesResult
             Deezer = $deezerResult
         }
     }
 
-    # Artist (MB > Deezer > iTunes)
-    if ($mbNorm -and $mbNorm.Artist) { $merged.Artist = $mbNorm.Artist }
+    # Artist (Discogs > MB > Deezer > iTunes)
+    if ($discogsTrustworthy -and $discogsResult.Artist) { $merged.Artist = $discogsResult.Artist }
+    elseif ($mbNorm -and $mbNorm.Artist) { $merged.Artist = $mbNorm.Artist }
     elseif ($deezerResult -and $deezerResult.Artist) { $merged.Artist = $deezerResult.Artist }
     elseif ($itunesResult -and $itunesResult.Artist) { $merged.Artist = $itunesResult.Artist }
     $merged.AlbumArtist = $merged.Artist
 
-    # Album (MB > Deezer > iTunes)
-    if ($mbNorm -and $mbNorm.Album) { $merged.Album = $mbNorm.Album }
+    # Album (Discogs > MB > Deezer > iTunes)
+    if ($discogsTrustworthy -and $discogsResult.Album) { $merged.Album = $discogsResult.Album }
+    elseif ($mbNorm -and $mbNorm.Album) { $merged.Album = $mbNorm.Album }
     elseif ($deezerResult -and $deezerResult.Album) { $merged.Album = $deezerResult.Album }
     elseif ($itunesResult -and $itunesResult.Album) { $merged.Album = $itunesResult.Album }
 
-    # Date (MB > Deezer > iTunes)
-    if ($mbNorm -and $mbNorm.Date) { $merged.Date = $mbNorm.Date }
+    # Date (Discogs > MB > Deezer > iTunes)
+    if ($discogsTrustworthy -and $discogsResult.Date) { $merged.Date = $discogsResult.Date }
+    elseif ($mbNorm -and $mbNorm.Date) { $merged.Date = $mbNorm.Date }
     elseif ($deezerResult -and $deezerResult.Date) { $merged.Date = $deezerResult.Date }
     elseif ($itunesResult -and $itunesResult.Date) { $merged.Date = $itunesResult.Date }
 
-    # Genre (Deezer > iTunes)
-    if ($deezerResult -and $deezerResult.Genre) { $merged.Genre = $deezerResult.Genre }
+    # Genre (Discogs > Deezer > iTunes) - Discogs styles/genres are usually more specific
+    if ($discogsTrustworthy -and $discogsResult.Genre) { $merged.Genre = $discogsResult.Genre }
+    elseif ($deezerResult -and $deezerResult.Genre) { $merged.Genre = $deezerResult.Genre }
     elseif ($itunesResult -and $itunesResult.Genre) { $merged.Genre = $itunesResult.Genre }
 
-    # Track count
-    if ($mbNorm -and $mbNorm.TrackCount -gt 0) { $merged.TrackCount = $mbNorm.TrackCount }
+    # Track count (Discogs > MB > Deezer > iTunes)
+    if ($discogsTrustworthy -and $discogsResult.TrackCount -gt 0) { $merged.TrackCount = $discogsResult.TrackCount }
+    elseif ($mbNorm -and $mbNorm.TrackCount -gt 0) { $merged.TrackCount = $mbNorm.TrackCount }
     elseif ($deezerResult -and $deezerResult.TrackCount -gt 0) { $merged.TrackCount = $deezerResult.TrackCount }
     elseif ($itunesResult -and $itunesResult.TrackCount -gt 0) { $merged.TrackCount = $itunesResult.TrackCount }
 
-    # Release ID (MusicBrainz only)
+    # Release ID (MusicBrainz only - used for Cover Art Archive fallback)
     if ($mbNorm -and $mbNorm.ReleaseId) { $merged.ReleaseId = $mbNorm.ReleaseId }
 
-    # Track titles (MB > Deezer; iTunes doesn't reliably provide track names)
-    if ($mbNorm -and $mbNorm.Tracks.Count -gt 0) { $merged.Tracks = $mbNorm.Tracks }
+    # Track titles (Discogs > MB > Deezer; iTunes doesn't reliably provide track names)
+    if ($discogsTrustworthy -and $discogsResult.Tracks.Count -gt 0) { $merged.Tracks = $discogsResult.Tracks }
+    elseif ($mbNorm -and $mbNorm.Tracks.Count -gt 0) { $merged.Tracks = $mbNorm.Tracks }
     elseif ($deezerResult -and $deezerResult.Tracks.Count -gt 0) { $merged.Tracks = $deezerResult.Tracks }
     elseif ($itunesResult -and $itunesResult.Tracks.Count -gt 0) { $merged.Tracks = $itunesResult.Tracks }
 
-    # Artwork (Deezer 1000x1000 > iTunes 600x600 > CAA)
-    if ($deezerResult -and $deezerResult.ArtworkUrl) {
+    # Artwork (Discogs > Deezer 1000x1000 > iTunes 600x600 > CAA)
+    if ($discogsTrustworthy -and $discogsResult.ArtworkUrl) {
+        $merged.ArtworkUrl = $discogsResult.ArtworkUrl
+        $merged.ArtworkSource = "Discogs"
+    } elseif ($deezerResult -and $deezerResult.ArtworkUrl) {
         $merged.ArtworkUrl = $deezerResult.ArtworkUrl
         $merged.ArtworkSource = "Deezer"
     } elseif ($itunesResult -and $itunesResult.ArtworkUrl) {
@@ -852,6 +995,7 @@ function Show-MetadataComparison {
 
     # Source summary
     $sourceList = @()
+    if ($Proposed.Sources.Discogs) { $sourceList += "Discogs" }
     if ($Proposed.Sources.MusicBrainz) { $sourceList += "MusicBrainz" }
     if ($Proposed.Sources.iTunes) { $sourceList += "iTunes" }
     if ($Proposed.Sources.Deezer) { $sourceList += "Deezer" }

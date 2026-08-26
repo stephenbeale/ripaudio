@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-26 (yet again)
+
+### Added
+- **Discogs as a 4th metadata source in `search-metadata.ps1`**, preferred over the existing MusicBrainz > Deezer > iTunes chain when it returns a track count that actually matches the local files. Requires a free `DISCOGS_TOKEN` environment variable (Personal Access Token from discogs.com/settings/developers) — silently skipped and falls back to the existing behaviour unchanged when unset, so nothing breaks for anyone who doesn't set one up.
+  - New `Search-Discogs` function: queries `/database/search` (artist + release title), prefers CD-format candidates when the initial result set includes non-CD editions (Discogs commonly returns cassette/vinyl/box-set entries alongside CD ones for the same title), then fetches full release details for up to 3 candidates specifically to check track count — Discogs's search response doesn't expose track count directly, unlike the other three sources.
+  - **Track-count verification is deliberate, not incidental**: a Discogs match whose track count doesn't equal the local rip's is demoted below MusicBrainz rather than trusted, on the theory that a title/artist match with the wrong count usually means a different (often partial) edition matched — the exact failure mode that mismatched a "Part 2 only" release to a complete work earlier this same session via Deezer. Discogs is still surfaced in the confirmation screen's "Sources found" list either way, for visibility.
+  - Wired into `Search-AllSources`'s merge logic for every field (artist, album, date, genre, track count, track titles, artwork), and into `Show-MetadataComparison`'s source summary.
+  - README updated: setup instructions, workflow steps, and all source-list mentions (including `-EmbedOnly`'s artwork-only search path, which already called `Search-AllSources` and so picks this up for free).
+
+**Testing status:** parses clean, all added lines ASCII-only. Validated against the **real, live Discogs API** (unauthenticated works too, just at a lower rate limit — sufficient for testing): searched "How to Dismantle an Atomic Bomb" by U2, correctly filtered 5 results down to 3 CD-format candidates (the other 2 were cassette editions), found the exact 11-track match with real song titles ("Vertigo", "Miracle Drug", etc.), genre, year, and artwork URL. Separately verified the mismatch-handling path: forcing an impossible track count (99) correctly exhausted all 3 candidate fetches and fell back to the first examined release rather than erroring. Not yet tested with a real `DISCOGS_TOKEN` set (none was available this session) or through the actual interactive `search-metadata.ps1` confirmation flow end-to-end - the underlying search/merge logic is verified against live data, the surrounding script wiring is not yet exercised for real.
+
 ## 2026-08-26 (continued)
 
 ### Fixed
