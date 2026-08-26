@@ -6,12 +6,12 @@ PowerShell script for automated audio CD ripping using cyanrip.
 
 When the user says **"make a workflow"**, execute the full git lifecycle. The workflow is **not complete until the PR is approved and merged**:
 
-1. **Branch** - Create a feature branch from main (`feature/<issue-number>-<description>` or `feature/<description>`)
+1. **Branch** - Create a feature branch from master (`feature/<issue-number>-<description>` or `feature/<description>`)
 2. **Commit** - Stage and commit all relevant changes with a conventional commit message
 3. **Push** - Push the branch to origin (`git push -u origin <branch>`)
 4. **PR** - Create a pull request via `gh pr create` with summary and test plan
 5. **Approve PR** - Approve via `gh pr review --approve`, then merge via `gh pr merge --squash --delete-branch`
-6. **Return to main** - `git checkout main && git pull`
+6. **Return to master** - `git checkout master && git pull`
 
 ## Project Structure
 
