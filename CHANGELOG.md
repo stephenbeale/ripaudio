@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-26
+
+### Fixed
+- **An explicit `-Drive` value was never validated** - live incident: `-Drive G` was passed for a rip, but `G:` isn't an optical drive that exists on the machine. The script sailed straight through the header/log/directory-creation steps as if it were valid, and only cyanrip itself caught the problem a minute later, reporting *"cyanrip could not read the disc TOC -- disc may be dirty, damaged, or the wrong type"* - a message indistinguishable from a genuinely bad disc, when the real problem was a stale/mistyped drive letter. Auto-detect (when `-Drive` is omitted) already checked drives against `Win32_CDROMDrive`; an explicitly-passed `-Drive` skipped that check entirely. Now an explicit `-Drive` is matched against the same WMI drive list: a match prints a confirmation line (`Using optical drive: D: (Name)`), a clear non-match fails immediately with the actual detected drives listed and next-step guidance, and an inconclusive WMI result (zero drives detected at all, which can happen transiently for some external drives) warns but does not block, since that's an absence of evidence rather than evidence the drive is wrong.
+
 ## 2026-08-17
 
 ### Fixed
