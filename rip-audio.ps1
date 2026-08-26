@@ -792,9 +792,12 @@ if ($Queue -and $ProcessQueue) {
 
 # ========== CONFIGURATION ==========
 
-# Auto-detect CD/optical drive if not specified
+# Query optical drives once - used both to auto-detect when -Drive is omitted, and to
+# validate an explicit -Drive value against what Windows actually sees right now.
+$opticalDrives = @(Get-CimInstance Win32_CDROMDrive -ErrorAction SilentlyContinue | Where-Object { $_.Drive })
+
 if (-not $Drive) {
-    $opticalDrives = @(Get-CimInstance Win32_CDROMDrive -ErrorAction SilentlyContinue | Where-Object { $_.Drive })
+    # Auto-detect CD/optical drive
     if ($opticalDrives.Count -eq 0) {
         Write-Host "ERROR: No optical drive detected. Use -Drive to specify the drive letter." -ForegroundColor Red
         exit 1
@@ -816,6 +819,33 @@ if (-not $Drive) {
                 Write-Host "Invalid selection. Enter a number between 1 and $($opticalDrives.Count)" -ForegroundColor Yellow
             }
         }
+    }
+} else {
+    # -Drive was passed explicitly - validate it against the drives Windows actually sees,
+    # rather than trusting it blindly. Without this, a stale or mistyped drive letter (e.g.
+    # a drive that isn't connected right now) sails straight through every step up to
+    # cyanrip, which then fails with "could not read the disc TOC" - indistinguishable from
+    # a genuinely dirty or damaged disc, when the real problem is the drive doesn't exist.
+    $explicitDriveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
+    $matchedDrive = $opticalDrives | Where-Object { $_.Drive -eq $explicitDriveLetter } | Select-Object -First 1
+    if ($matchedDrive) {
+        Write-Host "Using optical drive: $explicitDriveLetter ($($matchedDrive.Name))" -ForegroundColor Gray
+    } elseif ($opticalDrives.Count -gt 0) {
+        # WMI saw at least one real optical drive, just not this one - a reliable signal
+        # that the requested letter is wrong, so fail fast with the actual options instead
+        # of letting cyanrip produce a misleading "disc may be damaged" error a minute later.
+        Write-Host "ERROR: $explicitDriveLetter is not a recognised optical drive on this machine." -ForegroundColor Red
+        Write-Host "Optical drives actually detected:" -ForegroundColor Yellow
+        foreach ($d in $opticalDrives) {
+            Write-Host "  $($d.Drive) - $($d.Name)" -ForegroundColor White
+        }
+        Write-Host "Re-run with one of the drive letters above, or omit -Drive to auto-detect / choose interactively." -ForegroundColor Yellow
+        exit 1
+    } else {
+        # WMI enumeration returned nothing at all (can happen transiently, e.g. for some
+        # external/USB optical drives) - warn rather than block, since we have no positive
+        # evidence the requested drive is wrong, only an absence of confirmation either way.
+        Write-Host "WARNING: No optical drives detected via WMI right now - continuing with -Drive $explicitDriveLetter as given. If this fails, double-check the drive letter." -ForegroundColor Yellow
     }
 }
 
