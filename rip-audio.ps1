@@ -909,12 +909,17 @@ if (-not $Drive) {
         foreach ($d in $opticalDrives) { Write-DriveListLine -DriveInfo $d }
         Write-Host "Re-run with one of the drive letters above, or omit -Drive to auto-detect / choose interactively." -ForegroundColor Yellow
         exit 1
+    } elseif ($busyDriveLetters -contains $explicitDriveLetter) {
+        # WMI's Win32_CDROMDrive enumeration returned nothing at all (can happen transiently
+        # for some external/USB drives), so there's no drive model/label to show - but busy
+        # detection doesn't depend on that list at all (it reads running cyanrip process
+        # command lines directly), so it can and does still hard-block here.
+        Write-Host "ERROR: $explicitDriveLetter is busy - another cyanrip rip is already using it." -ForegroundColor Red
+        Write-Host "Wait for that rip to finish, or re-run with a different -Drive." -ForegroundColor Yellow
+        exit 1
     } else {
-        # WMI enumeration returned nothing at all (can happen transiently, e.g. for some
-        # external/USB optical drives) - warn rather than block, since we have no positive
-        # evidence the requested drive is wrong, only an absence of confirmation either way.
-        # (Busy-drive detection also can't run here - there's no WMI drive entry to check
-        # a process command line's drive letter against, so this path is best-effort only.)
+        # No positive evidence the requested drive is wrong (WMI just didn't enumerate any
+        # optical drives right now) and it's confirmed not busy - warn rather than block.
         Write-Host "WARNING: No optical drives detected via WMI right now - continuing with -Drive $explicitDriveLetter as given. If this fails, double-check the drive letter." -ForegroundColor Yellow
     }
 }
