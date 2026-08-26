@@ -1050,5 +1050,69 @@ All three fixes (quoting in #124, exit-code check in #125) were verified by pars
 1. Run `.\search-metadata.ps1 -Path "C:\Music\Dylan Thomas\Under Milk Wood"` to actually tag the album that triggered this session.
 2. Live end-to-end validation: rip a disc to a spaced-path album folder and confirm the `search-metadata.ps1` handoff now runs automatically instead of falling through to Mp3tag.
 3. Force a real metaflac failure (or otherwise get one to occur) and confirm the yellow console warning and `WARNING:` log line both appear.
+
+---
+
+### 2026-08-26 - Explicit-Drive Validation, Busy-Drive Hard Block, Stale-Branch Cleanup, and Quick Disc Identity (PRs #127-#132)
+
+**Trigger:** `-Drive G` was passed for a rip, but `G:` is not an optical drive on this machine. With no validation on the explicit-drive path, the bad letter sailed through header/log/directory setup and was only caught a minute later by cyanrip itself, with a message indistinguishable from real disc damage: `cyanrip could not read the disc TOC -- disc may be dirty, damaged, or the wrong type`.
+
+**PR #127 (`93e6151`) - `fix/validate-explicit-drive-param`:**
+- Root cause: validation only ran on the auto-detect path (`-Drive` omitted); an explicitly-passed value was never checked against reality.
+- Fix: an explicit `-Drive` is now matched against the same `Win32_CDROMDrive` WMI list the auto-detect path already used (hoisted so both paths share one lookup). Three outcomes: a match prints a confirmation line; a clear non-match (other real drives detected, just not this letter) fails immediately with the detected list and next-step guidance; zero drives detected at all only warns and proceeds - absence of evidence isn't evidence the requested drive is wrong, so that case deliberately isn't blocked (transient WMI misses happen on some external/USB drives).
+- Accepts both `-Drive D` and `-Drive D:`.
+- This repo has no test suite (unlike sibling `ripdisc`); verified via `Parser::ParseFile` (0 errors) and an ASCII-only check on added lines only (this repo doesn't use ripdisc's UTF-8 BOM convention).
+
+**PR #128 (`3d6214f`) - `docs/master-branch-references`:**
+- `CLAUDE.md`'s Git Workflow section said `main` in two places; this repo's actual default branch is `master` (`git symbolic-ref refs/remotes/origin/HEAD` -> `refs/remotes/origin/master`). Both references corrected. Docs-only.
+
+**PR #129 (`394bdf7`) - `docs/changelog-license-psgallery`:**
+- Investigated resolving two long-diverged branches, `feature/shareable` (MIT licence, PSGallery manifest, removes SiteGround affiliate art) vs `fix/restore-siteground-art` (restores that art) - opposite changes to the same content, seemingly still pending.
+- Turned out both were **already merged back in March** (`d7eea9c`/PR #102 added the licence/manifest/art-removal, `a885e17`/PR #103 restored the art) and are the current state of `master` - verified directly: `LICENSE` present (MIT), `RipAudio.psd1` present, README Option A/B and licence line present, SiteGround art present in all four scripts. The two diverged branches were just pre-squash originals, superseded rather than pending.
+- The one real gap: `CHANGELOG.md` never recorded any of it (jumps straight from 2026-03-02 to 2026-03-23). Added the missing `## 2026-03-11` section in correct chronological position.
+- `feature/shareable` and `fix/restore-siteground-art` deleted, local and remote - the long-standing "pre-existing conflicting branches, needs a decision" item from the 2026-08-17 entry above is now resolved (there was no real conflict left to resolve).
+
+**PR #130 (`41d9479`) - `feature/busy-drive-detection-and-listing`:**
+- Motivation: running two rips concurrently and nearly pointing a second one at a drive already mid-rip. #127 stopped a *nonexistent* drive from reaching cyanrip's misleading TOC error; this stops a *real but occupied* one from doing the same.
+- **Busy-drive detection as a hard block** (not a warn-and-confirm - deliberately tightened during the session, since a prompt can be clicked past): inspects every running `cyanrip` process's command line via `Win32_Process` to determine which drive letters are in use, the same technique `ripdisc` uses for MakeMKV. Covered on all three selection paths: auto-detect single drive (error + exit), auto-detect multi-drive picker (rejects and re-prompts, no exit - other drives may be free), explicit `-Drive` (error + full listing + exit).
+- **Ripdisc-style drive listing:** every drive-listing path now shows letter, model, disc volume label where readable, busy/free state, and a `<--` selection marker - matching the shape of ripdisc's `MakeMKV drives:` listing.
+- **Two real bugs found and fixed while building this**, not just noted:
+  1. cyanrip's `-d` (drive) and `-D` (output directory) flags are case-distinct; a case-insensitive `-match '-d\s+(\S+)'` was matching `-D`'s *output directory* argument instead, producing garbage drive letters. Fixed with `-cmatch`.
+  2. `$Matches` is a single global variable - a second inline `-match` against `$Matches[1]` itself (to strip a trailing colon) silently clobbered the very capture just read. Fixed by copying to `$rawDriveArg` before the second match.
+- Verified against real live machine state: correctly identified `H:` as busy (genuine in-progress cyanrip process) and `D:` as free with disc label `DADS_ARMY`, correct WMI model names for both. All four branch outcomes also verified against fixture data via an extracted copy of the decision logic. Deliberately **not** run end-to-end through `rip-audio.ps1` itself - a real rip was in progress on `H:` at the time and a live end-to-end run was judged too risky.
+
+**PR #131 (`0ea2fde`) - `fix/busy-check-empty-wmi-gap`:**
+- Closed a gap flagged during review of #130: the explicit-`-Drive` branch reached when WMI enumerates **zero** optical drives at all skipped the busy-check entirely, on the mistaken premise (stated in the old code comment) that busy detection "can't run" there since there's no WMI drive entry to check a process command line's drive letter against. That premise was wrong - `$busyDriveLetters` is built entirely from `Win32_Process` cyanrip command lines, independent of the `Win32_CDROMDrive` list.
+- Impact: WMI's optical-drive enumeration returning empty is a real, transient condition (why that branch exists at all); a drive going busy during exactly that window would have slipped past #130's hard block and collided with an in-progress rip on the same hardware - the precise failure #130 set out to prevent.
+- Fix: new `elseif ($busyDriveLetters -contains $explicitDriveLetter)` branch inserted between "not a recognised optical drive" and "warn and proceed"; hard-blocks (`exit 1`) with the same message shape as #130's busy block (minus drive model/listing, since there's no WMI entry to render). Falls through to warn-and-proceed only when confirmed not busy. Stale comment replaced with accurate reasoning.
+- Not hardware-validated: reproducing this path requires WMI enumeration to be empty *while* a cyanrip rip holds the requested drive - a live rip was in progress throughout, so this exact combination wasn't exercised for real.
+
+**PR #132 (`bb40fa7`) - `feature/quick-disc-identity-lookup`:**
+- Follow-up to the drive listing in #130/#131: audio CDs have no filesystem, so `Get-Volume` always reports the generic literal `"Audio CD"` regardless of what's actually on the disc (unlike a DVD's real volume label), leaving the new listing showing `[Audio CD]` for every audio disc - no help distinguishing them.
+- New `Get-QuickDiscIdentity`: runs `cyanrip -I` (discovery only, no rip) as a real `System.Diagnostics.Process` (not the `&` operator, specifically so it can be killed) with a 5-second hard timeout. Async output reads (`ReadToEndAsync`) are started *before* `WaitForExit`, not after - otherwise a chatty child can deadlock on a full pipe buffer with nothing draining it. On success, parses `Album:`/`Album artist:` and returns `"Artist - Album"` (or just the album); on timeout it kills the process and returns `$null`; any other failure also returns `$null`.
+- `Write-DriveListLine` only calls the lookup when the label is exactly the generic `"Audio CD"` (a real DVD label is already useful - skip the cost) and only when the drive is **not** busy (never query a drive mid-rip). A `$null` result falls straight back to the pre-change `Audio CD` display.
+- Verified against real hardware: run against `D:` (confirmed non-busy) completed in 920ms and correctly returned `$null` for a disc with no MusicBrainz match - a genuine miss, not a mock. Timeout-and-kill path separately verified in isolation against a deliberately slow dummy process (30s sleep, 2s timeout): fired at the configured bound (~2045ms), `HasExited` confirmed `$true` after `Kill()` - the child is actually terminated, not just abandoned. All testing deliberately kept off the live `H:` rip and its drive/output paths.
+- Risk assessed as low and strictly additive: every failure mode (no cyanrip on PATH, timeout, no match, unparseable output, any exception) returns `$null` and restores the exact pre-change listing output; the busy-drive guard means an in-progress rip is never queried.
+
+**Process note - self-approval (recurring, expected):** `gh pr review --approve` cannot succeed on this repo for the same reason noted in the 2026-08-17 entry - GitHub rejects self-approval since the user authors all PRs under the same account. All six PRs this session were merged with zero formal approvals; expected, not an error.
+
+**Files changed across this arc:** `rip-audio.ps1`, `CLAUDE.md` (PR #128), `CHANGELOG.md` (all six PRs, progressively)
+
+**Live rip state at session close (informational, not touched):** two `cyanrip` processes were running concurrently throughout much of this session's later PRs and remained running at close: `H:` ripping "Gold Disc 1" by John Denver (started 18:30, the rip referenced throughout #130-#132's testing notes as the reason live end-to-end validation was avoided), and a second, separate rip started later on `D:` for "Gold Disc 2" by John Denver (started 18:55). Neither was interacted with. See session handoff for current status - check both before assuming either has finished.
+
+**UNRESOLVED - needs a human decision, carried from earlier tonight, NOT part of PRs #127-#132:**
+`search-metadata.ps1 -Path "C:\Music\Dylan Thomas\Under Milk Wood"` (the exact command flagged as pending in the 2026-08-17 entry above) was run for real earlier this session and applied **wrong** metadata. The only source that returned a match (Deezer) matched a "Part 2 only" release to a folder containing the whole work. Files were renamed (`Parts 1 & 2.flac` -> `01 - Part 1.flac`, `Part 3.flac` -> `02 - Part 2.flac`, titles now misdescribe the audio), ARTIST narrowed from "Richard Burton / Dylan Thomas" to just "Dylan Thomas" (lost the narrator), DATE changed 1998->1954, GENRE dropped. Root cause: the 30-second confirmation prompt is broken under redirected stdin - `[Console]::KeyAvailable` throws repeatedly, then falls through to auto-yes on timeout - so this was never actually confirmed by a human; it silently auto-applied. This is a **new, undocumented defect** in `search-metadata.ps1`'s confirmation prompt, separate from anything fixed in PRs #127-#132, and has not yet been triaged into a PR. The user has been given options (undo via `undo-metadata.ps1 -LogFile "C:\Music\logs\search-metadata_20260826_155636.log"`, keep art but fix manually, leave it, or fix the prompt bug) and has **not yet decided**. Do not undo or otherwise resolve this without explicit user direction - real data is sitting wrong on disk right now.
+
+**Session Verified Clean:**
+- All six PRs (#127-#132) merged to `master`, feature branches deleted locally and remotely
+- Two additional stale branches (`feature/shareable`, `fix/restore-siteground-art`) resolved and deleted via #129
+- Working tree clean, no uncommitted changes, no unpushed commits, no open PRs, no stash entries
+- `CHANGELOG.md` has entries for all six PRs, written progressively through the session
+
+**Priority for Next Session:**
+1. **Dylan Thomas metadata decision (see UNRESOLVED above) - top priority, real data at risk.** Get a decision from the user before touching `C:\Music\Dylan Thomas\Under Milk Wood` further.
+2. Fix the actual root cause behind the Dylan Thomas incident: `[Console]::KeyAvailable`-based confirmation prompt throws under redirected stdin and silently falls through to auto-yes. This is a correctness bug independent of whatever the user decides about the Dylan Thomas data itself, and will silently auto-apply the next mismatch too if left unfixed.
+3. Live end-to-end validation of #130/#131/#132 was avoided throughout because `H:` (and later `D:`) had real rips in progress all session - once both are free, exercise busy-drive blocking and the quick-identity lookup against a real concurrent-rip attempt.
+4. Everything carried from the 2026-08-17 entry not superseded above: force a real metaflac failure to confirm the warning path fires; confirm the `search-metadata.ps1` handoff now runs automatically after a spaced-path rip.
 4. Decide the fate of `feature/shareable` vs `fix/restore-siteground-art` — pick a direction, rebase, merge or close.
 5. PSGallery publish still pending — get API key from powershellgallery.com and run `Publish-Module`. (May be partly resolved by the `feature/shareable` decision above.)
