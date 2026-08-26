@@ -107,7 +107,13 @@ function Assert-MetaflacInstalled {
     $key = $null
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt 30) {
-        if ([Console]::KeyAvailable) { $key = [Console]::ReadKey($true); break }
+        try {
+            if ([Console]::KeyAvailable) { $key = [Console]::ReadKey($true); break }
+        } catch [System.InvalidOperationException] {
+            # Redirected console input - stop polling immediately instead of re-throwing
+            # every 200ms; existing null-$key fallback below already auto-Yeses.
+            break
+        }
         Start-Sleep -Milliseconds 200
     }
     $sw.Stop()
@@ -1272,7 +1278,13 @@ function Process-AlbumFolder {
             $confirm = $null
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             while ($sw.Elapsed.TotalSeconds -lt 30) {
-                if ([Console]::KeyAvailable) { $confirm = [Console]::ReadKey($true).KeyChar; Write-Host $confirm; break }
+                try {
+                    if ([Console]::KeyAvailable) { $confirm = [Console]::ReadKey($true).KeyChar; Write-Host $confirm; break }
+                } catch [System.InvalidOperationException] {
+                    # Redirected console input - stop polling immediately instead of
+                    # re-throwing every 200ms; existing null-$confirm fallback auto-Yeses.
+                    break
+                }
                 Start-Sleep -Milliseconds 200
             }
             $sw.Stop()
@@ -1436,8 +1448,15 @@ function Process-AlbumFolder {
                             $artKey = $null
                             $sw = [System.Diagnostics.Stopwatch]::StartNew()
                             while ($sw.Elapsed.TotalSeconds -lt 30) {
-                                if ([Console]::KeyAvailable) {
-                                    $artKey = [Console]::ReadKey($true)
+                                try {
+                                    if ([Console]::KeyAvailable) {
+                                        $artKey = [Console]::ReadKey($true)
+                                        break
+                                    }
+                                } catch [System.InvalidOperationException] {
+                                    # Redirected console input - stop polling immediately
+                                    # instead of re-throwing every 200ms; existing
+                                    # null-$artKey fallback below already auto-declines.
                                     break
                                 }
                                 Start-Sleep -Milliseconds 200
@@ -1650,8 +1669,19 @@ function Process-AlbumFolder {
         } else {
             # Interactive mode - require explicit confirmation, default No
             Write-Host "  Apply anyway? [y/N] " -NoNewline -ForegroundColor White
-            $key = [Console]::ReadKey($true)
-            Write-Host $key.KeyChar
+            try {
+                $key = [Console]::ReadKey($true)
+                Write-Host $key.KeyChar
+            } catch [System.InvalidOperationException] {
+                # Console input is redirected (e.g. running non-interactively) - there is
+                # no way to read a real answer. This prompt already fails safe by design
+                # (declines unless the key is explicitly "Y"), so a $null KeyChar here
+                # already declines correctly - this catch exists to avoid printing a raw
+                # exception/stack trace to the console for what is, functionally, a
+                # legitimate "no answer available" case, not to change the outcome.
+                Write-Host "(no interactive console - treating as No)" -ForegroundColor Yellow
+                $key = [PSCustomObject]@{ KeyChar = $null }
+            }
             if ("$($key.KeyChar)".ToUpper() -ne "Y") {
                 Write-Host "  Skipped by user." -ForegroundColor Yellow
                 Write-Log "  SKIPPED: artist mismatch (user declined)"

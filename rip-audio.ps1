@@ -3152,8 +3152,16 @@ if (-not $script:IsProcessingQueue) {
         $key = $null
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         while ($sw.Elapsed.TotalSeconds -lt 30) {
-            if ([Console]::KeyAvailable) {
-                $key = [Console]::ReadKey($true)
+            try {
+                if ([Console]::KeyAvailable) {
+                    $key = [Console]::ReadKey($true)
+                    break
+                }
+            } catch [System.InvalidOperationException] {
+                # Console input is redirected (e.g. running non-interactively) -
+                # KeyAvailable throws every time in that case. Stop polling immediately
+                # rather than re-throwing on every 200ms tick until the timeout naturally
+                # elapses; the existing null-$key fallback below already auto-Yeses.
                 break
             }
             Start-Sleep -Milliseconds 200
@@ -3190,8 +3198,14 @@ if (-not $script:IsProcessingQueue) {
             $mp3Key = $null
             $mp3Sw = [System.Diagnostics.Stopwatch]::StartNew()
             while ($mp3Sw.Elapsed.TotalSeconds -lt 30) {
-                if ([Console]::KeyAvailable) {
-                    $mp3Key = [Console]::ReadKey($true)
+                try {
+                    if ([Console]::KeyAvailable) {
+                        $mp3Key = [Console]::ReadKey($true)
+                        break
+                    }
+                } catch [System.InvalidOperationException] {
+                    # Redirected console input - stop polling immediately instead of
+                    # re-throwing every 200ms; existing null-$mp3Key fallback auto-Yeses.
                     break
                 }
                 Start-Sleep -Milliseconds 200

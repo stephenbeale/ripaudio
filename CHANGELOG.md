@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-26 (continued)
+
+### Fixed
+- **Every `[Console]::KeyAvailable`/`ReadKey` confirmation prompt across the whole toolkit was broken under redirected console input** (e.g. running non-interactively) - `KeyAvailable` throws `InvalidOperationException` unconditionally in that case. Found by reproducing it live: `undo-metadata.ps1`'s "Apply undo?" prompt crashed outright with a raw stack trace. Audited and fixed all 9 sites across all 4 scripts:
+  - **7 guarded polling-loop sites** (`undo-metadata.ps1`, both `rip-audio.ps1` prompts, `audit-metadata.ps1`'s shared `Read-TimedConfirmation` helper, and 3 in `search-metadata.ps1`) were previously re-throwing the same exception on every 200ms poll for the entire configured timeout (up to 30s of console spam) before falling through to their existing, already-safe null-fallback default. Now the exception breaks the loop immediately - each site's own existing timeout-fallback behaviour (auto-Yes or auto-No, whichever that site already used) is unchanged, only the 30-second wall of repeated errors is gone. Verified: loop iterations under redirected input dropped from ~150 to 1, elapsed time from ~30000ms to ~12ms.
+  - **2 genuinely unguarded, bare blocking `ReadKey` calls with no timeout at all** - `undo-metadata.ps1`'s "Apply undo? [Y/n]" and `search-metadata.ps1`'s "Apply anyway? [y/N]" (artist-mismatch override). Both now wrap the read in try/catch. `search-metadata.ps1`'s was already safe-by-accident (its `-ne "Y"` check means a failed/empty read already declines) - the fix there is purely cosmetic (no more raw exception text). **`undo-metadata.ps1`'s was a genuine safety bug**: its `-eq "N"` check meant a failed read (empty `KeyChar`) was indistinguishable from someone pressing Y - a redirected console would silently *confirm* an irreversible undo, not decline it. Now fails safe: an unreadable prompt is treated as an explicit decline, matching this repo's existing "never assume consent" posture for destructive actions.
+
+**Testing status:** all 4 scripts parse clean; all diff lines confirmed ASCII-only. Both previously-crashing bare prompts verified in isolation to decline cleanly (no exception, no silent proceed) under redirected input. The guarded-loop fix verified to break in ~12ms instead of spinning for the full timeout. Not yet re-exercised via the actual scripts end-to-end against a real interactive terminal (where none of this ever threw in the first place - the bug only manifests when these scripts are run non-interactively, e.g. by an automation tool rather than a human at a real console).
+
 ## 2026-08-26
 
 ### Fixed

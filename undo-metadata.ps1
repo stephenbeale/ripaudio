@@ -30,7 +30,15 @@ function Assert-MetaflacInstalled {
     $key = $null
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     while ($sw.Elapsed.TotalSeconds -lt 30) {
-        if ([Console]::KeyAvailable) { $key = [Console]::ReadKey($true); break }
+        try {
+            if ([Console]::KeyAvailable) { $key = [Console]::ReadKey($true); break }
+        } catch [System.InvalidOperationException] {
+            # Console input is redirected (e.g. running non-interactively) - KeyAvailable
+            # throws every time in that case. Stop polling immediately rather than
+            # re-throwing on every 200ms tick until the timeout naturally elapses; the
+            # existing null-$key fallback below already does the right thing (auto-Yes).
+            break
+        }
         Start-Sleep -Milliseconds 200
     }
     $sw.Stop()
@@ -238,8 +246,19 @@ if ($DryRun) {
     Write-Log "[DRY RUN] Preview only, no changes made"
 } else {
     Write-Host "`n  Apply undo? [Y/n] " -NoNewline -ForegroundColor White
-    $key = [Console]::ReadKey($true)
-    Write-Host $key.KeyChar
+    try {
+        $key = [Console]::ReadKey($true)
+        Write-Host $key.KeyChar
+    } catch [System.InvalidOperationException] {
+        # Console input is redirected (e.g. running non-interactively) - there is no way
+        # to read a real answer. Unlike the auto-Yes timeout prompts elsewhere in this
+        # repo, this gates an irreversible file-modifying action with no timeout of its
+        # own, so an unreadable prompt must fail safe (treated as explicit No), never as
+        # silent consent. Before this fix, a $null $key here made the -eq "N" check below
+        # false, so a failed read was indistinguishable from someone pressing Y.
+        Write-Host "N (no interactive console - treating as declined)" -ForegroundColor Yellow
+        $key = [PSCustomObject]@{ KeyChar = 'N' }
+    }
     if ("$($key.KeyChar)".ToUpper() -eq "N") {
         Write-Host "`n  Cancelled by user." -ForegroundColor Yellow
         Write-Log "User cancelled undo"
