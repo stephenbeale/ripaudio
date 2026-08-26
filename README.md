@@ -14,7 +14,7 @@ This repository contains a PowerShell script for ripping audio CDs to various lo
 - **Multiple output formats** (FLAC, MP3, Opus, AAC, WAV, ALAC) with simultaneous encoding
 - **Queue mode** for batch ripping multiple discs sequentially
 - **CDDB fallback** when MusicBrainz has no match (gnudb.org)
-- **Mp3tag fallback** prompts to open Mp3tag for manual tagging when all automated sources fail
+- **Mp3tag fallback** prompts to open Mp3tag for manual tagging when all automated sources fail - automatically selects all tracks and opens Mp3tag's own "Discogs Artist + Album" Tag Source dialog pre-filled with the loaded Artist/Album, ready to review and proceed (Mp3tag has no CLI for this, so it's driven via UI Automation)
 - **AccurateRip verification** with per-track reporting
 - **Cover art** from 4 sources: Cover Art Archive, MusicBrainz+CAA, iTunes, Deezer
 - **Artist/Album organization** with flexible directory structure
@@ -245,7 +245,7 @@ When ripping, the script uses multiple sources to ensure track names and metadat
 1. **MusicBrainz** (via cyanrip) - Primary source, automatic lookup by disc ID
 2. **CDDB** (gnudb.org) - Fallback when MusicBrainz has no match; uses TOC-based disc ID lookup, then text search
 3. **search-metadata.ps1** - Post-rip metadata search across Discogs, MusicBrainz, iTunes, and Deezer APIs
-4. **Mp3tag prompt** - When all automated sources fail, prompts to open Mp3tag desktop app for manual tagging
+4. **Mp3tag prompt** - When all automated sources fail, prompts to open Mp3tag desktop app for manual tagging; automatically selects all tracks and opens its "Discogs Artist + Album" search dialog pre-filled, ready for you to review and click Next
 5. **Generic names** - Last resort: tracks named `01 - Track 01`, `02 - Track 02`, etc.
 
 If a disc is not found in MusicBrainz, the script will:

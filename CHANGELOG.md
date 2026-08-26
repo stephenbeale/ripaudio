@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-26 (once more)
+
+### Added
+- **`rip-audio.ps1`'s Mp3tag fallback now automatically opens Mp3tag's own "Discogs Artist + Album" Tag Source dialog**, pre-filled from the loaded tags, instead of leaving the user to click through the menu themselves - matches the user's own stated habitual workflow (select all, Tag Sources, Discogs Artist + Album). Stops deliberately at the pre-filled "Search by" dialog rather than auto-clicking "Next >", so the artist/album can be reviewed/corrected before the actual Discogs query goes out.
+  - Mp3tag has **no command-line switch for this** - confirmed by grepping the full command-line changelog history of the actually-installed version (3.32), which only ever covers loading files/folders on startup, never triggering a Tag Source. Driven via `System.Windows.Automation` (find the Mp3tag window, since it's single-instance and can hand off to a different PID than the one just launched) + `SendKeys` (select all, open the menu via its Alt+S mnemonic, navigate down to the target item, select).
+  - New `Invoke-Mp3tagDiscogsLookup` function, called immediately after the existing `Start-Process $mp3tagPath` launch. Fully best-effort: every failure path (assemblies won't load, window never appears, foreground can't be acquired) logs and returns without throwing, so a failure here can only fall back to the pre-existing "Mp3tag opens, user drives it manually" behaviour - it can never break or block the rest of the script.
+  - `SetForegroundWindow` from a background process is sometimes blocked by Windows' anti-focus-stealing protection (reproduced live during testing) - worked around with the standard `AttachThreadInput` technique.
+  - **Documented fragility, not hidden risk**: Mp3tag's Tag Sources menu isn't exposed via standard Windows accessibility APIs (confirmed live - no `MenuBar` control, and no UIA-visible popup even while genuinely open), so the target item can only be reached by *position* in the menu (4 presses of Down from the top = the 5th item = "Discogs Artist + Album" on this installation's current Tag Sources configuration), not by name. Reordering, adding, or removing a Tag Source above it in Mp3tag's own settings will silently move this and make the automation open the wrong search - there's no way to detect that mismatch programmatically. Documented directly in the code comment next to the position constant.
+
+**Testing status:** parses clean, all added lines ASCII-only. **Verified end-to-end against the real, installed Mp3tag (v3.32)** - not simulated: launched cold (no pre-existing window) against a real ripped folder, confirmed the window is found (~0.5s), foreground is acquired, and the automation lands correctly on the pre-filled "Discogs Artist + Album" search dialog with the right Artist/Album values, exactly matching the manual workflow it replaces. Tested against two different real folders. The one thing not exercised: clicking past "Next >" into actual live search results (deliberately out of scope - that step is left for the user).
+
 ## 2026-08-26 (yet again)
 
 ### Added
