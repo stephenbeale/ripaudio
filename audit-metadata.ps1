@@ -134,10 +134,16 @@ function Read-TimedConfirmation {
     $confirm = $null
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     while ($stopwatch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
-        if ([Console]::KeyAvailable) {
-            $key = [Console]::ReadKey($true)
-            $confirm = $key.KeyChar
-            Write-Host $confirm
+        try {
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                $confirm = $key.KeyChar
+                Write-Host $confirm
+                break
+            }
+        } catch [System.InvalidOperationException] {
+            # Redirected console input - stop polling immediately instead of re-throwing
+            # every 200ms; the caller's null-$confirm fallback already handles this.
             break
         }
         Start-Sleep -Milliseconds 200
