@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-29 (yet again) - cyanrip Silence-Timeout Watchdog
+
+### Added
+- **New silence-timeout watchdog in `Start-CyanripWithErrorDetection`, ported identically to both `rip-audio.ps1` and `continue-rip-audio.ps1`.** Live incident: the same physical disc produced a fully silent, apparently-hung terminal *twice* in one session - no progress lines, no error text, nothing - most likely a paranoia-level retry loop stuck on a damaged/dirty sector, deep enough that even the 10%-progress-display threshold was never crossed. The existing consecutive-cdio-error counter (kills after 30 error lines in a row) never fires in this scenario, since it requires cyanrip to actually print recognisable error text - a fully silent stall produces nothing for it to count.
+  - Tracks wall-clock time since cyanrip last produced *any* output line (progress, error, anything - including lines suppressed from the console by the existing 10%-milestone collapsing). If 5 minutes pass with zero output and the process hasn't exited on its own, it's killed.
+  - Deliberately reuses the existing `Killed` result flag rather than inventing a new code path - a silence-timeout kill is handled by exactly the same "skip this track, re-query the disc fresh, resume on the rest" recovery logic already proven for cdio-error kills and cyanrip crashes, at all 8 `Start-CyanripWithErrorDetection` call sites in `rip-audio.ps1` with zero caller-side changes needed. `continue-rip-audio.ps1`'s own (simpler, non-auto-resuming) handling of a killed/nonzero-exit result also needed no changes.
+  - 5-minute threshold chosen as generous enough that a genuinely slow-but-working paranoia-level recovery shouldn't false-trigger, while still bounding the wait instead of leaving the user staring at a silent terminal indefinitely.
+  - README.md: new "Silence timeout" paragraph under "Error Handling".
+
+**Testing status:** both files parse-checked clean (PowerShell tokenizer, 0 errors), added lines confirmed ASCII-only. **Not exercised against a real silence timeout firing** - the 5-minute threshold has not been observed catching an actual stall live; the mechanism is reasoned correct against the existing, already-proven `Killed`-handling code it plugs into; verifying it fires correctly on the very disc that motivated it is the natural next test.
+
 ## 2026-08-29 (later again) - Three Real Bugs From One Bad Rip
 
 Live incident: a single interrupted Eagles disc-2 rip cascaded through three separate,

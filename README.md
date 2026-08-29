@@ -439,6 +439,8 @@ If an error occurs:
 - Relevant directory is opened for inspection
 - Log file location is provided
 
+**Silence timeout:** if cyanrip goes completely silent for 5 minutes (no progress, no errors, nothing) - most often a paranoia-level retry loop stuck on a damaged or dirty sector - it's killed automatically and treated the same as a detected read error: the track is skipped, the disc's track count is re-queried live, and the rip resumes on the remaining tracks. This catches stalls the existing consecutive-error counter can't, since that counter only advances on lines matching specific error text and never fires if cyanrip stops producing output entirely.
+
 ## Supported Formats
 
 | Format | Extension | Description |
