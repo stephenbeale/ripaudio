@@ -73,7 +73,7 @@ Install-Module RipAudio
 ## Usage
 
 ```
-.\rip-audio.ps1 [-album <string>] [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue]
+.\rip-audio.ps1 [-album <string>] [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue] [-CheckEbayPrice]
 ```
 
 ### Parameters
@@ -89,6 +89,7 @@ Install-Module RipAudio
 | `-RequireMusicBrainz` | No | - | Stop if disc not found in MusicBrainz (no fallback to generic names) |
 | `-Queue` | No | - | Add album to rip queue instead of ripping immediately |
 | `-ProcessQueue` | No | - | Process all entries in the rip queue sequentially |
+| `-CheckEbayPrice` | No | - | Print a clickable eBay UK sold-listings search URL for the album in the FILE SUMMARY (Buy It Now, Very Good+ condition, UK only, sold listings) |
 
 ### Examples
 
@@ -151,6 +152,13 @@ Install-Module RipAudio
 **Require MusicBrainz metadata (stop if not found):**
 ```powershell
 .\rip-audio.ps1 -album "Abbey Road" -artist "The Beatles" -RequireMusicBrainz
+```
+
+**Check what the physical disc might be worth after ripping:**
+```powershell
+.\rip-audio.ps1 -album "Connected" -artist "Stereo MC's" -CheckEbayPrice
+# FILE SUMMARY includes a clickable eBay UK sold-listings search URL
+# (Buy It Now, Very Good+ condition, sold listings only)
 ```
 
 **Rip a double album (one disc at a time):**
