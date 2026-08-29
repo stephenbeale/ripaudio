@@ -32,7 +32,13 @@ param(
 
     [Parameter()]
     [ValidateRange(1, 100)]
-    [int]$Retries = -1
+    [int]$Retries = -1,
+
+    # Prints a clickable eBay UK sold-listings search URL for the ripped album at the
+    # end of the FILE SUMMARY - not run automatically, since it's a convenience for
+    # deciding what a physical disc might be worth, not part of the rip itself.
+    [Parameter()]
+    [switch]$CheckEbayPrice
 )
 
 # Ensure cyanrip/metaflac output is decoded as UTF-8 (PS5.1 defaults to system locale)
@@ -417,6 +423,18 @@ function Write-Timestamp {
     param([string]$Label)
     $ts = Get-Date -Format "dd/MM/yyyy HH:mm:ss"
     Write-Host "  [$ts] $Label" -ForegroundColor DarkGray
+}
+
+# Builds an eBay UK sold-listings search URL for the ripped album, so a -CheckEbayPrice
+# rip can print a link the user clicks to see what copies of the physical disc have
+# actually sold for. Buy It Now only, "Very Good" condition or better (LH_ItemCondition=4),
+# UK sellers/location only (LH_PrefLoc=1), sold listings only (LH_Sold=1) - matches the
+# exact filter combination the user already uses manually on ebay.co.uk.
+function Get-EbaySoldListingsUrl {
+    param([string]$Artist, [string]$Album)
+    $query = if ($Artist) { "$Artist $Album CD album" } else { "$Album CD album" }
+    $encodedQuery = [System.Web.HttpUtility]::UrlEncode($query)
+    return "https://www.ebay.co.uk/sch/i.html?_nkw=$encodedQuery&_sacat=0&_from=R40&LH_BIN=1&LH_ItemCondition=4&LH_PrefLoc=1&rt=nc&LH_Sold=1"
 }
 
 function Show-CoffeeBadge {
@@ -3278,6 +3296,11 @@ if ($script:CorruptTracks.Count -gt 0) {
     Write-Host "  Corrupt/zero-byte (not usable): $($script:CorruptTracks.Count) file(s) ($($script:CorruptTracks -join ', ')) - re-run this command with the disc still in the drive to resume" -ForegroundColor Red
 }
 Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
+if ($CheckEbayPrice) {
+    $ebayUrl = Get-EbaySoldListingsUrl -Artist $artist -Album $album
+    Write-Host "  eBay sold prices (UK, BIN, Very Good+): $ebayUrl" -ForegroundColor White
+    Write-Log "eBay sold-listings URL: $ebayUrl"
+}
 Write-Host "========================================`n" -ForegroundColor Cyan
 
 Show-CoffeeBadge

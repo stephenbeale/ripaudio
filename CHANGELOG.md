@@ -50,6 +50,14 @@ All notable changes to this project are documented here.
 
 **Testing status:** **verified by PowerShell tokenizer parse-check only.** No disc was ripped and no real USB disconnect was reproduced against this code - the track-count banner, the integrity-based post-rip/verify checks, the exit-code-independent corrupt warning, and the `COMPLETE WITH WARNINGS` gating have not been exercised live. The failure shapes this targets are real (taken directly from the user's pasted output), but the fix itself is unvalidated against a live repeat of either.
 
+### Added (2)
+- **New `-CheckEbayPrice` switch on `rip-audio.ps1`** - prints a clickable eBay UK sold-listings search URL for the ripped album in the FILE SUMMARY, so you can check what the physical disc might be worth. Direct user request, with the exact filter combination they already use manually supplied as an example URL.
+  - New `Get-EbaySoldListingsUrl` helper builds `https://www.ebay.co.uk/sch/i.html` with `_nkw=<artist> <album> CD album` (URL-encoded), `_sacat=0`, `_from=R40`, `LH_BIN=1` (Buy It Now only), `LH_ItemCondition=4` (Very Good or better), `LH_PrefLoc=1` (UK only), `rt=nc`, `LH_Sold=1` (sold listings only) - matching the user-supplied example query string exactly.
+  - Off by default - purely a convenience for deciding what to do with a physical disc after ripping it, not part of the rip pipeline itself.
+  - README.md: new parameter row and usage example.
+
+**Testing status:** verified by PowerShell tokenizer parse-check (0 errors) and a manual ASCII-only check on the diff. The built URL was not opened in a browser this session to confirm it renders eBay's intended filtered search - only the string construction itself was checked against the user's example.
+
 ## 2026-08-26 (once more)
 
 ### Added
