@@ -18,6 +18,7 @@ When the user says **"make a workflow"**, execute the full git lifecycle. The wo
 ```
 ripaudio/
     rip-audio.ps1        # Main CD ripping script (cyanrip)
+    continue-rip-audio.ps1 # Step-based resume for an interrupted rip-audio.ps1 run
     get-metadata.ps1     # MusicBrainz metadata lookup and CUE file generation
     search-metadata.ps1  # Multi-source metadata search, tag, rename (MB + iTunes + Deezer)
     audit-metadata.ps1   # Scan for missing/incomplete metadata, copy flagged albums to staging
@@ -1290,6 +1291,107 @@ work. No CLAUDE.md session-notes entry exists for it yet beyond this note.
    above, do not treat as urgent.
 5. PSGallery publish still pending — get API key from powershellgallery.com
    and run `Publish-Module`.
+
+---
+
+### 2026-08-29 (later) - continue-rip-audio.ps1: Dedicated Resume Script
+
+**Trigger:** user asked for a dedicated resume script "a bit like `continue-rip.ps1`
+in `/ripdisc`" - a follow-up to the same-day flaky-USB session (PR #141/#142).
+Confirmed the design approach with the user first (dedicated script vs. a
+`-FromStep` flag on `rip-audio.ps1` itself) - dedicated script was chosen, for
+parity with `ripdisc`'s pattern, despite the known double-maintenance cost that
+pattern has repeatedly caused in `ripdisc`'s own session history.
+
+**New file: `continue-rip-audio.ps1`** - step-based resume (`1`/`rip`, `2`/`verify`,
+`3`/`coverart`, `4`/`open`), `-FromStep`, per-step prerequisite checks, a
+retry-hint suggestion on failure, close-button protection, and the coffee badge -
+same shape as `ripdisc`'s `continue-rip.ps1`.
+
+**Structural difference from `ripdisc`'s version, called out directly in the
+script's own header comment:** `ripdisc`'s Step 1 (MakeMKV) genuinely cannot be
+resumed without the disc, so its continue script never touches Step 1 at all.
+Here, Step 1 (cyanrip) *can* be partially resumed - cyanrip's own `-l` flag rips
+just a list of missing track numbers - so this script's "rip" step is marked
+`Resumable = $true` and still needs the disc back in the drive, unlike
+`ripdisc`'s equivalent which needs no disc at all.
+
+**What got ported (largely verbatim, to minimize divergence risk):**
+`Test-TrackIntegrity`, `Get-DiscTrackCount`, `Test-DriveReady`, `Write-Log`,
+`Show-QuestionHint`, `Write-Timestamp`, `Show-CoffeeBadge`,
+`Start-CyanripWithErrorDetection`, the close-button-protection block, and the
+full Step 2 (verify) / Step 3 (cover art, all 4 sources) / Step 4 (open) bodies
+from `rip-audio.ps1`. The output-drive prompt-then-validate pattern from PR #138
+is reused as-is.
+
+**Deliberately NOT ported** (documented in the script header and README, not a
+silent gap): multi-release MusicBrainz disambiguation, CDDB/Discogs fallback,
+generic-name fallback, `-Queue`/`-ProcessQueue`, `-RequireMusicBrainz`,
+AccurateRip reporting, the `search-metadata.ps1` handoff, the Mp3tag fallback
+prompt, and `rip-audio.ps1`'s live busy-drive process scan (this script's drive
+selection is a plain "which drive" prompt with a single readiness check). All of
+these only matter for discovering metadata on a fresh disc read, not for
+continuing an album this script already knows the identity of from its existing
+output folder. Also not handled: `rip-audio.ps1`'s duplicate-version-suffix
+naming (`Album (Limited Edition)`) - if the original rip landed in a suffixed
+folder, this script's plain `-Album`/`-Artist` path won't find it.
+
+**Bug caught and fixed before commit:** the first draft called
+`Complete-CurrentStep` twice for Step 1 in the "all tracks already valid, nothing
+to rip" path - once inside that branch, once more in Step 1's unconditional tail
+- which would have double-added step 1 to `$script:CompletedSteps` and printed
+it twice in the steps summary. Fixed by replacing the early call with a plain
+`$skipCyanripInvocation` flag read by the tail's cyanrip-invocation guard, so
+`Complete-CurrentStep` fires exactly once per step on every path.
+
+**Files changed:** `continue-rip-audio.ps1` (new), `README.md` (new
+`continue-rip-audio.ps1` section), `CLAUDE.md` (project structure list, this
+entry), `CHANGELOG.md`.
+
+**Testing status:** verified by `PSParser::Tokenize` (0 errors) and a manual
+ASCII-only check on the new file - same as this session's other changes. **Not
+exercised against a real disc or a real interrupted rip at any step.** The ported
+functions (`Test-TrackIntegrity`, `Get-DiscTrackCount`,
+`Start-CyanripWithErrorDetection`, the cover art chain) have prior live
+validation from their original use in `rip-audio.ps1`, but their behavior in
+this new script's control flow - the resume-track-list computation, the
+step-skip logic, the prerequisite checks - is unvalidated.
+
+**Session Verified Clean:** working tree change staged for commit via the
+project's standard git-manager workflow (branch, PR, sign-off comment in place
+of self-approval, squash-merge) - not yet merged as of writing this entry.
+
+**Priority for Next Session:**
+1. Live end-to-end test of `continue-rip-audio.ps1`: interrupt a real rip
+   (or reuse one of this session's own interrupted discs), then run
+   `-FromStep rip` and confirm it resumes only the missing tracks.
+2. Test `-FromStep coverart`/`-FromStep verify`/`-FromStep open` against an
+   already-fully-ripped album to confirm the prerequisite checks and step-skip
+   logic behave as designed.
+3. Consider whether the duplicate-version-suffix gap (noted above) is worth
+   closing, if it turns out to matter in practice.
+4. Everything carried from the prior entry (output-drive prompt validation,
+   PR #135 Discogs flow, PR #141's flaky-drive detection) still stands - none
+   of it touched by this addition.
+
+**Addendum (added before PR #143 merged, same day):** the script picked up an
+explicit `-FromTrack <N>` override on its rip step, and its two "kept in sync"
+helpers were re-synced with `rip-audio.ps1` after PRs #145/#147 landed on master
+while this branch was open. `-FromTrack` skips the automatic missing-track file
+scan and rips track N to the disc's real last track, re-querying the track count
+live (`-Fresh`) rather than trusting a cue file the same flaky connection may have
+corrupted; a mismatch against what's on disk warns but never blocks. Critically,
+this script's `Test-TrackIntegrity` carried the **exact same `metaflac --test`
+bug** fixed on master in PR #147 - a nonexistent option that classified every
+FLAC as corrupt - and would have shipped broken had the branch merged as
+originally written; it went uncaught here precisely because of the "not exercised
+against a real interrupted rip" gap noted above. A second bug was caught during
+validation: PowerShell ranges descend, so `1..0` yields `@(1, 0)`, meaning
+`-FromTrack 1` would have warned about "missing" tracks 1 and 0 on a valid
+whole-disc invocation. `Test-CyanripCrashExit` and master's broadened resume loop
+were deliberately **not** ported - so this script still won't auto-resume a native
+cyanrip crash the way `rip-audio.ps1` now does. That remains the top follow-up,
+alongside the live-disc testing already listed above.
 
 ---
 
