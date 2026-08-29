@@ -73,7 +73,7 @@ Install-Module RipAudio
 ## Usage
 
 ```
-.\rip-audio.ps1 [-album <string>] [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue]
+.\rip-audio.ps1 [-album <string>] [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue] [-CheckEbayPrice]
 ```
 
 ### Parameters
@@ -89,6 +89,7 @@ Install-Module RipAudio
 | `-RequireMusicBrainz` | No | - | Stop if disc not found in MusicBrainz (no fallback to generic names) |
 | `-Queue` | No | - | Add album to rip queue instead of ripping immediately |
 | `-ProcessQueue` | No | - | Process all entries in the rip queue sequentially |
+| `-CheckEbayPrice` | No | - | Print a clickable eBay UK sold-listings search URL for the album in the FILE SUMMARY (Buy It Now, Very Good+ condition, UK only, sold listings) |
 
 ### Examples
 
@@ -151,6 +152,13 @@ Install-Module RipAudio
 **Require MusicBrainz metadata (stop if not found):**
 ```powershell
 .\rip-audio.ps1 -album "Abbey Road" -artist "The Beatles" -RequireMusicBrainz
+```
+
+**Check what the physical disc might be worth after ripping:**
+```powershell
+.\rip-audio.ps1 -album "Connected" -artist "Stereo MC's" -CheckEbayPrice
+# FILE SUMMARY includes a clickable eBay UK sold-listings search URL
+# (Buy It Now, Very Good+ condition, sold listings only)
 ```
 
 **Rip a double album (one disc at a time):**
@@ -300,7 +308,7 @@ If a rip crashes or is cancelled mid-way, just re-run the **same command** with 
 **What happens on re-run:**
 
 1. The script checks existing audio files in the output folder against the disc's total track count (from the `.cue` file or `cyanrip -I`)
-2. Each existing track is validated (FLAC: `metaflac --test`, others: file size > 10KB)
+2. Each existing track is validated (FLAC: `flac --test`, others: file size > 10KB)
 3. A summary shows which tracks are valid and which are missing:
 
 ```
@@ -328,8 +336,10 @@ Missing: 9 tracks (4, 5, 6, 7, 8, 9, 10, 11, 12)
 If your optical drive is on an unreliable USB port (random disconnects, or disconnects when bumped/when another drive is ejected), a rip can be interrupted mid-track or even mid-TOC-read. The resume feature above handles this — **just re-run the same command with the disc still in the drive** — but a few things are worth knowing about how a dropped connection actually shows up:
 
 - **Detected track count is shown before ripping starts.** If MusicBrainz/CDDB identified the disc, the "Ready to rip" confirmation banner shows `Tracks detected: N`. A suspiciously low count (2 tracks for an album you know has 12) usually means the connection dropped during the initial disc read, not during the rip itself — abort (Ctrl+C) and retry the whole command rather than proceeding, since ripping against a wrong track count won't produce a useful resume point later.
-- **A corrupt-but-nonzero file is caught, not just a zero-byte one.** A mid-write disconnect can leave a file with some bytes but an invalid container (fails `metaflac --test`). This is checked the same way the resume feature validates existing tracks, both right after cyanrip finishes and again in the verify step — a corrupt track is flagged and excluded rather than silently counted as ripped.
+- **A corrupt-but-nonzero file is caught, not just a zero-byte one.** A mid-write disconnect can leave a file with some bytes but an invalid container (fails `flac --test`). This is checked the same way the resume feature validates existing tracks, both right after cyanrip finishes and again in the verify step — a corrupt track is flagged and excluded rather than silently counted as ripped.
 - **The final banner reflects trouble even when the exit code doesn't.** cyanrip can exit 0 while still leaving a corrupt track behind (a dropped connection doesn't always make cyanrip itself report failure). If any track was skipped, marked a data error, or found corrupt, the completion banner reads `COMPLETE WITH WARNINGS` instead of `COMPLETE!`, and the affected track(s) are listed in the FILE SUMMARY.
+- **A cyanrip crash auto-resumes, not just a stalled track.** A dropped connection can make cyanrip itself die outright (a Windows access violation, exit code `-1073741819`) rather than reporting an error and exiting normally. That now triggers the same auto-resume as an unreadable track: the crashed track is skipped and the remaining ones are ripped, instead of the partial rip being quietly accepted as final.
+- **The resume pass re-reads the disc for its track count.** When recovering from a crash or a killed track, the script re-queries the disc live rather than trusting the track total the failed run itself reported — that number can be wrong for exactly the same reason the run failed (a connection dropping mid-TOC-read), which would otherwise make the resume conclude "nothing left to rip" partway through an album. It falls back to the failed run's own figure only if the live re-query returns nothing.
 - **No manual file deletion needed to retry.** If cyanrip produces nothing usable at all, the error message points you back to re-running the same command rather than deleting the output folder — the resume path cleans up corrupt/zero-byte files itself.
 
 ## continue-rip-audio.ps1

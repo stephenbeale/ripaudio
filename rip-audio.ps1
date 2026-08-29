@@ -32,7 +32,13 @@ param(
 
     [Parameter()]
     [ValidateRange(1, 100)]
-    [int]$Retries = -1
+    [int]$Retries = -1,
+
+    # Prints a clickable eBay UK sold-listings search URL for the ripped album at the
+    # end of the FILE SUMMARY - not run automatically, since it's a convenience for
+    # deciding what a physical disc might be worth, not part of the rip itself.
+    [Parameter()]
+    [switch]$CheckEbayPrice
 )
 
 # Ensure cyanrip/metaflac output is decoded as UTF-8 (PS5.1 defaults to system locale)
@@ -128,20 +134,31 @@ function Test-TrackIntegrity {
     param([string]$FilePath)
     $ext = [System.IO.Path]::GetExtension($FilePath).ToLower()
     if ($ext -eq ".flac") {
-        $metaflac = Get-Command metaflac -ErrorAction SilentlyContinue
-        if ($metaflac) {
-            & metaflac --test $FilePath 2>$null
+        # Verified live against the installed FLAC 1.5.0: metaflac has no --test option at
+        # all (it only edits/reads metadata blocks, it never decodes the audio stream) --
+        # "metaflac --test" always printed "unrecognized option" usage text and exited 1,
+        # so this check was unconditionally returning $false for every FLAC file regardless
+        # of validity. "flac --test" (the decoder, bundled in the same install) is the tool
+        # that actually verifies a FLAC file decodes cleanly; confirmed it correctly passes
+        # a good file and fails a deliberately truncated one.
+        $flacExe = Get-Command flac -ErrorAction SilentlyContinue
+        if ($flacExe) {
+            & flac --test --totally-silent $FilePath 2>$null
             return $LASTEXITCODE -eq 0
         }
     }
-    # For non-FLAC or no metaflac: check file size > 10KB
+    # For non-FLAC or no flac.exe: check file size > 10KB
     return (Get-Item $FilePath).Length -gt 10240
 }
 
 function Get-DiscTrackCount {
-    param([string]$OutputDir, [string]$DriveLetter)
-    # Try cue file first (avoids disc query and multiple-release prompts)
-    $cueFile = Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
+    param([string]$OutputDir, [string]$DriveLetter, [switch]$Fresh)
+    # Try cue file first (avoids disc query and multiple-release prompts) -- unless
+    # -Fresh is given, which skips straight to a live disc query. A cue file written
+    # during a rip that later crashed can still carry a track count corrupted by the
+    # same flaky connection that caused the crash, so callers recovering from a crash
+    # should not trust it.
+    $cueFile = if (-not $Fresh) { Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if ($cueFile) {
         $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
         if ($cueContent) {
@@ -413,6 +430,18 @@ function Write-Timestamp {
     param([string]$Label)
     $ts = Get-Date -Format "dd/MM/yyyy HH:mm:ss"
     Write-Host "  [$ts] $Label" -ForegroundColor DarkGray
+}
+
+# Builds an eBay UK sold-listings search URL for the ripped album, so a -CheckEbayPrice
+# rip can print a link the user clicks to see what copies of the physical disc have
+# actually sold for. Buy It Now only, "Very Good" condition or better (LH_ItemCondition=4),
+# UK sellers/location only (LH_PrefLoc=1), sold listings only (LH_Sold=1) - matches the
+# exact filter combination the user already uses manually on ebay.co.uk.
+function Get-EbaySoldListingsUrl {
+    param([string]$Artist, [string]$Album)
+    $query = if ($Artist) { "$Artist $Album CD album" } else { "$Album CD album" }
+    $encodedQuery = [System.Web.HttpUtility]::UrlEncode($query)
+    return "https://www.ebay.co.uk/sch/i.html?_nkw=$encodedQuery&_sacat=0&_from=R40&LH_BIN=1&LH_ItemCondition=4&LH_PrefLoc=1&rt=nc&LH_Sold=1"
 }
 
 function Show-CoffeeBadge {
@@ -962,8 +991,11 @@ if (-not $Drive) {
         Write-Host "Wait for that rip to finish, or re-run with a different -Drive." -ForegroundColor Yellow
         exit 1
     } elseif ($matchedDrive) {
-        Write-Host "Using optical drive:" -ForegroundColor Gray
-        Write-DriveListLine -DriveInfo $matchedDrive -Selected $true
+        # Show every detected drive, not just the matched one - matches the shape of the
+        # busy/not-found error paths right below (and ripdisc's own drive listing), so an
+        # explicit -Drive doesn't hide other drives the user might have meant instead.
+        Write-Host "Optical drives detected:" -ForegroundColor Cyan
+        foreach ($d in $opticalDrives) { Write-DriveListLine -DriveInfo $d -Selected ($d.Drive -eq $explicitDriveLetter) }
     } elseif ($opticalDrives.Count -gt 0) {
         # WMI saw at least one real optical drive, just not this one - a reliable signal
         # that the requested letter is wrong, so fail fast with the actual options instead
@@ -1925,6 +1957,18 @@ Write-Log "cyanrip command: $cmdDisplay"
 $cdioErrorThreshold = 30  # consecutive cdio error lines before killing
 $script:SkippedTracks = @()
 
+# A native crash (Windows structured-exception exit codes, e.g. -1073741819 /
+# 0xC0000005 access violation) always shows up as a huge negative Int32 -- normal
+# cyanrip exits are small (0, 1, a handful of others). Distinguished from the
+# cdio-error watchdog kill above: that's cyanrip *reporting* trouble on a track
+# and being killed deliberately; this is cyanrip itself dying unexpectedly,
+# typically from the same flaky USB/drive connection dropping mid-read. Both
+# cases warrant the same auto-resume treatment below.
+function Test-CyanripCrashExit {
+    param([long]$ExitCode)
+    return $ExitCode -le -1000000
+}
+
 function Start-CyanripWithErrorDetection {
     param(
         [string[]]$CyanripArgs,
@@ -2103,19 +2147,36 @@ Push-Location $parentDir
 try {
     $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
 
-    # If killed due to cdio errors, skip the failed track and resume remaining tracks
-    while ($result.Killed) {
+    # If killed due to cdio errors, or cyanrip crashed outright (native exit code -
+    # both usually mean the same underlying flaky USB/drive connection - skip the
+    # failed track and resume remaining tracks.
+    while ($result.Killed -or (Test-CyanripCrashExit $result.ExitCode)) {
         $failedTrack = $result.LastCompletedTrack + 1
         $script:SkippedTracks += $failedTrack
+        $wasCrash = -not $result.Killed
 
-        # Parse total track count from output so far
-        $totalFromOutput = 0
-        $allOutput = $result.Output -join "`n"
-        if ($allOutput -match 'Disc tracks:\s+(\d+)') {
-            $totalFromOutput = [int]$Matches[1]
+        # Total track count: re-query the disc fresh rather than trusting "Disc tracks: N"
+        # from this same run's own output. On a crash in particular, that number can itself
+        # be wrong - a flaky connection dropping mid-TOC-read can make cyanrip see far fewer
+        # tracks than the disc actually has (its own discovery output has documented this,
+        # e.g. "2 instead of 13"), which is exactly the kind of corruption that can also cause
+        # the crash. Trusting the crashed run's self-reported total risks concluding "no more
+        # tracks to rip" when the real disc has several more left.
+        if ($wasCrash) {
+            Write-Host "`ncyanrip crashed (exit $($result.ExitCode)) after track $($result.LastCompletedTrack) -- re-querying the disc for an accurate track count before deciding what's left..." -ForegroundColor Yellow
+            Write-Log "cyanrip crashed with exit $($result.ExitCode) after track $($result.LastCompletedTrack) -- re-querying disc fresh"
+        }
+        $totalFromOutput = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh
+        if (-not $totalFromOutput) {
+            # Fall back to whatever this run itself reported, if a fresh live query failed
+            # (e.g. drive transiently not responding) rather than giving up immediately.
+            $allOutput = $result.Output -join "`n"
+            if ($allOutput -match 'Disc tracks:\s+(\d+)') {
+                $totalFromOutput = [int]$Matches[1]
+            }
         }
 
-        if ($totalFromOutput -eq 0) {
+        if (-not $totalFromOutput) {
             Write-Host "Cannot determine total tracks -- unable to auto-resume" -ForegroundColor Red
             break
         }
@@ -3242,6 +3303,11 @@ if ($script:CorruptTracks.Count -gt 0) {
     Write-Host "  Corrupt/zero-byte (not usable): $($script:CorruptTracks.Count) file(s) ($($script:CorruptTracks -join ', ')) - re-run this command with the disc still in the drive to resume" -ForegroundColor Red
 }
 Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
+if ($CheckEbayPrice) {
+    $ebayUrl = Get-EbaySoldListingsUrl -Artist $artist -Album $album
+    Write-Host "  eBay sold prices (UK, BIN, Very Good+): $ebayUrl" -ForegroundColor White
+    Write-Log "eBay sold-listings URL: $ebayUrl"
+}
 Write-Host "========================================`n" -ForegroundColor Cyan
 
 Show-CoffeeBadge
