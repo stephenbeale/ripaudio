@@ -739,6 +739,28 @@ if ($StartFromStepNumber -le 1) {
     }
 
     if (-not $skipCyanripInvocation) {
+        # ========== MUSICBRAINZ REACHABILITY CHECK ==========
+        # Quick, single-attempt, non-interactive - unlike rip-audio.ps1, this script never
+        # prompts the user to retry/skip, since a resume should just get on with it. A
+        # failed probe skips MusicBrainz for this rip (-N) rather than letting cyanrip's
+        # OWN internal MusicBrainz query kill the entire multi-track resume the moment it
+        # hits that query. Real incident: a -FromTrack resume of a 16-track disc died after
+        # track 1 when cyanrip's internal MB query hit a 503 mid-rip - 15 tracks' worth of a
+        # single cyanrip invocation were lost for a lookup this script doesn't strictly need
+        # anyway (the album's identity is already fixed from -Album/-Artist, unlike
+        # rip-audio.ps1's initial rip where MusicBrainz is how the identity is discovered).
+        Write-Host "`nChecking MusicBrainz API connectivity..." -ForegroundColor Yellow
+        $skipMusicBrainzForRip = $false
+        try {
+            Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers @{ "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)" } -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop | Out-Null
+            Write-Host "MusicBrainz API: OK" -ForegroundColor Green
+        } catch {
+            Write-Host "MusicBrainz API: UNREACHABLE - skipping for this rip (generic track names)." -ForegroundColor Yellow
+            Write-Host "  Reason: $($_.Exception.Message)" -ForegroundColor DarkGray
+            Write-Log "MusicBrainz connectivity check failed - skipping for this rip: $($_.Exception.Message)"
+            $skipMusicBrainzForRip = $true
+        }
+
         # ========== BUILD AND RUN CYANRIP ==========
         $cyanripArgs = @("-D", $safeAlbum, "-o", $format, "-d", $driveLetter, "-s", "0")
         if ($ParanoiaLevel -ge 0) { $cyanripArgs += @("-P", "$ParanoiaLevel") }
@@ -747,9 +769,10 @@ if ($StartFromStepNumber -le 1) {
         $hasLossy = ($formatList | Where-Object { $_ -in $lossyFormats }).Count -gt 0
         if ($Quality -gt 0 -and $hasLossy) { $cyanripArgs += @("-b", "$Quality") }
         if ($script:ResumeTrackList) { $cyanripArgs += @("-l", $script:ResumeTrackList) }
+        if ($skipMusicBrainzForRip) { $cyanripArgs += @("-N") }
 
         $parentDir = Split-Path -Parent $finalOutputDir
-        $cmdDisplay = "cyanrip -D `"$safeAlbum`" -o $format -d $driveLetter -s 0$(if ($script:ResumeTrackList) { " -l $($script:ResumeTrackList)" })"
+        $cmdDisplay = "cyanrip -D `"$safeAlbum`" -o $format -d $driveLetter -s 0$(if ($script:ResumeTrackList) { " -l $($script:ResumeTrackList)" })$(if ($skipMusicBrainzForRip) { " -N" })"
         Write-Host "Working directory: $parentDir" -ForegroundColor Gray
         Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
         Write-Log "cyanrip command: $cmdDisplay"

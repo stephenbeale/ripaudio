@@ -212,11 +212,43 @@ function Stop-WithError {
 
 # ========== CORE FUNCTIONS ==========
 
+# Same check rip-audio.ps1 and continue-rip-audio.ps1 already use for their own resume
+# detection - kept in sync with those copies rather than shared, matching this repo's
+# existing convention of small per-script utility copies over a shared module.
+function Test-TrackIntegrity {
+    param([string]$FilePath)
+    $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
+    if ($metaflacPath) {
+        & metaflac --test $FilePath 2>$null
+        return $LASTEXITCODE -eq 0
+    }
+    return (Get-Item $FilePath).Length -gt 10240
+}
+
 function Read-ExistingTags {
     param([string]$FolderPath)
 
     $audioFiles = Get-ChildItem -Path $FolderPath -Filter "*.flac" -ErrorAction SilentlyContinue | Sort-Object Name
     if (-not $audioFiles -or $audioFiles.Count -eq 0) {
+        return $null
+    }
+
+    # Filter out corrupt/unreadable files before counting anything - a folder can carry
+    # leftover 0-byte or truncated files from an earlier interrupted/crashed rip attempt.
+    # An unfiltered raw file count feeds the metadata search below (real incident: 1 real
+    # track + 8 corrupt leftovers got searched as a genuine "9-track album", producing
+    # garbage matches and mistagging the one real file). rip-audio.ps1's own Step 2 verify
+    # already applies this same filter for exactly this reason - this brings that
+    # protection to the metadata-search path too.
+    $validAudioFiles = @($audioFiles | Where-Object { Test-TrackIntegrity -FilePath $_.FullName })
+    $corruptFiles = @($audioFiles | Where-Object { $_.FullName -notin @($validAudioFiles | ForEach-Object { $_.FullName }) })
+    if ($corruptFiles.Count -gt 0) {
+        Write-Host "  Skipping $($corruptFiles.Count) corrupt/unreadable file(s) (leftover from an earlier interrupted rip?):" -ForegroundColor Yellow
+        foreach ($cf in $corruptFiles) { Write-Host "    - $($cf.Name)" -ForegroundColor Yellow }
+        Write-Log "Skipped $($corruptFiles.Count) corrupt file(s) in ${FolderPath}: $(($corruptFiles.Name) -join ', ')"
+    }
+    $audioFiles = $validAudioFiles
+    if ($audioFiles.Count -eq 0) {
         return $null
     }
 

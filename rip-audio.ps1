@@ -1597,12 +1597,20 @@ if (!(Test-Path $finalOutputDir)) {
         $script:ResumeTrackList = $null
 
         if ($existingAudioFiles.Count -gt 0) {
-            # Try to determine total track count from cue file or disc. Under -DiscNum
-            # (shared multi-disc folder), a .cue file in this folder could belong to a
-            # DIFFERENT disc than the one currently in the drive - -Fresh skips that cue
-            # shortcut entirely and always queries the live disc, which is the only
-            # reliable source of truth for whichever disc is actually inserted right now.
-            $totalTrackCount = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh:($DiscNum -gt 0)
+            # Always live-query rather than trust a .cue file for this decision - always
+            # -Fresh, not conditional. A .cue file in the output folder can misreport the
+            # disc's real track count in more ways than just the -DiscNum case this was
+            # originally scoped to: PR #145 already fixed one crash-recovery call site for
+            # exactly this reason ("a cue file written during a rip that later crashed can
+            # carry a track count corrupted by the same flaky connection that caused the
+            # crash"), and a real incident confirmed this DEFAULT call site has the same
+            # exposure - a crashed continue-rip-audio.ps1 attempt left a 1-track .cue behind
+            # for a disc that actually has 16, and this resume-detection trusted it, declaring
+            # "All 1 tracks already ripped and valid" and marking a 15-tracks-missing album
+            # COMPLETE. A live disc query is cheap (a few seconds, no interactive prompt even
+            # on a multi-release disc - see Get-DiscTrackCount's own -R 1 retry) and is the
+            # only source of truth that can't be corrupted by an earlier failed attempt.
+            $totalTrackCount = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh
         }
 
         if ($totalTrackCount -and $existingAudioFiles.Count -gt 0) {
