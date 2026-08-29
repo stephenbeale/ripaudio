@@ -332,6 +332,28 @@ If your optical drive is on an unreliable USB port (random disconnects, or disco
 - **The final banner reflects trouble even when the exit code doesn't.** cyanrip can exit 0 while still leaving a corrupt track behind (a dropped connection doesn't always make cyanrip itself report failure). If any track was skipped, marked a data error, or found corrupt, the completion banner reads `COMPLETE WITH WARNINGS` instead of `COMPLETE!`, and the affected track(s) are listed in the FILE SUMMARY.
 - **No manual file deletion needed to retry.** If cyanrip produces nothing usable at all, the error message points you back to re-running the same command rather than deleting the output folder — the resume path cleans up corrupt/zero-byte files itself.
 
+## continue-rip-audio.ps1
+
+A dedicated resume script for when you'd rather not re-answer `rip-audio.ps1`'s drive/format prompts, or want to jump straight to a specific step (e.g. cover art only, or open the folder). Mirrors the step-based design of the `ripdisc` project's `continue-rip.ps1`, with one difference worth knowing: unlike that script, this one's rip step (step 1) genuinely can be resumed — cyanrip's `-l` flag rips just the missing/invalid track numbers — but it still needs the disc back in the drive to do it.
+
+```powershell
+# Interactive — asks which step to resume from
+.\continue-rip-audio.ps1 -Album "Welcome to Jamrock" -Artist "Damian Marley"
+
+# Resume ripping missing/corrupt tracks only (disc must be in the drive)
+.\continue-rip-audio.ps1 -Album "Destination Anywhere" -Artist "Jon Bon Jovi" -FromStep rip -Drive H
+
+# Tracks are all there — just fetch and embed cover art
+.\continue-rip-audio.ps1 -Album "Connected" -Artist "Stereo MC's" -FromStep coverart
+
+# Skip the confirmation prompt (e.g. for unattended re-runs)
+.\continue-rip-audio.ps1 -Album "Abbey Road" -Artist "The Beatles" -FromStep verify -Yes
+```
+
+**Steps:** `1`/`rip`, `2`/`verify`, `3`/`coverart`, `4`/`open` — same numbering as `rip-audio.ps1`'s own step tracker. Each step's prerequisites are checked before it runs; a mismatch (e.g. asking for `coverart` when no audio files exist yet) suggests the more likely step instead of failing blindly. `-Album` is required so the script can locate the existing output folder — pass the same `-Album`/`-Artist`/`-OutputDrive`/`-format` used for the original `rip-audio.ps1` run.
+
+**Deliberately not carried over from `rip-audio.ps1`** (all of it only matters for *discovering* metadata on a fresh disc, not for continuing an album this script already knows the identity of): multi-release MusicBrainz disambiguation, the CDDB/Discogs fallback chain, generic-name fallback, `-Queue`/`-ProcessQueue`, `-RequireMusicBrainz`, AccurateRip reporting, the `search-metadata.ps1` handoff, and the Mp3tag fallback prompt. Drive selection is also simplified — no live busy-drive scan, just a straightforward "which drive" prompt. If any of these matter for a given album, use `rip-audio.ps1` itself instead.
+
 ## MusicBrainz Release Selection
 
 When multiple MusicBrainz releases match a disc, the script prompts you to select the correct one:

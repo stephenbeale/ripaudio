@@ -35,6 +35,17 @@ All notable changes to this project are documented here.
 
 **Testing status:** **verified by PowerShell tokenizer parse-check only.** No disc was ripped and no real USB disconnect was reproduced against this code - the track-count banner, the integrity-based post-rip/verify checks, the exit-code-independent corrupt warning, and the `COMPLETE WITH WARNINGS` gating have not been exercised live. The failure shapes this targets are real (taken directly from the user's pasted output), but the fix itself is unvalidated against a live repeat of either.
 
+### Added (2)
+- **New `continue-rip-audio.ps1` script - a dedicated, step-based way to resume an interrupted `rip-audio.ps1` run**, mirroring the `ripdisc` project's `continue-rip.ps1` pattern. Requested directly by the user as a follow-up to the flaky-drive/USB work above.
+  - Four steps, same numbering as `rip-audio.ps1`'s own tracker: `1`/`rip`, `2`/`verify`, `3`/`coverart`, `4`/`open`. `-FromStep` picks where to start (number or name); omit it for an interactive menu.
+  - **Unlike `ripdisc`'s continue script, this one's rip step can genuinely be resumed** - cyanrip's `-l` flag rips just the missing/invalid track numbers - but it still needs the disc back in the drive, since `ripdisc`'s Step 1 (MakeMKV) and this project's Step 1 (cyanrip) aren't equivalent: only `ripdisc`'s is fully disc-independent once past Step 1.
+  - Per-step prerequisite checks (e.g. asking for `coverart` with no audio files yet suggests `rip` instead) and a retry-hint suggestion on failure (`.\continue-rip-audio.ps1 -Album ... -FromStep N`), same shape as `ripdisc`'s equivalents.
+  - Reuses `rip-audio.ps1`'s helpers largely verbatim to minimize drift: `Test-TrackIntegrity`, `Get-DiscTrackCount`, `Test-DriveReady`, `Start-CyanripWithErrorDetection`, the full cover-art source chain (Cover Art Archive -> MusicBrainz/CAA -> iTunes -> Deezer), and the output-drive prompt-then-validate pattern from earlier in this same date's entries.
+  - **Deliberately not ported** - documented in the script header and README, not a silent gap: multi-release MusicBrainz disambiguation, CDDB/Discogs fallback, generic-name fallback, `-Queue`/`-ProcessQueue`, `-RequireMusicBrainz`, AccurateRip reporting, the `search-metadata.ps1` handoff, the Mp3tag fallback prompt, and `rip-audio.ps1`'s live busy-drive process scan (this script does a single-check drive validation instead). None of these matter for continuing an album whose identity this script already knows from its existing output folder.
+  - README.md: new `continue-rip-audio.ps1` section with usage examples and the same scope caveats.
+
+**Testing status:** **verified by PowerShell tokenizer parse-check only**, plus a manual ASCII-only check on the new file. **Not exercised against a real disc or a real interrupted rip at any step.** The ported functions have prior live validation from their original use in `rip-audio.ps1`, but this script's own control flow around them - the resume-track-list computation, step-skip logic, prerequisite checks - is unvalidated. One bug was caught and fixed before commit: `Complete-CurrentStep` was being called twice for Step 1 on the "all tracks already valid" path, which would have double-listed step 1 in the completion summary.
+
 ## 2026-08-26 (once more)
 
 ### Added
