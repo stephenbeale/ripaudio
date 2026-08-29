@@ -139,9 +139,13 @@ function Test-TrackIntegrity {
 }
 
 function Get-DiscTrackCount {
-    param([string]$OutputDir, [string]$DriveLetter)
-    # Try cue file first (avoids disc query and multiple-release prompts)
-    $cueFile = Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
+    param([string]$OutputDir, [string]$DriveLetter, [switch]$Fresh)
+    # Try cue file first (avoids disc query and multiple-release prompts) -- unless
+    # -Fresh is given, which skips straight to a live disc query. A cue file written
+    # during a rip that later crashed can still carry a track count corrupted by the
+    # same flaky connection that caused the crash, so callers recovering from a crash
+    # should not trust it.
+    $cueFile = if (-not $Fresh) { Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if ($cueFile) {
         $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
         if ($cueContent) {
@@ -1928,6 +1932,18 @@ Write-Log "cyanrip command: $cmdDisplay"
 $cdioErrorThreshold = 30  # consecutive cdio error lines before killing
 $script:SkippedTracks = @()
 
+# A native crash (Windows structured-exception exit codes, e.g. -1073741819 /
+# 0xC0000005 access violation) always shows up as a huge negative Int32 -- normal
+# cyanrip exits are small (0, 1, a handful of others). Distinguished from the
+# cdio-error watchdog kill above: that's cyanrip *reporting* trouble on a track
+# and being killed deliberately; this is cyanrip itself dying unexpectedly,
+# typically from the same flaky USB/drive connection dropping mid-read. Both
+# cases warrant the same auto-resume treatment below.
+function Test-CyanripCrashExit {
+    param([long]$ExitCode)
+    return $ExitCode -le -1000000
+}
+
 function Start-CyanripWithErrorDetection {
     param(
         [string[]]$CyanripArgs,
@@ -2106,19 +2122,36 @@ Push-Location $parentDir
 try {
     $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
 
-    # If killed due to cdio errors, skip the failed track and resume remaining tracks
-    while ($result.Killed) {
+    # If killed due to cdio errors, or cyanrip crashed outright (native exit code -
+    # both usually mean the same underlying flaky USB/drive connection - skip the
+    # failed track and resume remaining tracks.
+    while ($result.Killed -or (Test-CyanripCrashExit $result.ExitCode)) {
         $failedTrack = $result.LastCompletedTrack + 1
         $script:SkippedTracks += $failedTrack
+        $wasCrash = -not $result.Killed
 
-        # Parse total track count from output so far
-        $totalFromOutput = 0
-        $allOutput = $result.Output -join "`n"
-        if ($allOutput -match 'Disc tracks:\s+(\d+)') {
-            $totalFromOutput = [int]$Matches[1]
+        # Total track count: re-query the disc fresh rather than trusting "Disc tracks: N"
+        # from this same run's own output. On a crash in particular, that number can itself
+        # be wrong - a flaky connection dropping mid-TOC-read can make cyanrip see far fewer
+        # tracks than the disc actually has (its own discovery output has documented this,
+        # e.g. "2 instead of 13"), which is exactly the kind of corruption that can also cause
+        # the crash. Trusting the crashed run's self-reported total risks concluding "no more
+        # tracks to rip" when the real disc has several more left.
+        if ($wasCrash) {
+            Write-Host "`ncyanrip crashed (exit $($result.ExitCode)) after track $($result.LastCompletedTrack) -- re-querying the disc for an accurate track count before deciding what's left..." -ForegroundColor Yellow
+            Write-Log "cyanrip crashed with exit $($result.ExitCode) after track $($result.LastCompletedTrack) -- re-querying disc fresh"
+        }
+        $totalFromOutput = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh
+        if (-not $totalFromOutput) {
+            # Fall back to whatever this run itself reported, if a fresh live query failed
+            # (e.g. drive transiently not responding) rather than giving up immediately.
+            $allOutput = $result.Output -join "`n"
+            if ($allOutput -match 'Disc tracks:\s+(\d+)') {
+                $totalFromOutput = [int]$Matches[1]
+            }
         }
 
-        if ($totalFromOutput -eq 0) {
+        if (-not $totalFromOutput) {
             Write-Host "Cannot determine total tracks -- unable to auto-resume" -ForegroundColor Red
             break
         }
