@@ -181,15 +181,22 @@ function Get-DiscTrackCount {
             }
         }
     }
-    # Fallback: query disc (may fail if multiple releases)
-    $output = & cyanrip -I -d $DriveLetter -s 0 2>&1
+    # Fallback: query disc (may fail if multiple releases). -N (skip MusicBrainz) is
+    # deliberate here - this function only ever needs the disc's own TOC track count,
+    # never metadata, so there is no reason for it to depend on MusicBrainz being
+    # reachable. Without -N, a MusicBrainz outage (a recurring issue this session, see
+    # Roadmap.md's Backlog) can keep this query from ever reaching/printing
+    # "Disc tracks: N" at all, silently defeating -Fresh and falling all the way back
+    # to the "could not determine track count" menu - which then offers no per-track
+    # resume list and can produce a full re-rip that collides with stale leftover files.
+    $output = & cyanrip -I -d $DriveLetter -s 0 -N 2>&1
     $outputText = $output -join "`n"
     if ($outputText -match 'Disc tracks:\s+(\d+)') {
         return [int]$Matches[1]
     }
     # If multiple releases found, cyanrip doesn't show track count — retry with -R 1
     if ($outputText -match "Multiple releases found") {
-        $output2 = & cyanrip -I -d $DriveLetter -s 0 -R 1 2>&1
+        $output2 = & cyanrip -I -d $DriveLetter -s 0 -R 1 -N 2>&1
         $outputText2 = $output2 -join "`n"
         if ($outputText2 -match 'Disc tracks:\s+(\d+)') {
             return [int]$Matches[1]
@@ -1819,6 +1826,34 @@ if (!(Test-Path $finalOutputDir)) {
                 }
             }
             Write-Log "User chose to continue with existing directory"
+
+            # Clean up existing audio files before the full blind re-rip this branch is
+            # about to run (no track count means no way to build a targeted -l resume
+            # list, so every track gets ripped fresh). Without this, cyanrip - which
+            # never overwrites an existing filename - just writes its freshly-ripped
+            # tracks under DIFFERENT names alongside whatever was already there, and the
+            # "may overwrite existing files" wording above turns out not to be true. Real
+            # incident: a stale, mistagged leftover file from an earlier crashed attempt
+            # collided with the post-rip rename step for the genuinely fresh track 1,
+            # leaving both a bogus 0.15MB file AND an unrenamed real one side by side.
+            $staleAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+            if ($DiscNum -gt 0) {
+                $staleAudio = @($staleAudio | Where-Object {
+                    if ($_.BaseName -match '^(\d+)\.(\d+)\s*-') { [int]$Matches[1] -eq $DiscNum }
+                    else { $true }
+                })
+            }
+            if ($staleAudio -and $staleAudio.Count -gt 0) {
+                Write-Host "Removing $($staleAudio.Count) existing audio file(s) before fresh rip..." -ForegroundColor Yellow
+                foreach ($stale in $staleAudio) {
+                    try {
+                        Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction Stop
+                    } catch {
+                        Write-Host "  Failed to remove $($stale.Name): $_" -ForegroundColor Red
+                    }
+                }
+                Write-Log "Removed $($staleAudio.Count) existing audio file(s) before fresh rip (track count unknown)"
+            }
         }
     } else {
         Write-Host "Directory already exists (empty)" -ForegroundColor Gray

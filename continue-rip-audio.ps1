@@ -242,13 +242,16 @@ function Get-DiscTrackCount {
             }
         }
     }
-    $output = & cyanrip -I -d $DriveLetter -s 0 2>&1
+    # -N (skip MusicBrainz) is deliberate - this function only ever needs the disc's own
+    # TOC track count, never metadata, so it shouldn't depend on MusicBrainz being
+    # reachable. Synced with the same fix in rip-audio.ps1's copy of this function.
+    $output = & cyanrip -I -d $DriveLetter -s 0 -N 2>&1
     $outputText = $output -join "`n"
     if ($outputText -match 'Disc tracks:\s+(\d+)') {
         return [int]$Matches[1]
     }
     if ($outputText -match "Multiple releases found") {
-        $output2 = & cyanrip -I -d $DriveLetter -s 0 -R 1 2>&1
+        $output2 = & cyanrip -I -d $DriveLetter -s 0 -R 1 -N 2>&1
         $outputText2 = $output2 -join "`n"
         if ($outputText2 -match 'Disc tracks:\s+(\d+)') {
             return [int]$Matches[1]

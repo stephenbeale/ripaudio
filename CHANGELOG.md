@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-29 (still going) - Get-DiscTrackCount's Own MusicBrainz Dependency, and a Stale-File Collision
+
+### Fixed
+- **`Get-DiscTrackCount`'s live disc-query fallback depended on MusicBrainz for no reason, and could silently fail on an MB outage.** This function only ever needs the disc's own TOC track count - never metadata - but its `cyanrip -I` query didn't pass `-N`, so on a day with a sustained MusicBrainz outage (this session's recurring 503 issue, tracked in Roadmap.md) the query could fail to ever reach/print `Disc tracks: N` at all. That silently defeated the `-Fresh` fix from earlier today (which was specifically meant to make this live query the reliable source of truth) and fell all the way back to the "could not determine track count" menu - which offers no per-track resume list and proceeds to a blind full re-rip.
+  - `-N` added to both the initial query and the multi-release retry, in both `rip-audio.ps1` and `continue-rip-audio.ps1`'s copies of the function.
+- **The "could not determine track count" fallback didn't clean up existing files before its full re-rip, so a stale leftover collided with the rename step.** Live incident: an old, mistagged 0.15MB leftover file from an earlier crashed attempt was still sitting in the album folder. This branch's blind re-rip (triggered by the bug above) wrote a genuinely fresh track 1 under a different filename (cyanrip never overwrites an existing name), and the post-rip title-rename step then tried to rename BOTH the stale leftover and the fresh file to the same target name - the stale one won the race, and the fresh, correctly-ripped track 1 was left un-renamed and effectively orphaned. The "may overwrite existing files" wording in this branch's own menu turned out not to be true - cyanrip's write-once behaviour means nothing actually gets overwritten unless something clears the old file first.
+  - This branch now removes existing audio files before proceeding, matching the cleanup the "no valid tracks found" branch already did - both branches are choosing a full blind re-rip, so both now start from the same clean slate.
+
+**Not fixed - still needs manual cleanup:** the actual `F:\Music\Eagles\The Complete Greatest Hits CD 2` folder is still in a bad state (track 1 is still the stale 0.15MB file, track 16 is duplicated) - these fixes prevent a repeat, they don't repair what's already on disk.
+
+**Testing status:** both files parse-checked clean, added lines ASCII-only. Not exercised against a real repeat of either failure - both are reasoned correct against the specific sequence found in this incident's log and folder contents.
+
 ## 2026-08-29 (yet again) - cyanrip Silence-Timeout Watchdog
 
 ### Added
