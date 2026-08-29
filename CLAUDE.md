@@ -1655,3 +1655,82 @@ capacity was still constrained at the time this was built.
    worth widening to also recognise the `N.NN - ` prefix, once real
    multi-disc rips have been run to see whether it actually matters in
    practice.
+
+---
+
+### 2026-08-29 (later again) - Three Real Bugs From One Bad Rip
+
+**Trigger:** the Eagles disc-2 rip (mentioned in the entry above as
+untested) hit real trouble the same day it was built. Traced the full
+transcript end to end at the user's request ("why is so much wrong here?")
+and found three separate, previously-undiscovered bugs, each masking the
+next:
+
+1. cyanrip hung (separate issue, discussed with the user, left unfixed by
+   their choice - see prior conversation, not repeated here).
+2. `continue-rip-audio.ps1 -FromTrack 1` was used to resume after the hang.
+   It had no MusicBrainz failure handling at all - cyanrip's own internal MB
+   query ran unconditionally, hit the day's ongoing 503, and killed the
+   entire 16-track resume after writing just 1 file.
+3. The crashed attempt left a 1-track `.cue` file behind. The next plain
+   `rip-audio.ps1` re-run's *default* resume-detection path trusted that
+   `.cue` (the cue-before-live-query shortcut), concluded the album only has
+   1 track, and declared it COMPLETE - 15 of 16 real tracks silently
+   missing. This is the same failure class PR #145 and this session's own
+   `-DiscNum` work already fixed at two *other* call sites - just not this
+   one, the one every ordinary re-run actually goes through.
+4. That false completion, plus ~8 corrupt leftover files from the hang/
+   crash, fed `search-metadata.ps1`, which counted all 9 raw `.flac` files
+   with no integrity check, searched for a "9-track" match against real
+   releases, and mistagged the one real track as "Take It Easy" - a song
+   from a *different disc* of the same box set.
+
+**All three code-level bugs (2-4) fixed, user confirmed wants all three:**
+- `rip-audio.ps1`: the default `Get-DiscTrackCount` resume-detection call
+  now always passes `-Fresh` (unconditional, not just under `-DiscNum`) -
+  closes the `.cue`-trust bug at its last remaining call site.
+- `continue-rip-audio.ps1`: new quick, single-attempt, non-interactive
+  MusicBrainz reachability check before the cyanrip invocation - adds `-N`
+  on failure instead of letting cyanrip's internal query take the whole
+  resume down with it. Deliberately not interactive (no retry/skip prompt
+  like `rip-audio.ps1` has) - a resume script should just get on with it.
+- `search-metadata.ps1`: new `Test-TrackIntegrity` function (same check the
+  other two scripts already use) now filters `Read-ExistingTags`'s file
+  list before anything downstream sees it, so corrupt leftover files are
+  reported and skipped rather than counted as real tracks.
+
+**Deliberately not fixed:** the MusicBrainz 503 issue itself (tracked
+separately in Roadmap.md's Backlog, not a client-side bug); the original
+cyanrip hang (user's explicit choice, see prior turn); cleanup of any
+already-corrupted folders from before this fix landed - those need manual
+inspection, not an automated repair.
+
+**Files changed:** `rip-audio.ps1`, `continue-rip-audio.ps1`,
+`search-metadata.ps1`, `CHANGELOG.md`, `CLAUDE.md` (this entry)
+
+**Testing status:** all three files parse-checked clean, added lines
+ASCII-only. **None of the three fixes has been exercised against a real
+repeat of its triggering scenario** - each is reasoned correct against the
+specific failure sequence observed in this incident's own pasted
+transcripts, not independently reproduced from scratch. The actual Eagles
+disc-2 folder is still in a corrupted state on disk and has not been
+cleaned up or re-ripped.
+
+**Process note:** pushed directly via `gh`/`git` from this session, same as
+the last several changes - `git-manager` subagent capacity was still
+constrained.
+
+**Priority for Next Session:**
+1. Clean up `F:\Music\Eagles\The Complete Greatest Hits CD 2` (wrong
+   metadata, one mistagged track, ~8 corrupt leftovers, 15 tracks missing)
+   and re-rip it properly now that all three fixes are in place.
+2. Live end-to-end validation: deliberately interrupt a rip, let a `.cue`
+   file end up stale, and confirm the `-Fresh` fix actually catches it
+   rather than repeating this exact incident.
+3. Live-validate `continue-rip-audio.ps1`'s new MB check against a real
+   resume while MusicBrainz is actually unreachable (today's ongoing 503s
+   make this easy to test for real, unfortunately).
+4. Live-validate `search-metadata.ps1` against a folder with real corrupt
+   leftover files and confirm the skip message and reduced track count
+   both show correctly.
+5. Everything carried from the multi-disc entry above still stands.

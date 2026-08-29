@@ -2,6 +2,64 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-29 (later again) - Three Real Bugs From One Bad Rip
+
+Live incident: a single interrupted Eagles disc-2 rip cascaded through three separate,
+previously-undiscovered bugs across three scripts, ending with one real track mistagged
+as a completely different song from a different album. Traced end to end and fixed at
+each stage.
+
+### Fixed
+- **`rip-audio.ps1`'s default resume-detection trusted a `.cue` file that a crashed rip
+  had corrupted, and declared a 15-tracks-missing album COMPLETE.** A `continue-rip-audio.ps1`
+  resume attempt died after 1 track (see below), leaving a `.cue` file behind that only
+  reflected the 1 track actually written. The next `rip-audio.ps1` run's resume-detection
+  read that `.cue` first (the default, cue-before-live-query shortcut), took its track
+  count as gospel, and reported "All 1 tracks already ripped and valid" - marking the
+  album finished with 15 of 16 real tracks silently missing.
+  - This exact failure class (a crash corrupting a `.cue`'s reported track count) was
+    already identified and fixed once today, at two other `Get-DiscTrackCount` call
+    sites (PR #145's crash-recovery path, and this session's own `-DiscNum` resume
+    path) - but not at this one, the *default* path every ordinary re-run goes through.
+  - Fixed by making this call site always pass `-Fresh` (live disc query) instead of
+    conditionally. The live query costs a few seconds and needs no interactive input
+    even on a multi-release disc; it cannot be corrupted by an earlier failed attempt
+    the way a leftover `.cue` file can.
+- **`continue-rip-audio.ps1` had no MusicBrainz failure handling at all, so a single MB
+  hiccup could kill an entire multi-track resume.** Its cyanrip invocation carried no
+  `-N` flag and no connectivity check - cyanrip's own internal MusicBrainz query ran
+  unconditionally, and when it hit a `503 Server Unavailable` (this session's ongoing MB
+  reliability issue, see the Backlog item in Roadmap.md), cyanrip aborted the whole
+  process. A `-FromTrack 1` resume asking for all 16 tracks got exactly 1 before dying.
+  - Added a quick, single-attempt, non-interactive MusicBrainz reachability check before
+    the cyanrip invocation (unlike `rip-audio.ps1`, this script never prompts to
+    retry/skip - a resume should just get on with it). An unreachable API adds `-N` to
+    the cyanrip command instead of leaving the query to fail mid-rip and take the whole
+    attempt down with it.
+- **`search-metadata.ps1` counted every `.flac` file in a folder as a real track, with no
+  integrity check**, so leftover corrupt/truncated files from an earlier interrupted rip
+  inflated the local track count used for metadata matching. In the incident: 1 genuinely
+  valid track plus ~8 corrupt leftovers were counted as "9 FLAC file(s)", and searching
+  for a 9-track match against real releases produced nonsense (a 4-track Discogs edition
+  explicitly flagged as a different edition, a 25-track Deezer merge, wrong-artist iTunes
+  hits) - which is how the one real track ended up retitled "Take It Easy", a song from a
+  different disc of the same box set entirely.
+  - New `Test-TrackIntegrity` function (same check `rip-audio.ps1`/`continue-rip-audio.ps1`
+    already use) now filters `Read-ExistingTags`'s file list before anything downstream
+    sees it - corrupt files are reported and skipped, not counted.
+
+**Not fixed in this pass (deliberately out of scope):** the underlying MusicBrainz 503
+reliability issue itself (tracked in Roadmap.md's Backlog section, not a client-side bug);
+cleanup of already-corrupted folders from before this fix (each one needs to be checked
+and likely re-ripped by hand, not auto-repaired); the original cyanrip hang that started
+this whole chain (separate issue, discussed but not fixed by user's own choice).
+
+**Testing status:** all three files parse-checked clean (PowerShell tokenizer, 0 errors),
+added lines confirmed ASCII-only. None of the three fixes has been exercised against a
+real repeat of its triggering scenario - each is reasoned correct against the specific
+failure sequence observed in this incident's own pasted transcripts, not independently
+reproduced from scratch.
+
 ## 2026-08-29 (later still) - Opt-In Shared-Folder Multi-Disc Mode
 
 ### Added
