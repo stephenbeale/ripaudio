@@ -177,9 +177,10 @@ function Show-Usage {
     Write-Host "  -Album <name>        Album name, matching the original rip-audio.ps1 run (required)" -ForegroundColor White
     Write-Host "  -Artist <name>       Artist name, if the original rip had one" -ForegroundColor White
     Write-Host "  -FromStep <1-4>      Step to resume from (number or name)" -ForegroundColor White
-    Write-Host "  -FromTrack <N>       Rip step only: skip auto-detection and rip from track N" -ForegroundColor White
-    Write-Host "                       through the end, trusting you over the file scan (e.g." -ForegroundColor White
-    Write-Host "                       a crash log already named the exact failed track)" -ForegroundColor White
+    Write-Host "  -FromTrack <N>       Skip auto-detection and rip from track N through the end," -ForegroundColor White
+    Write-Host "                       trusting you over the file scan (e.g. a crash log already" -ForegroundColor White
+    Write-Host "                       named the exact failed track). Implies -FromStep rip -" -ForegroundColor White
+    Write-Host "                       no need to pass both." -ForegroundColor White
     Write-Host "  -Drive <letter>      CD drive letter (only needed for the rip step)" -ForegroundColor White
     Write-Host "  -OutputDrive <X>     Output drive letter (default: system drive, or prompted)" -ForegroundColor White
     Write-Host "  -format <fmt>        Output format, must match the original rip (default flac)" -ForegroundColor White
@@ -194,8 +195,8 @@ function Show-Usage {
     Write-Host "      Interactive - asks which step to resume from" -ForegroundColor Gray
     Write-Host "  .\continue-rip-audio.ps1 -Album `"Destination Anywhere`" -Artist `"Jon Bon Jovi`" -FromStep rip -Drive H" -ForegroundColor Yellow
     Write-Host "      Resume ripping missing/corrupt tracks only (auto-detected)" -ForegroundColor Gray
-    Write-Host "  .\continue-rip-audio.ps1 -Album `"Destination Anywhere`" -Artist `"Jon Bon Jovi`" -FromStep rip -FromTrack 9 -Drive H" -ForegroundColor Yellow
-    Write-Host "      Skip auto-detection - rip track 9 through the end directly" -ForegroundColor Gray
+    Write-Host "  .\continue-rip-audio.ps1 -Album `"Destination Anywhere`" -Artist `"Jon Bon Jovi`" -FromTrack 9 -Drive H" -ForegroundColor Yellow
+    Write-Host "      Skip auto-detection - rip track 9 through the end directly (-FromTrack implies -FromStep rip)" -ForegroundColor Gray
     Write-Host "  .\continue-rip-audio.ps1 -Album `"Connected`" -Artist `"Stereo MC's`" -FromStep coverart" -ForegroundColor Yellow
     Write-Host "      Tracks are all there - just fetch and embed cover art" -ForegroundColor Gray
     Write-Host ""
@@ -344,6 +345,15 @@ if (-not $Album) {
 }
 
 # ========== RESOLVE STEP ==========
+# -FromTrack only ever applies to the rip step, so it implies -FromStep rip when
+# -FromStep is left unspecified - otherwise every -FromTrack invocation would need
+# to redundantly spell out both, and omitting -FromStep would drop into the
+# interactive step-picker menu instead of just doing the one thing -FromTrack asked for.
+if ($FromTrack -gt 0 -and [string]::IsNullOrWhiteSpace($FromStep)) {
+    $FromStep = "rip"
+    Write-Host "`n-FromTrack $FromTrack given with no -FromStep - defaulting to -FromStep rip." -ForegroundColor Gray
+}
+
 $stepKey = Resolve-StepKey $FromStep
 if ([string]::IsNullOrWhiteSpace($FromStep)) {
     Write-Host "`n========================================" -ForegroundColor Cyan

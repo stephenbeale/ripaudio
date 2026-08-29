@@ -12,6 +12,15 @@ All notable changes to this project are documented here.
 
 **Testing status:** verified by PowerShell tokenizer parse-check only; added lines confirmed ASCII-only. Not exercised against a real, live MusicBrainz outage - the backoff timing itself has not been observed resolving a real 503 faster than instant retries would have. This does not "fix" MusicBrainz being down; it only stops the client from hammering it while it is.
 
+### Fixed
+- **`continue-rip-audio.ps1`'s `-FromTrack <N>` now implies `-FromStep rip`, so it no longer has to be passed alongside a redundant step it already determines.** Prompted directly by user feedback on the `-FromTrack` feature shipped in PR #143: "the from step is a bit confusing, isnt it?" - and it was. `-FromTrack` only ever applies to the rip step (that's why the existing "will be ignored" warning fires when `-FromStep` resolves to anything else), yet every invocation still had to spell out `-FromStep rip -FromTrack 9`, restating something the flag already unambiguously implied.
+  - When `-FromTrack` is given and `-FromStep` is omitted, `-FromStep` now defaults to `rip` (with a one-line console note saying so) before step resolution runs. Without this default, omitting `-FromStep` dropped into the interactive step-picker menu rather than just doing the one thing `-FromTrack` asked for.
+  - **Explicit still beats implied:** if `-FromStep` *is* passed and resolves to something other than `rip`, behaviour is unchanged - the "will be ignored" warning already shipped in PR #143 still fires, and the chosen step is still honoured. Only the omitted case gains the new default.
+  - The no-`-FromTrack` case is untouched: an omitted `-FromStep` with no `-FromTrack` still opens the interactive step picker as before.
+  - In-script help text/parameter list, one `Show-Usage` example, and README.md's `-FromTrack` description and usage example all updated to show `-FromTrack 9` on its own rather than `-FromStep rip -FromTrack 9`.
+
+**Testing status:** `Parser::ParseFile` reports 0 errors. The new implication logic plus `Resolve-StepKey` were extracted into a standalone test script and run across 3 cases: `-FromTrack 9` with no `-FromStep` defaults to and resolves `rip`; `-FromTrack 0` with no `-FromStep` leaves `-FromStep` empty (interactive step-picker path preserved); `-FromTrack 9 -FromStep coverart` still resolves `coverart`, explicit winning over implied. All three correct. **Not done:** no real disc run - the same disclosed gap PR #143 already carries, since `continue-rip-audio.ps1` has still never been exercised against a real interrupted rip at any step.
+
 ## 2026-08-29
 
 ### Changed
