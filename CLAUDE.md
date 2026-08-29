@@ -1821,3 +1821,84 @@ Not exercised against a real repeat of either failure.
    session's attempts alternated between `-Drive H` and `-Drive D` without
    clear confirmation either was deliberate.
 3. Everything carried from the silence-timeout entry above still stands.
+
+---
+
+### 2026-08-29 (pt 5) - Session Close: PR #143 Merged (-FromTrack), PR #150 (UX Follow-up)
+
+**PR #143 merged (`27f15d1`) - `feat(continue-rip-audio): add step-based resume
+script for interrupted rips`:** the script itself (979 lines, opened earlier the
+same day) plus its late `-FromTrack <N>` addendum both landed together. Motivated
+directly by a real incident this session - a cyanrip crash on "Destination
+Anywhere" by Jon Bon Jovi at track 9. `-FromTrack` skips the automatic
+missing/invalid-track file scan and rips explicitly from track N through the
+disc's end, re-querying the total track count live (`-Fresh`) rather than
+trusting a cached cue file, for the same reason PR #145 did this in
+`rip-audio.ps1`. Also re-synced `Test-TrackIntegrity` and `Get-DiscTrackCount` in
+this script, which had drifted stale since the branch was cut before PR #147's
+`metaflac --test` -> `flac --test` fix landed on master - this script had the
+identical latent bug, never caught because it had never been run for real.
+git-manager caught and fixed a real bug in the draft before merging: PowerShell
+ranges descend, so `1..0` evaluates to `@(1, 0)` not empty, which would have made
+`-FromTrack 1` (a valid whole-disc case) print a false warning about missing
+tracks "1 and 0" - fixed with a `-gt 1` guard and a distinct whole-disc message.
+Master moved twice during this merge (PRs #144/#145/#147, plus a concurrent #148
+MusicBrainz backoff fix landing mid-merge); git-manager rebased twice and
+independently re-diffed the synced helpers against master's copies post-merge to
+confirm byte-identical. **Not hardware-validated** - this script has still never
+been run against a real disc or a real interrupted rip at any step, a pre-existing
+gap from when the script was first created, not newly introduced by this PR.
+
+**PR #150 merged (`5d5fdf7`) - `fix(continue-rip-audio): -FromTrack now implies
+-FromStep rip`:** direct user feedback immediately after PR #143's feature was
+demonstrated - "the from step is a bit confusing, isnt it?" - correctly spotting
+that `-FromTrack` required also passing a now-redundant `-FromStep rip`.
+Previously, omitting `-FromStep` while passing `-FromTrack` dropped into an
+interactive step-picker menu instead of doing what `-FromTrack` asked. Fixed so
+`-FromTrack` implies `-FromStep rip` automatically when `-FromStep` is omitted;
+if `-FromStep` is passed explicitly to something other than `rip`, that explicit
+choice still wins unchanged. Docs/examples/help text updated to show
+`-FromTrack 9` alone. Verified via extracted-logic unit test (3 cases:
+implied-rip, no-FromTrack-preserves-interactive-path, explicit-non-rip-step-still-
+wins) - all correct. **Not hardware-validated**, same pre-existing gap as #143.
+
+**Known follow-up explicitly NOT done in either PR, flagged by git-manager both
+times:** `continue-rip-audio.ps1` still does not carry `Test-CyanripCrashExit` or
+master's broadened crash-exit-triggers-auto-resume loop from PR #145 - it remains
+a single-shot cyanrip invocation with no in-run auto-resume-on-crash, unlike
+`rip-audio.ps1`. Directly relevant since a crash is exactly the scenario
+`-FromTrack` was built to help recover from manually. Scoped out both rounds as
+bigger structural work than what was asked.
+
+**Also observed this close-out, not investigated:** four more PRs landed from
+other concurrent sessions since the pt 4 close-out and are already merged to
+master - #148 (MusicBrainz retry backoff), #149 (MB 503 backlog doc), #151
+(`-DiscNum` opt-in shared-folder multi-disc mode on `rip-audio.ps1`), #152
+(three bugs from one interrupted Eagles rip), #153 (5-minute cyanrip silence-
+timeout watchdog), #154 (`Get-DiscTrackCount`'s own MB dependency and a stale-
+file collision) - each already has its own session-notes entry above. Noted here
+for continuity only; not evaluated or touched as part of this close-out.
+
+**Session Verified Clean:**
+- `master` at `5ecdfdf`, up to date with `origin/master`, working tree clean
+- No uncommitted changes, no unpushed commits, no stashes
+- `git fetch --prune` removed 4 stale remote-tracking refs for already-deleted
+  branches (`feature/cyanrip-silence-timeout-watchdog`,
+  `feature/discnum-shared-multidisc`, `fix/cue-trust-mb-skip-corrupt-file-count`,
+  `fix/disctrackcount-mb-dep-and-stale-collision`)
+- Local branches: `master` only - the pt-4 note about leaving
+  `feature/continue-rip-audio` alone no longer applies; it merged and is gone
+- `gh pr list --state open`: none - zero open PRs on the repo
+
+**Priority for Next Session:**
+1. Hardware-validate `continue-rip-audio.ps1` end-to-end: interrupt a real rip,
+   then run `-FromTrack N` (and separately `-FromStep rip` alone) and confirm
+   both resume correctly - this script has never been run against a real disc.
+2. Consider porting `Test-CyanripCrashExit` and the broadened crash-exit-resume
+   loop from `rip-audio.ps1` (PR #145) into `continue-rip-audio.ps1`, so a native
+   cyanrip crash mid-resume doesn't require a second manual `-FromTrack` restart.
+3. Carried forward unchanged: everything listed in the Get-DiscTrackCount entry
+   above (Eagles disc-2 folder still broken, needs manual delete + re-rip) and
+   the silence-timeout entry before it (watch for the watchdog firing live).
+4. Hardware-validate PR #144/#145 if not already done (carried from pt 4,
+   status not re-checked this close-out).
