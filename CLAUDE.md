@@ -1225,3 +1225,68 @@ rejected as usual; sign-off posted as a PR comment instead, then squash-merged.
    `DISCOGS_TOKEN` gap (PR #135 is dead code without it), and the Dylan Thomas
    `Under Milk Wood` metadata decision (real data still sitting wrong on disk;
    do not resolve without explicit user direction).
+
+---
+
+### 2026-08-29 (pt 3) - Session Close: MusicBrainz Diagnostics Verified, DISCOGS_TOKEN Set, Dylan Thomas Deferred
+
+**PR #139 live-verified (closes priority #2 above):** the `Reason:` line added by
+PR #139's exception-surfacing fix was confirmed live against a real DNS failure
+(a non-resolving subdomain) — it renders as expected. `git-manager` also found
+this fix's original premise was partly wrong: 2 of the 3 catch-block fixes had
+already been swept, undocumented, into PR #138 (the output-drive validation
+work). Rather than rewriting history, this was documented via the `CHANGELOG.md`
+note under the 2026-08-29 Fixed section (see the "Note:" line there) — no
+further CLAUDE.md rewrite needed on top of that.
+
+**`DISCOGS_TOKEN` gap closed (closes priority #3's first item, and the
+UNRESOLVED item from 2026-08-26 pt 2):** set as a durable **user-level**
+environment variable via `setx` (persists across sessions/reboots, unlike the
+process-scope `$env:` check that came back empty in every prior check). PR
+#135's Discogs metadata source — merged since PR #135 but silently a no-op
+without this — is now live. Not yet exercised through a real interactive
+`search-metadata.ps1` run with the token actually set; that's still open, see
+below.
+
+**Dylan Thomas `Under Milk Wood` — explicit decision this session: leave as
+is, decide later.** This was raised again this session; the user was given the
+same three options as before (restore-and-fix, abandon-and-re-rip, leave-as-is)
+and **explicitly chose leave-as-is / decide later** — this is an active choice
+made this session, not just the same unresolved item going stale since
+2026-08-26. The mis-tagged files remain in the Windows Recycle Bin under wrong
+filenames/tags; the prepared undo path
+(`undo-metadata.ps1 -LogFile "C:\Music\logs\search-metadata_20260826_155636.log"`)
+is unchanged and still available whenever the user does want to act. Do not
+reopen this as urgent without the user raising it again.
+
+**Observed at close, not part of this thread's own work — PR #141 already on
+`master`:** `fix(rip): catch rips corrupted by a flaky drive/USB connection`
+(commit `2f5b995`) — TOC track-count sanity check shown pre-rip, and post-rip
+integrity checks (`Test-TrackIntegrity`) now also gate the Step 1/Step 2
+"COMPLETE!" result, not just file size. `CHANGELOG.md`'s 2026-08-29 Added
+section attributes it to "two real interrupted rips pasted by the user this
+session" — i.e. it's part of the same overall user session via a different
+concurrent thread, same as PR #138/#139 above. Not evaluated here; flagging
+for continuity same as prior entries have done for each other's concurrent
+work. No CLAUDE.md session-notes entry exists for it yet beyond this note.
+
+**Session Verified Clean:**
+- `master` clean, no uncommitted changes, no unpushed commits, no open PRs
+  (`gh pr list --state open` empty)
+- Local branches: only `master`, matching `origin/master`
+- Commit history at close: `...a08a361` (#138) → `0fec912` (#139) →
+  `3c2ce93` (docs) → `2f5b995` (#141)
+
+**Priority for Next Session:**
+1. Live end-to-end validation of PR #138's output-drive prompt/readiness loop
+   against real hardware — still not exercised (carried forward, unchanged).
+2. Run `search-metadata.ps1` for real with `DISCOGS_TOKEN` now set, against a
+   live folder, to exercise PR #135's full interactive confirmation flow
+   end-to-end.
+3. PR #141 (flaky drive/USB corruption detection) has no live-hardware
+   validation recorded anywhere yet — confirm `Tracks detected: N` banner and
+   the `Test-TrackIntegrity` post-rip gate against a real interrupted rip.
+4. Dylan Thomas data stays exactly as is until the user raises it again — see
+   above, do not treat as urgent.
+5. PSGallery publish still pending — get API key from powershellgallery.com
+   and run `Publish-Module`.
