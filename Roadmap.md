@@ -27,3 +27,10 @@
 - [x] Undo metadata - `undo-metadata.ps1` reverses tag changes, renames, and cover art downloads using structured UNDO_* log entries from search-metadata.ps1
 
 - [x] Offline/internet-independent operation - tracks metadata source (MusicBrainz/CDDB/Generic) and cover art source in FILE SUMMARY and log; prompts user to continue without metadata when offline; completes rip with generic names rather than aborting
+
+## Backlog / Investigate
+
+- [ ] **MusicBrainz 503 reliability (opened 2026-08-29)** - the pre-rip connectivity check hit `503 Server Unavailable` repeatedly across multiple separate `rip-audio.ps1` runs in one day: a Stereo MC's rip earlier in the session, and a Jon Bon Jovi "Destination Anywhere" rip attempted twice (most recently ~10:04). Every occurrence required a manual retry or continuing without metadata. PR #148 (merged) added client-side backoff (5s/10s/15s) and per-attempt logging to the two pre-flight connectivity-check retry loops, so failures are now visible with attempt numbers - but that's a client-side mitigation only; it cannot fix MusicBrainz itself being down or rate-limited. Still open:
+  - [ ] Determine whether the repeated 503s reflect a genuine sustained MusicBrainz outage that day, a rate limit specific to this machine/User-Agent (`RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)`), or something else - not yet diagnosed.
+  - [ ] If this keeps recurring across future sessions, consider a more resilient metadata strategy: a longer-lived local cache of previously-successful disc lookups, checking MusicBrainz's own status page before assuming a client-side issue, or defaulting more readily to the existing CDDB fallback instead of making the user wait through the MusicBrainz retry loop each time.
+  - [ ] The separate, heavier mid-rip MusicBrainz retry loop (where cyanrip itself reports a connection failure and retry re-invokes cyanrip) was deliberately left untouched by PR #148. If it turns out to hit the same rate-limit/outage pattern in practice, it may need the same backoff treatment.
