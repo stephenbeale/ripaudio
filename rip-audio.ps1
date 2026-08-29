@@ -38,7 +38,20 @@ param(
     # end of the FILE SUMMARY - not run automatically, since it's a convenience for
     # deciding what a physical disc might be worth, not part of the rip itself.
     [Parameter()]
-    [switch]$CheckEbayPrice
+    [switch]$CheckEbayPrice,
+
+    # Opt-in multi-disc mode: rips into ONE shared album folder (no "Disc N" folder
+    # suffix) instead of the default separate-folder-per-disc behaviour, with every
+    # track file prefixed "N-" (e.g. "2-01 - Title.flac") so a second/third disc's
+    # tracks never collide with an earlier disc's already-ripped ones. Purely opt-in -
+    # omitting this leaves every existing single-disc and auto-detected multi-disc
+    # (separate "Album Disc N" folders) behaviour completely unchanged. Existing files
+    # belonging to OTHER disc numbers in the shared folder are left alone and ignored
+    # by the duplicate-file/resume checks - only this disc's own "$DiscNum-NN" files
+    # are ever considered.
+    [Parameter()]
+    [ValidateRange(1, 99)]
+    [int]$DiscNum = 0
 )
 
 # Ensure cyanrip/metaflac output is decoded as UTF-8 (PS5.1 defaults to system locale)
@@ -1207,8 +1220,10 @@ if (-not $album -and -not $script:IsProcessingQueue) {
     if ($discMeta -and $discMeta.Album) {
         $album = $discMeta.Album
 
-        # For multi-disc albums with >1 disc, append "Disc N"
-        if ($discMeta.TotalDiscs -and $discMeta.TotalDiscs -gt 1 -and $discMeta.DiscNum) {
+        # For multi-disc albums with >1 disc, append "Disc N" - unless the user
+        # explicitly passed -DiscNum, which opts into the shared-folder mode below
+        # instead (one folder for the whole set, disc-prefixed track filenames).
+        if ($DiscNum -eq 0 -and $discMeta.TotalDiscs -and $discMeta.TotalDiscs -gt 1 -and $discMeta.DiscNum) {
             $album = "$album Disc $($discMeta.DiscNum)"
         }
 
@@ -1262,8 +1277,11 @@ if ($safeArtist) {
 
 # ========== DUPLICATE VERSION CHECK ==========
 # If output directory already exists with audio files, offer to add a version suffix
-# (e.g. "Limited Edition", "Import", "Remaster") to create a separate folder
-if ((Test-Path $finalOutputDir) -and -not $script:IsProcessingQueue) {
+# (e.g. "Limited Edition", "Import", "Remaster") to create a separate folder.
+# Skipped entirely under -DiscNum: the shared multi-disc folder already containing an
+# earlier disc's (disc-prefixed) tracks is the expected, intended state, not a
+# different-edition conflict to prompt about.
+if ($DiscNum -eq 0 -and (Test-Path $finalOutputDir) -and -not $script:IsProcessingQueue) {
     $formatExtMap = @{ "flac" = "*.flac"; "mp3" = "*.mp3"; "opus" = "*.opus"; "aac" = "*.m4a"; "wav" = "*.wav"; "alac" = "*.m4a" }
     $hasAudioFiles = $false
     foreach ($fmt in $formatList) {
@@ -1542,7 +1560,13 @@ if (!(Test-Path $finalOutputDir)) {
     # Check for existing files
     $existingFiles = Get-ChildItem -Path $finalOutputDir -File -ErrorAction SilentlyContinue
     if ($existingFiles -and $existingFiles.Count -gt 0) {
-        Write-Host "`nWARNING: Directory already exists with $($existingFiles.Count) file(s):" -ForegroundColor Yellow
+        if ($DiscNum -gt 0) {
+            # Expected, not a warning: this is the shared multi-disc folder already
+            # containing an earlier disc's tracks.
+            Write-Host "`nShared multi-disc folder already has $($existingFiles.Count) file(s) from previous disc(s):" -ForegroundColor Cyan
+        } else {
+            Write-Host "`nWARNING: Directory already exists with $($existingFiles.Count) file(s):" -ForegroundColor Yellow
+        }
         Write-Host "  $finalOutputDir" -ForegroundColor White
         foreach ($ef in $existingFiles | Select-Object -First 5) {
             Write-Host "  - $($ef.Name)" -ForegroundColor Gray
@@ -1573,8 +1597,12 @@ if (!(Test-Path $finalOutputDir)) {
         $script:ResumeTrackList = $null
 
         if ($existingAudioFiles.Count -gt 0) {
-            # Try to determine total track count from cue file or disc
-            $totalTrackCount = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter
+            # Try to determine total track count from cue file or disc. Under -DiscNum
+            # (shared multi-disc folder), a .cue file in this folder could belong to a
+            # DIFFERENT disc than the one currently in the drive - -Fresh skips that cue
+            # shortcut entirely and always queries the live disc, which is the only
+            # reliable source of truth for whichever disc is actually inserted right now.
+            $totalTrackCount = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh:($DiscNum -gt 0)
         }
 
         if ($totalTrackCount -and $existingAudioFiles.Count -gt 0) {
@@ -1583,12 +1611,23 @@ if (!(Test-Path $finalOutputDir)) {
             $invalidTracks = @()
             foreach ($af in $existingAudioFiles) {
                 $trackNum = $null
+                $fileDiscNum = $null
                 # Handle both "01 - Title.flac" and "1.01 - Title.flac" (multi-disc) formats
                 if ($af.BaseName -match '^(\d+)\.(\d+)\s*-') {
                     # Multi-disc format: disc.track -- use the track part
+                    $fileDiscNum = [int]$Matches[1]
                     $trackNum = [int]$Matches[2]
                 } elseif ($af.BaseName -match '^(\d+)\s*-') {
                     $trackNum = [int]$Matches[1]
+                }
+
+                # Under -DiscNum (shared multi-disc folder), a bare-named file or a
+                # different disc's "M.NN" file belongs to another disc (or predates
+                # -DiscNum use on this folder) and must not count toward THIS disc's
+                # valid/missing tracks - otherwise disc 1's "1.05" would silently satisfy
+                # disc 2's "track 5" requirement.
+                if ($DiscNum -gt 0 -and $fileDiscNum -ne $DiscNum) {
+                    continue
                 }
 
                 if ($trackNum) {
@@ -1677,7 +1716,16 @@ if (!(Test-Path $finalOutputDir)) {
                 # Remove the stale/invalid audio files so cyanrip can rip fresh.
                 # cyanrip will not overwrite existing files, so leaving them
                 # behind produces a silent failure with 0-byte outputs.
+                # Under -DiscNum (shared multi-disc folder), this must NOT touch another
+                # disc's already-ripped, disc-prefixed tracks sitting in the same folder -
+                # only bare-named or THIS disc's own "$DiscNum.NN" files are stale here.
                 $staleAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+                if ($DiscNum -gt 0) {
+                    $staleAudio = @($staleAudio | Where-Object {
+                        if ($_.BaseName -match '^(\d+)\.(\d+)\s*-') { [int]$Matches[1] -eq $DiscNum }
+                        else { $true }  # bare-named file, e.g. from before -DiscNum was used on this folder
+                    })
+                }
                 if ($staleAudio -and $staleAudio.Count -gt 0) {
                     Write-Host "Removing $($staleAudio.Count) stale audio file(s) before fresh rip..." -ForegroundColor Yellow
                     foreach ($stale in $staleAudio) {
@@ -2942,6 +2990,33 @@ if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
 }
 
 Complete-CurrentStep
+
+# ========== MULTI-DISC PREFIX RENAME (-DiscNum) ==========
+# Prepend this disc's number to every freshly-ripped track filename ("NN - Title.ext"
+# -> "$DiscNum.NN - Title.ext") so it can share the album folder with other discs
+# without colliding - cyanrip always numbers a disc's own tracks starting at 1, so
+# disc 2's "01 - Title.flac" would otherwise silently overwrite (or fail to write
+# alongside) disc 1's own "01 - Title.flac". Only bare "NN - Title.ext" files are
+# touched - anything already prefixed "N.NN - Title.ext" (this disc's own files from
+# an earlier partial run, or another disc's files already renamed) is left alone.
+if ($DiscNum -gt 0) {
+    $filesToPrefix = Get-ChildItem -Path $finalOutputDir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.BaseName -match '^\d+\s*-' -and $_.BaseName -notmatch '^\d+\.\d+\s*-' }
+    if ($filesToPrefix.Count -gt 0) {
+        Write-Host "`nPrefixing $($filesToPrefix.Count) track file(s) with disc number $DiscNum..." -ForegroundColor Yellow
+        foreach ($f in $filesToPrefix) {
+            $newName = "$DiscNum.$($f.Name)"
+            try {
+                Rename-Item -LiteralPath $f.FullName -NewName $newName -ErrorAction Stop
+                Write-Log "Renamed for multi-disc: $($f.Name) -> $newName"
+            } catch {
+                Write-Host "  Failed to rename $($f.Name): $_" -ForegroundColor Red
+                Write-Log "WARNING: Failed to rename $($f.Name) for multi-disc: $_"
+            }
+        }
+        Write-Host "Done." -ForegroundColor Green
+    }
+}
 
 # Eject disc after successful rip
 Write-Host "`nEjecting disc from drive $driveLetter..." -ForegroundColor Yellow
