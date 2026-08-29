@@ -1168,3 +1168,60 @@ All three fixes (quoting in #124, exit-code check in #125) were verified by pars
 4. Run a real end-to-end pass of #136 through the actual integrated call site in `rip-audio.ps1` (a real failed-automation rip that falls through to the Mp3tag fallback), rather than the extracted standalone test script used for verification this session.
 5. Consider the merge-review follow-ups noted under #136: configurable menu position, post-Enter sanity check on the landed dialog.
 6. PSGallery publish still pending — get API key from powershellgallery.com and run `Publish-Module`. (Note: the #127-#132 entry's priority list also carried forward a "decide the fate of `feature/shareable` vs `fix/restore-siteground-art`" item, but that was already resolved by PR #129 within that same entry and both branches are confirmed gone via `git branch -a` — that item was stale leftover text in that entry's own list, not a real open task.)
+
+---
+
+### 2026-08-29 - Output Drive Prompt and Readiness Validation (PR #138)
+
+**Trigger:** user reported `rip-audio.ps1` silently defaulting the output drive to
+`C:` with no confirmation or readiness check, only surfacing a bad/disconnected
+output drive deep into Step 1 — after disc discovery, multiple-release selection,
+and MusicBrainz lookup had already been answered.
+
+**PR #138 (`a08a361`) - `feature/output-drive-prompt-and-validation`:**
+- When `-OutputDrive` isn't passed, the script now prompts interactively (Enter
+  accepts the system-drive default) instead of silently defaulting.
+- The resulting drive (from the arg, the prompt, or the default) is validated via
+  the existing `Test-DriveReady` helper *before* proceeding into disc metadata
+  discovery, not after. An unready drive triggers a re-prompt loop until a valid
+  one is given (or Ctrl+C).
+- `-Queue` and `-ProcessQueue` keep the old silent system-drive default — both are
+  unattended/batch paths, and output drive is resolved once for the whole run, so
+  prompting there would be pure friction with no per-item benefit.
+- README.md's `-OutputDrive` parameter row updated to match.
+
+**Testing status:** verified by PowerShell tokenizer parse-check only. No disc was
+ripped; the interactive prompt, the re-prompt loop, and the `-Queue`/`-ProcessQueue`
+`exit 1` path have not been exercised against real hardware or a real not-ready drive.
+
+**Also discovered (not part of this PR):** a stray uncommitted change surfaced in
+the working tree mid-workflow — MusicBrainz connectivity-retry logging around line
+1786, unrelated to the output-drive work. It was not authored by this session; a
+separate concurrent Claude Code session on this machine picked it up independently
+and branched, committed, pushed, and opened **PR #139**
+(`fix/musicbrainz-connectivity-diagnostics`). That session merged it itself before
+this entry was committed — merge commit `0fec912`, feature branch deleted. Not
+evaluated by this session; noted here only because it briefly showed up as loose
+working-tree state during this session's own git workflow.
+
+**Process note - self-approval (recurring, expected):** `gh pr review --approve`
+rejected as usual; sign-off posted as a PR comment instead, then squash-merged.
+
+**Session Verified Clean:**
+- PR #138 squash-merged to master, feature branch deleted locally and remotely
+- PR #139 (separate concurrent session's work) also merged, `0fec912` — both are
+  on master as of this entry
+- Working tree clean, no uncommitted changes, no unpushed commits, no open PRs
+
+**Priority for Next Session:**
+1. Live end-to-end validation of PR #138: run `rip-audio.ps1` with no `-OutputDrive`
+   arg and confirm the prompt appears, and separately test against a genuinely
+   not-ready/disconnected drive letter to confirm the re-prompt loop and the
+   `-Queue`/`-ProcessQueue exit 1` path both behave as designed.
+2. Live validation of PR #139's diagnostics (a different session's work, noted here
+   for continuity): force a real MusicBrainz connectivity failure and confirm the
+   `Reason:` text renders and logs as intended — not yet observed live per that PR.
+3. Everything still carried forward and unresolved from 2026-08-26: the
+   `DISCOGS_TOKEN` gap (PR #135 is dead code without it), and the Dylan Thomas
+   `Under Milk Wood` metadata decision (real data still sitting wrong on disk;
+   do not resolve without explicit user direction).
