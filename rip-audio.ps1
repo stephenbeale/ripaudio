@@ -972,15 +972,52 @@ if (-not $Drive) {
     }
 }
 
-# Default output drive to system drive if not specified
+# Normalize -Drive (add colon if missing)
+$driveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
+
+# ========== OUTPUT DRIVE SELECTION ==========
+# Ask which drive to write ripped albums to when -OutputDrive wasn't passed, then
+# validate it's actually ready before proceeding - previously this silently defaulted
+# to the system drive with no check until deep into Step 1, after the entire disc
+# metadata discovery / multiple-release / MusicBrainz flow had already run, so a bad
+# or disconnected output drive only surfaced after several other questions were answered.
+# Skipped in -Queue (just queues metadata, doesn't touch a drive yet) and -ProcessQueue
+# (unattended batch run) - both keep the old silent system-drive default, matching how
+# other interactive prompts are skipped in those modes elsewhere in this script.
+$outputDrivePromptable = -not $Queue -and -not $ProcessQueue
+
 if (-not $OutputDrive) {
-    $OutputDrive = $env:SystemDrive
-    Write-Host "Output drive defaulting to: $OutputDrive" -ForegroundColor Gray
+    if ($outputDrivePromptable) {
+        $defaultOutputDrive = $env:SystemDrive
+        Show-QuestionHint
+        $outputDriveInput = Read-Host "Output drive (Enter for default: $defaultOutputDrive)"
+        $OutputDrive = if ($outputDriveInput) { $outputDriveInput.Trim() } else { $defaultOutputDrive }
+    } else {
+        $OutputDrive = $env:SystemDrive
+        Write-Host "Output drive defaulting to: $OutputDrive" -ForegroundColor Gray
+    }
 }
 
-# Normalize drive letters (add colon if missing)
-$driveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
+# Normalize and validate before proceeding - an -OutputDrive passed explicitly, entered
+# interactively above, or defaulted is checked here rather than trusted blindly. Reuses
+# Test-DriveReady (the same check Step 1 already runs against the full album path) against
+# the bare drive root.
 $outputDriveLetter = if ($OutputDrive -match ':$') { $OutputDrive } else { "${OutputDrive}:" }
+$outputDriveCheck = Test-DriveReady -Path "$outputDriveLetter\"
+while (-not $outputDriveCheck.Ready) {
+    Write-Host "ERROR: $($outputDriveCheck.Message)" -ForegroundColor Red
+    if (-not $outputDrivePromptable) {
+        exit 1
+    }
+    Show-QuestionHint
+    $outputDriveInput = Read-Host "Enter a different output drive (or Ctrl+C to abort)"
+    if (-not $outputDriveInput) { continue }
+    $candidate = $outputDriveInput.Trim()
+    $outputDriveLetter = if ($candidate -match ':$') { $candidate } else { "${candidate}:" }
+    $outputDriveCheck = Test-DriveReady -Path "$outputDriveLetter\"
+}
+$OutputDrive = $outputDriveLetter
+Write-Host "Output drive: $outputDriveLetter - ready" -ForegroundColor Green
 
 # Validate format parameter (supports comma-separated for multiple formats, e.g. "flac,mp3")
 $validFormats = @("flac", "mp3", "opus", "aac", "wav", "alac")
@@ -1692,6 +1729,8 @@ try {
 } catch {
     Write-Host "MusicBrainz API: UNREACHABLE" -ForegroundColor Red
     Write-Host "  (API may be down, rate-limited, or blocked)" -ForegroundColor Gray
+    Write-Host "  Reason: $($_.Exception.Message)" -ForegroundColor DarkGray
+    Write-Log "MusicBrainz connectivity check failed: $($_.Exception.Message)"
 
     # In ProcessQueue mode, auto-continue without metadata (unless RequireMusicBrainz is set)
     if ($script:IsProcessingQueue -and -not $RequireMusicBrainz) {
@@ -1716,6 +1755,8 @@ try {
                     $resolved = $true
                 } catch {
                     Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
+                    Write-Host "  Reason: $($_.Exception.Message)" -ForegroundColor DarkGray
+                    Write-Log "MusicBrainz connectivity retry failed: $($_.Exception.Message)"
                     Write-Host "  [R] Retry | [Q] Quit" -ForegroundColor White
                 }
             } elseif ($mbChoice -match "^[Qq]") {

@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-29
+
+### Changed
+- **`rip-audio.ps1` now asks which drive to rip to, and validates it up front, instead of silently defaulting to the system drive.** Previously an omitted `-OutputDrive` printed `Output drive defaulting to: C:` and moved on with no check at all - the first time an unready or disconnected output drive was noticed was deep inside Step 1, *after* the whole disc metadata discovery / multiple-release / MusicBrainz flow had already run and several other interactive questions had already been answered. The drive selection and its readiness check now both happen before any of that.
+  - When `-OutputDrive` is omitted in normal interactive use, the script prompts (`Output drive (Enter for default: C:)`) via the existing `Show-QuestionHint`/`Read-Host` pattern used by the script's other prompts. Pressing Enter keeps the previous system-drive default, so the old behaviour is still one keystroke away.
+  - **The chosen drive is validated regardless of where it came from** - explicitly passed via `-OutputDrive`, typed at the new prompt, or defaulted. Reuses the existing `Test-DriveReady` helper (the same check Step 1 already runs against the full album path) against the bare drive root, so there's no second, divergent notion of "ready".
+  - **Mode-aware failure handling:** interactive mode loops on a not-ready drive, re-prompting for a different one (Ctrl+C to abort) rather than dying. `-Queue`/`-ProcessQueue` fail fast with `exit 1` instead, since the output drive is shared across an entire queue run - continuing would only produce the same failure once per disc.
+  - **The prompt itself is skipped in `-Queue`/`-ProcessQueue`**, which keep the old silent system-drive default. `-Queue` only records metadata and doesn't write a rip yet, and `-ProcessQueue` is an unattended batch run - this matches how the script's other interactive prompts are already suppressed in those modes.
+  - Prints `Output drive: X: - ready` once resolved, replacing the old silent-default line.
+  - README.md's `-OutputDrive` parameter row updated to describe the prompt, the Enter-for-default behaviour, the queue-mode exception, and the readiness validation.
+
+**Testing status:** **verified by PowerShell tokenizer parse-check only.** No disc was ripped, no live rip was run, and a real drive-not-ready condition was never reproduced - so the new prompt, the interactive re-prompt loop, and the `-Queue`/`-ProcessQueue` `exit 1` path have not been exercised against actual hardware. The underlying `Test-DriveReady` helper this relies on is pre-existing and already used elsewhere in Step 1, but its use at this new call site is not yet proven live.
+
 ## 2026-08-26 (once more)
 
 ### Added

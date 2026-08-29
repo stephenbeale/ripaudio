@@ -83,7 +83,7 @@ Install-Module RipAudio
 | `-album` | No | - | Album name (auto-detected from disc if omitted) |
 | `-artist` | No | - | Artist name (affects output directory structure) |
 | `-Drive` | No | auto-detect | CD drive letter (auto-detected if only one optical drive present) |
-| `-OutputDrive` | No | system drive | Output drive letter (defaults to `$env:SystemDrive`, e.g. `C:`) |
+| `-OutputDrive` | No | prompted | Output drive letter. If omitted, you're prompted interactively (Enter accepts the system drive default); skipped in `-Queue`/`-ProcessQueue`, which keep the silent system-drive default. The chosen drive is validated as ready before ripping starts. |
 | `-format` | No | flac | Output format(s), comma-separated (flac, mp3, opus, aac, wav, alac) |
 | `-Quality` | No | 0 | Bitrate in kbps for lossy formats (32-320, e.g. 320 for mp3) |
 | `-RequireMusicBrainz` | No | - | Stop if disc not found in MusicBrainz (no fallback to generic names) |
