@@ -340,8 +340,13 @@ A dedicated resume script for when you'd rather not re-answer `rip-audio.ps1`'s 
 # Interactive — asks which step to resume from
 .\continue-rip-audio.ps1 -Album "Welcome to Jamrock" -Artist "Damian Marley"
 
-# Resume ripping missing/corrupt tracks only (disc must be in the drive)
+# Resume ripping missing/corrupt tracks only (disc must be in the drive) - auto-detected
 .\continue-rip-audio.ps1 -Album "Destination Anywhere" -Artist "Jon Bon Jovi" -FromStep rip -Drive H
+
+# Skip auto-detection entirely and rip from track 9 through the end - useful when you
+# already know exactly where a previous attempt broke (e.g. a crash message naming the
+# track) and don't want to trust the file-scan to work it out itself
+.\continue-rip-audio.ps1 -Album "Destination Anywhere" -Artist "Jon Bon Jovi" -FromStep rip -FromTrack 9 -Drive H
 
 # Tracks are all there — just fetch and embed cover art
 .\continue-rip-audio.ps1 -Album "Connected" -Artist "Stereo MC's" -FromStep coverart
@@ -351,6 +356,8 @@ A dedicated resume script for when you'd rather not re-answer `rip-audio.ps1`'s 
 ```
 
 **Steps:** `1`/`rip`, `2`/`verify`, `3`/`coverart`, `4`/`open` — same numbering as `rip-audio.ps1`'s own step tracker. Each step's prerequisites are checked before it runs; a mismatch (e.g. asking for `coverart` when no audio files exist yet) suggests the more likely step instead of failing blindly. `-Album` is required so the script can locate the existing output folder — pass the same `-Album`/`-Artist`/`-OutputDrive`/`-format` used for the original `rip-audio.ps1` run.
+
+**`-FromTrack <N>`** (rip step only) — bypasses the automatic missing/invalid-track scan and rips track `N` through the disc's last track directly, trusting you over the file scan. Tracks `1` to `N-1` are assumed already present and are left untouched (not re-checked, not re-ripped). Meant for exactly the case where you already know where a previous attempt broke — e.g. `rip-audio.ps1`'s own crash message names the failed track directly — and don't want to wait on or trust the automatic scan to rediscover it, especially since the same flaky connection that caused the original failure can also have corrupted the cue file the automatic scan would otherwise read the track count from. The total track count is always re-queried live from the disc (never from a cached cue file) for this reason. If the files expected at tracks `1` to `N-1` aren't actually found (or fail their integrity check), a warning is shown but ripping proceeds anyway — `-FromTrack` is an explicit instruction and wins over the file scan either way. Ignored (with a note) if `-FromStep` resolves to anything other than `rip`.
 
 **Deliberately not carried over from `rip-audio.ps1`** (all of it only matters for *discovering* metadata on a fresh disc, not for continuing an album this script already knows the identity of): multi-release MusicBrainz disambiguation, the CDDB/Discogs fallback chain, generic-name fallback, `-Queue`/`-ProcessQueue`, `-RequireMusicBrainz`, AccurateRip reporting, the `search-metadata.ps1` handoff, and the Mp3tag fallback prompt. Drive selection is also simplified — no live busy-drive scan, just a straightforward "which drive" prompt. If any of these matter for a given album, use `rip-audio.ps1` itself instead.
 

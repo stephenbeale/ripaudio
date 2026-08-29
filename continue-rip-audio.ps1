@@ -11,6 +11,14 @@ param(
     [Alias("Step")]
     [string]$FromStep = "",
 
+    # Rip step only: skip the automatic missing/invalid-track detection and rip
+    # from this track number through the end of the disc, trusting the caller's
+    # own knowledge of where a previous attempt broke (e.g. a crash log naming
+    # the track) over the script's own file-scan. Tracks before this number are
+    # assumed already present and are left untouched.
+    [Parameter()]
+    [int]$FromTrack = 0,
+
     [Parameter()]
     [string]$Drive = "",
 
@@ -169,6 +177,9 @@ function Show-Usage {
     Write-Host "  -Album <name>        Album name, matching the original rip-audio.ps1 run (required)" -ForegroundColor White
     Write-Host "  -Artist <name>       Artist name, if the original rip had one" -ForegroundColor White
     Write-Host "  -FromStep <1-4>      Step to resume from (number or name)" -ForegroundColor White
+    Write-Host "  -FromTrack <N>       Rip step only: skip auto-detection and rip from track N" -ForegroundColor White
+    Write-Host "                       through the end, trusting you over the file scan (e.g." -ForegroundColor White
+    Write-Host "                       a crash log already named the exact failed track)" -ForegroundColor White
     Write-Host "  -Drive <letter>      CD drive letter (only needed for the rip step)" -ForegroundColor White
     Write-Host "  -OutputDrive <X>     Output drive letter (default: system drive, or prompted)" -ForegroundColor White
     Write-Host "  -format <fmt>        Output format, must match the original rip (default flac)" -ForegroundColor White
@@ -182,7 +193,9 @@ function Show-Usage {
     Write-Host "  .\continue-rip-audio.ps1 -Album `"Welcome to Jamrock`" -Artist `"Damian Marley`"" -ForegroundColor Yellow
     Write-Host "      Interactive - asks which step to resume from" -ForegroundColor Gray
     Write-Host "  .\continue-rip-audio.ps1 -Album `"Destination Anywhere`" -Artist `"Jon Bon Jovi`" -FromStep rip -Drive H" -ForegroundColor Yellow
-    Write-Host "      Resume ripping missing/corrupt tracks only" -ForegroundColor Gray
+    Write-Host "      Resume ripping missing/corrupt tracks only (auto-detected)" -ForegroundColor Gray
+    Write-Host "  .\continue-rip-audio.ps1 -Album `"Destination Anywhere`" -Artist `"Jon Bon Jovi`" -FromStep rip -FromTrack 9 -Drive H" -ForegroundColor Yellow
+    Write-Host "      Skip auto-detection - rip track 9 through the end directly" -ForegroundColor Gray
     Write-Host "  .\continue-rip-audio.ps1 -Album `"Connected`" -Artist `"Stereo MC's`" -FromStep coverart" -ForegroundColor Yellow
     Write-Host "      Tracks are all there - just fetch and embed cover art" -ForegroundColor Gray
     Write-Host ""
@@ -198,9 +211,14 @@ function Test-TrackIntegrity {
     param([string]$FilePath)
     $ext = [System.IO.Path]::GetExtension($FilePath).ToLower()
     if ($ext -eq ".flac") {
-        $metaflac = Get-Command metaflac -ErrorAction SilentlyContinue
-        if ($metaflac) {
-            & metaflac --test $FilePath 2>$null
+        # Synced with rip-audio.ps1's fix (PR #147): metaflac has no --test option at all
+        # (it only edits/reads metadata, it never decodes the audio stream) - "metaflac
+        # --test" always printed "unrecognized option" and exited 1 regardless of file
+        # validity. "flac --test" (the decoder, bundled in the same install) is the tool
+        # that actually verifies a FLAC file decodes cleanly.
+        $flacExe = Get-Command flac -ErrorAction SilentlyContinue
+        if ($flacExe) {
+            & flac --test --totally-silent $FilePath 2>$null
             return $LASTEXITCODE -eq 0
         }
     }
@@ -208,8 +226,12 @@ function Test-TrackIntegrity {
 }
 
 function Get-DiscTrackCount {
-    param([string]$OutputDir, [string]$DriveLetter)
-    $cueFile = Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
+    param([string]$OutputDir, [string]$DriveLetter, [switch]$Fresh)
+    # Synced with rip-audio.ps1's -Fresh switch (PR #145): skips the cue-file shortcut
+    # and queries the disc live. A cue file written during an attempt that later crashed
+    # or dropped connection can carry a track count corrupted by that same failure, so
+    # callers recovering from one (e.g. -FromTrack below) should not trust it.
+    $cueFile = if (-not $Fresh) { Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if ($cueFile) {
         $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
         if ($cueContent) {
@@ -349,6 +371,10 @@ if ([string]::IsNullOrWhiteSpace($FromStep)) {
 
 $startStep = Get-StepByKey -Key $stepKey
 $StartFromStepNumber = $startStep.Number
+
+if ($FromTrack -gt 0 -and $StartFromStepNumber -ne 1) {
+    Write-Host "`nNote: -FromTrack $FromTrack only applies to the rip step, but starting at step $StartFromStepNumber ($($startStep.Name)) - it will be ignored." -ForegroundColor Yellow
+}
 
 # Mark steps before the starting point as "skipped/assumed complete"
 for ($i = 1; $i -lt $StartFromStepNumber; $i++) {
@@ -601,7 +627,53 @@ if ($StartFromStepNumber -le 1) {
     $existingAudioFiles = Get-ExistingAudioFiles
     $script:ResumeTrackList = $null
     $skipCyanripInvocation = $false
-    if ($existingAudioFiles.Count -gt 0) {
+    if ($FromTrack -gt 0) {
+        # -FromTrack: trust the caller's own knowledge of where a previous attempt broke
+        # over the automatic missing/invalid-track scan below - e.g. rip-audio.ps1's own
+        # "cyanrip crashed ... after track N" message already names the exact track, and
+        # a crash or dropped connection can be the same failure that corrupted the cue
+        # file/disc read the automatic scan would otherwise rely on. Tracks before this
+        # number are assumed already present and are left untouched.
+        Write-Host "Continuing from track $FromTrack as requested (-FromTrack) - re-querying the disc for its real total..." -ForegroundColor Yellow
+        $totalTrackCount = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh
+        if (-not $totalTrackCount) {
+            Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Could not determine the disc's total track count (no cue file, and a live disc query returned nothing) - can't build a resume list from -FromTrack $FromTrack. Check the disc/drive and try again, or omit -FromTrack to fall back to file-based detection."
+        }
+        if ($FromTrack -gt $totalTrackCount) {
+            Stop-WithError -Step "STEP 1/4: cyanrip" -Message "-FromTrack $FromTrack is past the disc's own track count ($totalTrackCount)."
+        }
+        $remainingTracks = @($FromTrack..$totalTrackCount)
+        $script:ResumeTrackList = ($remainingTracks | ForEach-Object { $_.ToString() }) -join ","
+        if ($FromTrack -gt 1) {
+            Write-Host "Will rip tracks $FromTrack-$totalTrackCount ($($remainingTracks.Count) track(s)); tracks 1-$($FromTrack - 1) are assumed already present and will be left untouched." -ForegroundColor Yellow
+        } else {
+            Write-Host "Will rip tracks 1-$totalTrackCount ($($remainingTracks.Count) track(s)) - the whole disc, since -FromTrack 1 leaves no preceding tracks to keep." -ForegroundColor Yellow
+        }
+        Write-Log "FromTrack override: ripping tracks $($script:ResumeTrackList) of $totalTrackCount (bypassed auto-detection)"
+
+        # Heads-up only, not a block: -FromTrack is an explicit instruction and wins
+        # either way, but flag a mismatch against what's actually on disk so a wrong
+        # track number is caught before a long rip runs rather than after.
+        # Guarded on -gt 1 because PowerShell ranges descend: "1..0" yields @(1,0), not
+        # an empty set, so -FromTrack 1 would otherwise "expect" tracks 1 and 0 and warn
+        # about both on what is a perfectly valid rip-the-whole-disc invocation.
+        $precedingExpected = if ($FromTrack -gt 1) { @(1..($FromTrack - 1)) } else { @() }
+        if ($precedingExpected.Count -gt 0) {
+            $precedingFound = @()
+            foreach ($af in $existingAudioFiles) {
+                $trackNum = $null
+                if ($af.BaseName -match '^(\d+)\.(\d+)\s*-') { $trackNum = [int]$Matches[2] }
+                elseif ($af.BaseName -match '^(\d+)\s*-') { $trackNum = [int]$Matches[1] }
+                if ($trackNum -and (Test-TrackIntegrity -FilePath $af.FullName)) { $precedingFound += $trackNum }
+            }
+            $precedingMissing = @($precedingExpected | Where-Object { $_ -notin $precedingFound })
+            if ($precedingMissing.Count -gt 0) {
+                $precedingMissingList = ($precedingMissing | ForEach-Object { $_.ToString() }) -join ","
+                Write-Host "WARNING: -FromTrack $FromTrack assumes tracks 1-$($FromTrack - 1) are already valid, but track(s) $precedingMissingList were not found (or failed integrity check) in $finalOutputDir. Continuing anyway since -FromTrack was explicit - double-check the final track count once ripping finishes." -ForegroundColor Red
+                Write-Log "FromTrack warning: expected preceding track(s) $precedingMissingList not found/valid in $finalOutputDir"
+            }
+        }
+    } elseif ($existingAudioFiles.Count -gt 0) {
         Write-Host "Checking existing tracks against the disc..." -ForegroundColor Yellow
         $totalTrackCount = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter
         if ($totalTrackCount) {
