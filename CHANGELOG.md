@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-29 (later still) - Opt-In Shared-Folder Multi-Disc Mode
+
+### Added
+- **New `-DiscNum` parameter (1-99)** - opt-in mode to rip a multi-disc set into ONE shared album folder instead of the existing default of a separate "Disc N" folder per disc. Direct user request, live incident: ripping a 2-CD "Eagles - The Complete Greatest Hits" set, MusicBrainz's disc-number detection failed (503 mid-lookup) and the user had to hand-type "The Complete Greatest Hits CD 1" as the album name just to avoid an accidental-overwrite collision on disc 2 - not the folder layout they actually wanted.
+  - When `-DiscNum` is passed, the existing auto-detected "Disc N" folder-suffix append is skipped entirely - both discs share the same `-album`/`-artist` output folder.
+  - Every track filename gets a disc-number prefix (`NN - Title.ext` -> `N.NN - Title.ext`, e.g. `2.01 - Hotel California.flac`), applied in a new pass right after cyanrip's own rip/rename/tag/eject sequence completes (not interleaved with it), so disc 2's own track 1 never collides with disc 1's already-ripped `1.01 - ...` file.
+  - The "directory already exists" check, the resume/missing-track detection, and the stale-file cleanup before a fresh rip are all now disc-aware: under `-DiscNum`, a file belonging to a *different* disc number (or a bare, un-prefixed leftover) is recognised and left alone rather than counted toward the current disc's valid/missing tracks or deleted as stale. Reuses the disc.track (`N.NN`) filename pattern the resume-detection regex already recognised defensively, rather than inventing a second naming convention.
+  - Track-count lookup passes the existing `-Fresh` flag (from the earlier crash-recovery fix) whenever `-DiscNum` is set, since a `.cue` file already sitting in the shared folder could belong to a different disc than the one currently in the drive - a live disc query is the only reliable source of truth there.
+  - Cover art is unaffected by design - the existing "already exists, skip re-downloading" check in Step 3 means only the first disc actually fetches it; later discs in the same set reuse it.
+  - Purely opt-in: omitting `-DiscNum` leaves every existing single-disc and auto-detected multi-disc (separate "Album Disc N" folders) behaviour completely unchanged.
+  - README.md: new "Multi-Disc Albums" section, `-DiscNum` parameter row, updated usage synopsis, and a new example.
+
+**Known gaps, documented rather than silently left:**
+- `search-metadata.ps1`'s existing multi-disc matching logic still assumes one folder = one disc when comparing local track count against a MusicBrainz medium - it does not yet understand a `-DiscNum`-merged shared folder and should not be run against one yet.
+- The end-of-run "these tracks look untagged" prompt's generic-filename detection (`^\d{2} - .+ - .+\.flac$`) doesn't recognise the new `N.NN - ` prefix pattern, so a still-generically-named multi-disc rip may be under-flagged there. The `Unknown track`/`Unknown disc` substring check in the same condition is unaffected and still catches those.
+
+**Testing status:** verified by PowerShell tokenizer parse-check only; added lines confirmed ASCII-only. Not exercised against a real two-disc rip end-to-end - the disc-prefix rename, the disc-aware resume/stale-file filtering, and the `-Fresh` track-count bypass are each individually reasoned to be correct against the existing code they modify, but the full disc-1-then-disc-2 sequence has not been run against real hardware.
+
 ## 2026-08-29 (continued)
 
 ### Changed

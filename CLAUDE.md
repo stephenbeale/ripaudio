@@ -1552,3 +1552,106 @@ other change this session was shipped.
    whoever plans future sessions' agent usage - it stopped one task cleanly
    (nothing lost, staged changes were recovered and committed manually) but
    is a real constraint hit mid-session, not a one-off.
+
+---
+
+### 2026-08-29 (later still) - Opt-In Shared-Folder Multi-Disc Mode
+
+**Trigger:** live incident, direct follow-up to the MusicBrainz backoff work.
+Ripping a 2-CD "Eagles - The Complete Greatest Hits" set, MusicBrainz's
+multi-release disambiguation worked (`(2 CDs)` releases correctly listed and
+selected) but the follow-up detail query hit a 503, so disc-number
+auto-detection never got the chance to run. The user had to hand-type "The
+Complete Greatest Hits CD 1" as the album name purely to avoid disc 2
+colliding with disc 1's track filenames - not the folder layout they
+actually wanted ("i didnt want to name it cd 1 here but saw no other
+choice").
+
+**Design confirmed with the user before building:** two options were
+presented - a new opt-in `-DiscNum` parameter (shared folder only when
+explicitly requested, every existing single-disc and auto-detected
+multi-disc behaviour unchanged), or replacing the default multi-disc
+behaviour entirely. User chose the opt-in parameter, explicitly because it
+doesn't risk breaking `search-metadata.ps1`'s existing one-folder-per-disc
+assumption for anyone not using the new flag.
+
+**Implementation - `-DiscNum <1-99>`:**
+- Skips the existing "Disc N" folder-suffix auto-append entirely when passed
+  - both discs share one `-album`/`-artist` folder.
+- New prefix-rename pass, inserted **after** cyanrip's entire rip/title-
+  rename/tag/eject sequence completes (not interleaved with it, to avoid any
+  risk of the existing title-rename/tagging logic misreading a
+  disc-prefixed filename mid-process): every bare `NN - Title.ext` file
+  becomes `$DiscNum.NN - Title.ext`. Multi-format rips (`-format flac,mp3`)
+  are handled - the rename pass isn't extension-filtered.
+- **Two latent correctness bugs found and fixed while wiring this in, both
+  in code that predates this session:**
+  1. The resume-detection track-parsing loop already had a currently-dead
+     regex branch for `N.NN - Title` filenames (`# Handle both "01 - Title.flac"
+     and "1.01 - Title.flac" (multi-disc) formats`) that extracted the track
+     number but silently ignored *which disc* the file belonged to - so
+     disc 1's `1.05` would have satisfied disc 2's "is track 5 present?"
+     check. Fixed by also capturing and filtering on the disc-number capture
+     group under `-DiscNum`.
+  2. The "no valid tracks, remove stale files before a fresh rip" cleanup
+     used an unfiltered `Get-ChildItem -Include *.flac,...` over the whole
+     folder - under a shared multi-disc folder this would have deleted an
+     *earlier, already-ripped disc's* tracks the moment a later disc's rip
+     found nothing of its own yet. Fixed to only ever touch bare-named files
+     or this disc's own `$DiscNum.NN` files.
+- Track-count lookup passes the already-existing `-Fresh` switch (added
+  earlier today by a concurrent session's PR #145, for a different reason -
+  crash recovery) whenever `-DiscNum` is set: a `.cue` file sitting in the
+  shared folder could belong to a different disc than whichever one is
+  physically in the drive right now, so the cue-file shortcut is bypassed
+  and a live query is used instead. Lucky, well-timed prior work - no new
+  function needed for this part.
+- Cover art needed no special handling: the pre-existing "already have art,
+  skip re-downloading" check in Step 3 already means only the first disc in
+  a set actually fetches it.
+- The "directory already exists" warning wording is softened under
+  `-DiscNum` (`Shared multi-disc folder already has N file(s) from previous
+  disc(s)` instead of `WARNING: Directory already exists`) - expected state,
+  not a conflict to alarm about.
+
+**Known gaps, documented rather than silently left (both in README and
+Roadmap.md's Backlog section now):**
+1. `search-metadata.ps1`'s existing multi-disc matching (PR #85, matches
+   local track count against one MusicBrainz medium) does not understand a
+   `-DiscNum`-merged shared folder yet - don't run it against one.
+2. The end-of-run "these tracks look untagged" prompt's generic-filename
+   regex (`^\d{2} - .+ - .+\.flac$`) doesn't recognise the new `N.NN - `
+   prefix, so it may under-flag a still-generic multi-disc rip. The
+   `Unknown track`/`Unknown disc` substring check alongside it is
+   unaffected.
+
+**Files changed:** `rip-audio.ps1`, `README.md` (new "Multi-Disc Albums"
+section + parameter row + examples), `CHANGELOG.md`, `Roadmap.md` (new
+backlog item for gap #1 above), `CLAUDE.md` (this entry)
+
+**Testing status:** parse-checked only (PowerShell tokenizer, 0 errors),
+added lines confirmed ASCII-only. **Not exercised against a real two-disc
+rip end-to-end.** Each piece (the prefix rename, the disc-aware resume/
+stale-file filtering, the `-Fresh` bypass) is individually reasoned correct
+against the existing code it modifies, but the full disc-1-then-disc-2
+sequence - including the actual "Eagles - The Complete Greatest Hits" rip
+that prompted this - has not been run against real hardware yet.
+
+**Process note:** pushed directly via `gh`/`git` from this session, same as
+the MusicBrainz backoff entry immediately above - `git-manager` subagent
+capacity was still constrained at the time this was built.
+
+**Priority for Next Session:**
+1. Live end-to-end test: actually run the two `-DiscNum` commands against
+   the real Eagles 2-CD set (or any other multi-disc album on hand) and
+   confirm both discs' tracks land correctly prefixed in one folder, with no
+   collision, no false "stale file" deletion of disc 1's tracks, and correct
+   per-disc track counts.
+2. Teach `search-metadata.ps1` to handle a `-DiscNum`-merged shared folder
+   (split local files by the `N.NN - ` prefix, match/tag each disc's group
+   against its own MusicBrainz medium) - tracked in Roadmap.md's Backlog
+   section now, not yet started.
+3. Consider whether the generic-filename detection regex noted above is
+   worth widening to also recognise the `N.NN - ` prefix, once real
+   multi-disc rips have been run to see whether it actually matters in
+   practice.

@@ -73,7 +73,7 @@ Install-Module RipAudio
 ## Usage
 
 ```
-.\rip-audio.ps1 [-album <string>] [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue] [-CheckEbayPrice]
+.\rip-audio.ps1 [-album <string>] [-artist <string>] [-Drive <string>] [-OutputDrive <string>] [-format <string>] [-Quality <int>] [-RequireMusicBrainz] [-Queue] [-ProcessQueue] [-CheckEbayPrice] [-DiscNum <int>]
 ```
 
 ### Parameters
@@ -90,6 +90,7 @@ Install-Module RipAudio
 | `-Queue` | No | - | Add album to rip queue instead of ripping immediately |
 | `-ProcessQueue` | No | - | Process all entries in the rip queue sequentially |
 | `-CheckEbayPrice` | No | - | Print a clickable eBay UK sold-listings search URL for the album in the FILE SUMMARY (Buy It Now, Very Good+ condition, UK only, sold listings) |
+| `-DiscNum` | No | - | Opt-in multi-disc mode (1-99): rip into ONE shared album folder instead of a separate "Disc N" folder, with track filenames prefixed by disc number so discs don't collide. See "Multi-Disc Albums" below |
 
 ### Examples
 
@@ -161,7 +162,7 @@ Install-Module RipAudio
 # (Buy It Now, Very Good+ condition, sold listings only)
 ```
 
-**Rip a double album (one disc at a time):**
+**Rip a double album, one disc at a time, into separate folders (default):**
 ```powershell
 # With auto-discovery — disc number detected automatically
 .\rip-audio.ps1 -Drive G:
@@ -171,6 +172,14 @@ Install-Module RipAudio
 .\rip-audio.ps1 -album "Mothership Disc 1" -artist "Led Zeppelin" -Drive G:
 .\rip-audio.ps1 -album "Mothership Disc 2" -artist "Led Zeppelin" -Drive G:
 ```
+
+**Rip a double album into ONE shared folder instead, with `-DiscNum`:**
+```powershell
+.\rip-audio.ps1 -album "The Complete Greatest Hits" -artist "Eagles" -Drive D: -DiscNum 1
+# insert disc 2, then:
+.\rip-audio.ps1 -album "The Complete Greatest Hits" -artist "Eagles" -Drive H: -DiscNum 2
+```
+Both discs land in `F:\Music\Eagles\The Complete Greatest Hits\`, with each disc's tracks prefixed by disc number (`1.01 - Take It Easy.flac`, `2.01 - ...`) so disc 2's own track 1 never collides with disc 1's. See "Multi-Disc Albums" below for details.
 
 **Queue multiple albums then rip them all:**
 ```powershell
@@ -391,6 +400,25 @@ Enter release number (1-5): _
 This ensures proper track names, album art, and metadata for your specific release (region, pressing date, etc.).
 
 **Double albums:** For multi-disc sets, auto-discovery detects the disc position and appends `Disc N` to the album name automatically (e.g. "Mothership Disc 1", "Mothership Disc 2"). If providing `-album` manually, use different values for each disc to create separate output folders. In queue mode, release 1 is auto-selected.
+
+## Multi-Disc Albums
+
+By default, each disc of a multi-disc set gets its own output folder (`Album Disc 1`, `Album Disc 2`, ...) as described above — that's unchanged and still the default whether the disc number is auto-detected or you pass different `-album` values yourself.
+
+**To rip a whole multi-disc set into ONE shared folder instead**, pass `-DiscNum <n>` when ripping each disc:
+
+```powershell
+.\rip-audio.ps1 -album "The Complete Greatest Hits" -artist "Eagles" -Drive D: -DiscNum 1
+# swap discs, then:
+.\rip-audio.ps1 -album "The Complete Greatest Hits" -artist "Eagles" -Drive H: -DiscNum 2
+```
+
+- Both rips use the **same** `-album`/`-artist` (no "Disc N" suffix) and land in one folder: `F:\Music\Eagles\The Complete Greatest Hits\`.
+- Every track filename is prefixed with its disc number (`1.01 - Take It Easy.flac`, `2.01 - Hotel California (Live).flac`) so disc 2's own track 1 never collides with disc 1's — cyanrip always numbers a disc's own tracks starting at 1, and without a disc-aware prefix, ripping straight into a shared folder would make the second disc's tracks either fail to write (cyanrip won't overwrite an existing file) or silently overwrite the first disc's.
+- The "directory already exists" check and the resume/missing-track detection are both disc-aware under `-DiscNum` — an earlier disc's files sitting in the shared folder are recognised as belonging to another disc and left alone, never treated as stale or as satisfying the current disc's track list.
+- Cover art is only fetched/embedded once — if disc 1 already downloaded it, disc 2's rip reuses it rather than searching again.
+- **Known gap:** `search-metadata.ps1`'s multi-disc handling still expects one folder = one disc when matching against a MusicBrainz medium, so it does not yet understand a `-DiscNum`-merged shared folder. Don't run it against a merged multi-disc folder yet — tag manually, or wait for that follow-up.
+- **Known gap:** the end-of-run "these tracks look untagged, run search-metadata.ps1?" prompt's generic-filename detection doesn't recognise the `N.NN - ` prefix pattern, so it may under-flag a still-generically-named multi-disc rip. `Unknown track`-named files are still caught fine.
 
 ## Logging
 
