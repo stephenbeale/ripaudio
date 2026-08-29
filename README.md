@@ -320,6 +320,15 @@ Missing: 9 tracks (4, 5, 6, 7, 8, 9, 10, 11, 12)
 **Edge cases:**
 - **All tracks valid** — offers to skip the rip entirely or re-rip
 - **No valid tracks** — falls back to the standard Continue/Abort menu
+
+### Recovering from a Flaky Drive/USB Connection
+
+If your optical drive is on an unreliable USB port (random disconnects, or disconnects when bumped/when another drive is ejected), a rip can be interrupted mid-track or even mid-TOC-read. The resume feature above handles this — **just re-run the same command with the disc still in the drive** — but a few things are worth knowing about how a dropped connection actually shows up:
+
+- **Detected track count is shown before ripping starts.** If MusicBrainz/CDDB identified the disc, the "Ready to rip" confirmation banner shows `Tracks detected: N`. A suspiciously low count (2 tracks for an album you know has 12) usually means the connection dropped during the initial disc read, not during the rip itself — abort (Ctrl+C) and retry the whole command rather than proceeding, since ripping against a wrong track count won't produce a useful resume point later.
+- **A corrupt-but-nonzero file is caught, not just a zero-byte one.** A mid-write disconnect can leave a file with some bytes but an invalid container (fails `metaflac --test`). This is checked the same way the resume feature validates existing tracks, both right after cyanrip finishes and again in the verify step — a corrupt track is flagged and excluded rather than silently counted as ripped.
+- **The final banner reflects trouble even when the exit code doesn't.** cyanrip can exit 0 while still leaving a corrupt track behind (a dropped connection doesn't always make cyanrip itself report failure). If any track was skipped, marked a data error, or found corrupt, the completion banner reads `COMPLETE WITH WARNINGS` instead of `COMPLETE!`, and the affected track(s) are listed in the FILE SUMMARY.
+- **No manual file deletion needed to retry.** If cyanrip produces nothing usable at all, the error message points you back to re-running the same command rather than deleting the output folder — the resume path cleans up corrupt/zero-byte files itself.
 - **Can't determine track count** (no cue file, disc query fails) — falls back to Continue/Abort
 - **Queue mode** — auto-resumes when missing tracks are detected
 

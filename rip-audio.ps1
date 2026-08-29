@@ -181,7 +181,18 @@ function Get-DiscMetadata {
     $output = $outputLines.ToArray()
     $outputText = $output -join "`n"
 
-    $result = @{ Album = $null; Artist = $null; DiscNum = $null; TotalDiscs = $null; ReleaseChoice = $null; DiscId = $null; ReleaseId = $null }
+    $result = @{ Album = $null; Artist = $null; DiscNum = $null; TotalDiscs = $null; ReleaseChoice = $null; DiscId = $null; ReleaseId = $null; TrackCount = $null }
+
+    # Capture the disc's raw TOC track count independently of everything else below -
+    # this comes straight from cyanrip's own disc read, not from MusicBrainz/CDDB, so
+    # it's available even when metadata lookup fails entirely or the disc ID can't be
+    # parsed. A flaky USB connection dropping mid-TOC-read can make cyanrip see far
+    # fewer tracks than the disc actually has (e.g. 2 instead of 13); surfacing this
+    # number to the caller lets the pre-rip banner show it so a user who knows the
+    # album can catch an implausible count before walking away from an unattended rip.
+    if ($outputText -match 'Disc tracks:\s+(\d+)') {
+        $result.TrackCount = [int]$Matches[1]
+    }
 
     # Parse disc ID - try multiple formats cyanrip may output
     # Note: must require colon after DiscID to avoid matching "DiscID has a matching stub"
@@ -199,7 +210,12 @@ function Get-DiscMetadata {
 
     if (-not $discId) {
         Write-Host "Could not determine disc ID" -ForegroundColor Yellow
-        return $null
+        # Still return $result (not $null) rather than discarding it - a garbled/partial
+        # disc query (the exact scenario a mid-TOC-read USB disconnect produces) may still
+        # have yielded a usable TrackCount above even with no disc ID. Callers already
+        # check truthy fields individually (e.g. "$discMeta -and $discMeta.Album"), so a
+        # mostly-empty result here is equivalent to the old $null for their purposes.
+        return $result
     }
     Write-Host "Disc ID: $discId" -ForegroundColor Gray
     $result.DiscId = $discId
@@ -1093,6 +1109,14 @@ do {
     $script:MetadataSource = "MusicBrainz"
     $script:CoverArtSource = ""
     $script:SkipRip = $false
+    # Reset here (not just before use at their point of computation) so the SkipRip
+    # branch - which skips straight past cyanrip and never reaches those checks - still
+    # starts each album with empty arrays in -ProcessQueue's multi-album loop, rather
+    # than the new "COMPLETE WITH WARNINGS" banner gate below reading a previous
+    # album's stale corrupt/skipped/data-error counts against a clean album.
+    $script:CorruptTracks = @()
+    $script:SkippedTracks = @()
+    $script:DataErrorTracks = @()
     $itemFailed = $false
 
     if ($script:IsProcessingQueue) {
@@ -1319,6 +1343,15 @@ Write-Host "Format: $bannerFormat" -ForegroundColor White
 Write-Host "Using drive: $driveLetter" -ForegroundColor Yellow
 Write-Host "Output drive: $outputDriveLetter" -ForegroundColor Yellow
 Write-Host "Output path: $finalOutputDir" -ForegroundColor Yellow
+if ($discMeta -and $discMeta.TrackCount) {
+    # Surfaced here specifically so a disc query garbled by a mid-read USB disconnect
+    # (which can make cyanrip see far fewer tracks than the disc actually has) is
+    # visible before an unattended rip starts, not just discovered after the fact in
+    # the finished output. A low count doesn't hard-block - some real EPs/singles are
+    # genuinely short - it's flagged so a human who knows the album can catch it.
+    $trackCountColor = if ($discMeta.TrackCount -le 2) { "Red" } else { "Yellow" }
+    Write-Host "Tracks detected: $($discMeta.TrackCount)$(if ($discMeta.TrackCount -le 2) { ' -- unusually low; if this album has more tracks, the disc read may be incomplete (check the drive connection and retry before continuing)' })" -ForegroundColor $trackCountColor
+}
 if ($RequireMusicBrainz) {
     Write-Host "MusicBrainz: REQUIRED" -ForegroundColor Yellow
 }
@@ -2402,6 +2435,15 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 # only warn. We hard-abort only when nothing was ripped at all.
 $postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
 $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
+# Size alone isn't enough either -- a mid-write USB disconnect can leave a file with
+# nonzero size that still isn't valid audio (e.g. FLAC__METADATA_CHAIN_STATUS_NOT_A_
+# FLAC_FILE on a truncated container). Reuse the same Test-TrackIntegrity check the
+# resume-detection path already trusts, so a corrupt-but-nonzero track is caught here
+# instead of sailing through renaming/tagging into a "COMPLETE!" summary that doesn't
+# reflect what's actually on disk.
+$script:CorruptTracks = @()
+$postRipValid = @($postRipNonEmpty | Where-Object { Test-TrackIntegrity -FilePath $_.FullName })
+$postRipCorrupt = @($postRipNonEmpty | Where-Object { $_.FullName -notin @($postRipValid | ForEach-Object { $_.FullName }) })
 
 # Restore any pre-rip audio files that cyanrip destroyed (truncated to 0
 # bytes) before failing. For each backed-up file, if the corresponding
@@ -2427,13 +2469,15 @@ if ($script:PreRipBackupDir -and (Test-Path $script:PreRipBackupDir)) {
         # Refresh the post-rip state now that files have been restored
         $postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
         $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
+        $postRipValid = @($postRipNonEmpty | Where-Object { Test-TrackIntegrity -FilePath $_.FullName })
+        $postRipCorrupt = @($postRipNonEmpty | Where-Object { $_.FullName -notin @($postRipValid | ForEach-Object { $_.FullName }) })
     }
     try { Remove-Item -LiteralPath $script:PreRipBackupDir -Recurse -Force -ErrorAction Stop } catch { Write-Log "Could not remove backup dir $($script:PreRipBackupDir): $_" }
     $script:PreRipBackupDir = $null
 }
 
-if ($postRipNonEmpty.Count -eq 0) {
-    # Nothing ripped -- fail hard with the best diagnostic we can muster
+if ($postRipValid.Count -eq 0) {
+    # Nothing usable ripped -- fail hard with the best diagnostic we can muster
     $silentFailureMessage = if ($cyanripOutputText -match "no disc" -or $cyanripOutputText -match "no medium" -or $cyanripOutputText -match "drive is empty") {
         "No disc in drive $driveLetter - please insert an audio CD"
     } elseif ($cyanripOutputText -match "not an audio" -or $cyanripOutputText -match "data disc") {
@@ -2441,9 +2485,13 @@ if ($postRipNonEmpty.Count -eq 0) {
     } elseif ($cyanripOutputText -match "drive not found" -or $cyanripOutputText -match "cannot open") {
         "Could not access drive $driveLetter - verify drive letter is correct"
     } elseif ($cyanripOutputText -match 'could not read TOC|Invalid number of tracks|Could not determine disc ID') {
-        "cyanrip could not read the disc TOC -- disc may be dirty, damaged, or the wrong type. Try cleaning the disc or trying another drive."
+        "cyanrip could not read the disc TOC -- disc may be dirty, damaged, or the wrong type. Try cleaning the disc, trying another drive, or checking the USB connection."
     } elseif ($postRipAudio.Count -gt 0) {
-        "cyanrip produced $($postRipAudio.Count) zero-byte file(s) -- existing stale files in the output directory were not overwritten. Delete $finalOutputDir and retry."
+        # No manual deletion needed - re-running this same command with the disc back
+        # in the drive hits the existing-directory resume path (see README "Resuming
+        # Interrupted Rips"), which detects these corrupt/zero-byte files via the same
+        # Test-TrackIntegrity check, treats them as missing, and cleans them up itself.
+        "cyanrip produced $($postRipAudio.Count) corrupt/zero-byte file(s) and nothing valid - likely a dropped drive connection mid-rip. Re-run this same command with the disc still in the drive; the script will detect the failed attempt and offer to clean up and retry."
     } elseif ($cyanripExitCode -ne 0) {
         "cyanrip exited with code $cyanripExitCode and produced no audio files. Check the cyanrip output above for errors."
     } else {
@@ -2452,14 +2500,28 @@ if ($postRipNonEmpty.Count -eq 0) {
     Write-Host "`nERROR: $silentFailureMessage" -ForegroundColor Red
     Write-Log "Silent cyanrip failure: $silentFailureMessage"
     Stop-WithError -Step "STEP 1/4: cyanrip" -Message $silentFailureMessage
-} elseif ($cyanripExitCode -ne 0) {
-    # Partial rip -- some audio landed on disk but cyanrip reported a
-    # non-zero exit (typically from the resume pass hitting an unreadable
-    # sector). Warn the user but keep what we have and continue to the
-    # rest of the pipeline; they'd rather have 13/17 tracks than nothing.
-    Write-Host "`nWARNING: cyanrip exited with code $cyanripExitCode but $($postRipNonEmpty.Count) track(s) were ripped successfully." -ForegroundColor Yellow
-    Write-Host "Continuing with partial rip -- damaged tracks (if any) will be missing from the output." -ForegroundColor Yellow
-    Write-Log "Partial rip accepted: exit=$cyanripExitCode, $($postRipNonEmpty.Count) non-empty audio file(s) in $finalOutputDir"
+} else {
+    if ($cyanripExitCode -ne 0) {
+        # Partial rip -- some audio landed on disk but cyanrip reported a
+        # non-zero exit (typically from the resume pass hitting an unreadable
+        # sector). Warn the user but keep what we have and continue to the
+        # rest of the pipeline; they'd rather have 13/17 tracks than nothing.
+        Write-Host "`nWARNING: cyanrip exited with code $cyanripExitCode but $($postRipValid.Count) track(s) were ripped successfully." -ForegroundColor Yellow
+        Write-Host "Continuing with partial rip -- damaged tracks (if any) will be missing from the output." -ForegroundColor Yellow
+        Write-Log "Partial rip accepted: exit=$cyanripExitCode, $($postRipValid.Count) valid audio file(s) in $finalOutputDir"
+    }
+    if ($postRipCorrupt.Count -gt 0) {
+        # Deliberately checked independently of the exit-code branch above - cyanrip
+        # can exit 0 while still leaving a corrupt/zero-byte track behind (a USB
+        # disconnect doesn't always make cyanrip itself report failure), so this must
+        # not be conditional on a non-zero exit code or it silently slips through into
+        # a "COMPLETE!" summary that doesn't reflect what's actually on disk.
+        $corruptNames = ($postRipCorrupt | ForEach-Object { $_.Name }) -join ", "
+        Write-Host "`nWARNING: $($postRipCorrupt.Count) file(s) are corrupt or zero-byte and will NOT be usable: $corruptNames" -ForegroundColor Red
+        Write-Host "This usually means the drive connection dropped partway through that track. Re-run this same command with the disc still in the drive to resume just the affected track(s)." -ForegroundColor Yellow
+        Write-Log "Corrupt/zero-byte post-rip file(s): $corruptNames"
+        $script:CorruptTracks = $postRipCorrupt.Name
+    }
 }
 
 Write-Host "`ncyanrip complete!" -ForegroundColor Green
@@ -2821,15 +2883,17 @@ Write-Log "STEP 2/4: Verifying output..."
 Write-Host "`n[STEP 2/4] Verifying output..." -ForegroundColor Green
 Write-Timestamp "Step 2 started"
 
-# Check for ripped files based on format(s). Zero-byte files are treated
-# as not ripped -- they indicate a silent cyanrip failure where the output
-# file was created but never written to.
+# Check for ripped files based on format(s). Zero-byte and corrupt files are treated
+# as not ripped -- both indicate a silent cyanrip failure (most often a dropped drive
+# connection mid-write) where the output file was created but never validly written.
+# Test-TrackIntegrity (the same check the resume-detection and Step 1 post-rip checks
+# use) catches a truncated-but-nonzero file that a size-only check would miss.
 $formatExtMap = @{ "flac" = "*.flac"; "mp3" = "*.mp3"; "opus" = "*.opus"; "aac" = "*.m4a"; "wav" = "*.wav"; "alac" = "*.m4a" }
 $rippedFiles = @()
 foreach ($f in $formatList) {
     $ext = $formatExtMap[$f]
     if ($ext) {
-        $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 }
+        $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 -and (Test-TrackIntegrity -FilePath $_.FullName) }
         if ($files) { $rippedFiles += $files }
     }
 }
@@ -3122,8 +3186,18 @@ Start-Process explorer.exe -ArgumentList "`"$($finalOutputDir.TrimEnd('\'))`""
 Write-Timestamp "Step 4 complete"
 Complete-CurrentStep
 
+# A clean exit code and a finished pipeline don't mean the rip is actually complete -
+# corrupt/zero-byte tracks (caught in Step 1) or skipped/data-error tracks (caught
+# during ripping) can both leave real gaps in the output. Reflect that in the banner
+# itself rather than only in the FILE SUMMARY further down, so a walk-away rip that
+# hit trouble doesn't read as an unqualified success at a glance.
+$hasIncompleteTracks = $script:CorruptTracks.Count -gt 0 -or $script:SkippedTracks.Count -gt 0 -or $script:DataErrorTracks.Count -gt 0
 Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "COMPLETE!" -ForegroundColor Green
+if ($hasIncompleteTracks) {
+    Write-Host "COMPLETE WITH WARNINGS - see FILE SUMMARY below" -ForegroundColor Yellow
+} else {
+    Write-Host "COMPLETE!" -ForegroundColor Green
+}
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Timestamp "Session complete"
 
@@ -3164,6 +3238,9 @@ if ($script:SkippedTracks.Count -gt 0) {
 if ($script:DataErrorTracks.Count -gt 0) {
     Write-Host "  Data errors: $($script:DataErrorTracks.Count) track(s) marked _DATA_ERROR (tracks $($script:DataErrorTracks -join ', '))" -ForegroundColor Red
 }
+if ($script:CorruptTracks.Count -gt 0) {
+    Write-Host "  Corrupt/zero-byte (not usable): $($script:CorruptTracks.Count) file(s) ($($script:CorruptTracks -join ', ')) - re-run this command with the disc still in the drive to resume" -ForegroundColor Red
+}
 Write-Host "  Log file: $($script:LogFile)" -ForegroundColor White
 Write-Host "========================================`n" -ForegroundColor Cyan
 
@@ -3183,6 +3260,9 @@ if ($script:SkippedTracks.Count -gt 0) {
 }
 if ($script:DataErrorTracks.Count -gt 0) {
     Write-Log "Data errors: $($script:DataErrorTracks.Count) track(s) marked _DATA_ERROR (tracks $($script:DataErrorTracks -join ', '))"
+}
+if ($script:CorruptTracks.Count -gt 0) {
+    Write-Log "Corrupt/zero-byte (not usable): $($script:CorruptTracks.Count) file(s) ($($script:CorruptTracks -join ', '))"
 }
 
 # If MusicBrainz had no match the tracks will be named "Unknown track".
