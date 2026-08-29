@@ -1393,3 +1393,60 @@ flagged here so it stays visible.
    `DISCOGS_TOKEN` (now set) through a real interactive `search-metadata.ps1`
    run; Dylan Thomas `Under Milk Wood` stays exactly as is until the user raises
    it again; PSGallery publish still pending.
+
+---
+
+### 2026-08-29 (later) - MusicBrainz Retry Backoff
+
+**Trigger:** live pattern this session - the pre-rip MusicBrainz connectivity
+check failed with `503 Server Unavailable` across several separate rip
+attempts, and each `[R]` Retry sent the exact same request again instantly.
+User: "ps api still failing".
+
+**Change:** both pre-flight connectivity-check retry loops now back off before
+each successive retry - 5s, 10s, then 15s (capped) - instead of re-hitting the
+API with no gap. Each attempt is numbered in the log line, so a genuinely
+sustained outage across multiple rips is now visible after the fact instead of
+every failure looking identical in the log.
+
+**Deliberately scoped narrowly:** only the two connectivity-*check* retry
+loops (`-RequireMusicBrainz` path and the normal `[R]/[C]/[Q]` path) got the
+backoff. The separate, heavier retry loop further down - where cyanrip itself
+reports `MusicBrainz query failed`/`Connection failed` mid-rip and retry
+re-invokes cyanrip entirely - was not touched, since it wasn't the path hit in
+the observed failures and re-running cyanrip is a much bigger operation to
+add an automatic delay in front of without more thought.
+
+**What this does NOT do:** it does not make MusicBrainz come back up. If
+today's repeated 503s are a genuine sustained outage or a rate limit tied to
+this machine/User-Agent, backing off the client's own retry timing won't fix
+that - it only stops the client from hammering an already-struggling service
+while waiting it out. See the backlog item raised alongside this fix for the
+question of whether the repeated failures are worth investigating further.
+
+**Files changed:** `rip-audio.ps1`, `README.md`, `CHANGELOG.md`, `CLAUDE.md`
+(this entry)
+
+**Testing status:** parse-checked only (PowerShell tokenizer, 0 errors),
+added lines confirmed ASCII-only. Not exercised against a real, live
+MusicBrainz outage - the backoff timing has not been observed actually
+resolving a real 503 faster than instant retries would have.
+
+**Process note:** this PR/commit was pushed directly via `gh`/`git` from this
+session rather than through the `git-manager` subagent - the subagent hit the
+account's monthly spend limit mid-task on the immediately preceding ripdisc
+PR and failed before committing. The same branch/commit/PR/sign-off-comment/
+squash-merge workflow was followed manually to keep parity with how every
+other change this session was shipped.
+
+**Priority for Next Session:**
+1. Watch whether MusicBrainz 503s keep recurring across future sessions - if
+   so, this is worth escalating past a client-side timing tweak (see the
+   backlog item).
+2. Consider whether the heavier cyanrip-mid-rip retry loop (deliberately not
+   touched here) would benefit from the same backoff treatment if it turns
+   out to hit the same rate-limit/outage pattern in practice.
+3. `git-manager`/subagent spend-limit exhaustion is itself worth noting for
+   whoever plans future sessions' agent usage - it stopped one task cleanly
+   (nothing lost, staged changes were recovered and committed manually) but
+   is a real constraint hit mid-session, not a one-off.
