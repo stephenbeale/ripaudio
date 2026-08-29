@@ -1780,3 +1780,44 @@ has not been observed catching an actual stall live yet.
    paranoia recovery; too long just delays the same outcome.
 3. Everything carried from the three-bugs entry above still stands,
    including that the Eagles disc-2 folder itself is still not cleaned up.
+
+---
+
+### 2026-08-29 (still going) - Get-DiscTrackCount's Own MB Dependency
+
+**Trigger:** the very next rip attempt (user: "this has not worked - some
+weird files") revealed the previous `-Fresh` fix hadn't actually solved the
+problem live - `Get-DiscTrackCount`'s live-query fallback itself calls
+`cyanrip -I` **without** `-N`, so on this session's ongoing MusicBrainz
+outage, the query could fail to reach `Disc tracks: N` at all, falling back
+to the "could not determine track count" menu and a blind full re-rip. That
+re-rip then collided with a stale mistagged leftover file from an earlier
+incident, orphaning a genuinely fresh track 1 under an un-renamed filename
+next to the bogus old one. Diagnosed by reading the actual folder contents
+directly (`Get-ChildItem`), not just the log - the log alone didn't show
+what happened after it stopped (Mp3tag was used manually afterward, hours
+later, outside any script's logging).
+
+**Fixed:** `-N` added to `Get-DiscTrackCount`'s live query in both files
+(it never needed MusicBrainz, only the TOC track count); the "could not
+determine track count" fallback now cleans up existing audio files before
+its blind re-rip, matching what the "no valid tracks" branch already did.
+
+**Still unresolved:** the actual Eagles disc-2 folder remains in a broken
+state (stale 0.15MB track 1, duplicated track 16) - not touched by this
+fix, needs manual deletion and a fresh re-rip once verified working.
+
+**Files changed:** `rip-audio.ps1`, `continue-rip-audio.ps1`,
+`CHANGELOG.md`, `CLAUDE.md` (this entry)
+
+**Testing status:** both files parse-checked clean, added lines ASCII-only.
+Not exercised against a real repeat of either failure.
+
+**Priority for Next Session:**
+1. Delete `F:\Music\Eagles\The Complete Greatest Hits CD 2` entirely and
+   re-rip from scratch - third+ attempt, but this time with the `-N`
+   track-count fix and the stale-cleanup fix both in place.
+2. Confirm which drive actually has the disc before starting - this
+   session's attempts alternated between `-Drive H` and `-Drive D` without
+   clear confirmation either was deliberate.
+3. Everything carried from the silence-timeout entry above still stands.
