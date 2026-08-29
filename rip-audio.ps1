@@ -962,8 +962,11 @@ if (-not $Drive) {
         Write-Host "Wait for that rip to finish, or re-run with a different -Drive." -ForegroundColor Yellow
         exit 1
     } elseif ($matchedDrive) {
-        Write-Host "Using optical drive:" -ForegroundColor Gray
-        Write-DriveListLine -DriveInfo $matchedDrive -Selected $true
+        # Show every detected drive, not just the matched one - matches the shape of the
+        # busy/not-found error paths right below (and ripdisc's own drive listing), so an
+        # explicit -Drive doesn't hide other drives the user might have meant instead.
+        Write-Host "Optical drives detected:" -ForegroundColor Cyan
+        foreach ($d in $opticalDrives) { Write-DriveListLine -DriveInfo $d -Selected ($d.Drive -eq $explicitDriveLetter) }
     } elseif ($opticalDrives.Count -gt 0) {
         # WMI saw at least one real optical drive, just not this one - a reliable signal
         # that the requested letter is wrong, so fail fast with the actual options instead
