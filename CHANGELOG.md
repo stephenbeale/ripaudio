@@ -15,6 +15,14 @@ All notable changes to this project are documented here.
 
 **Testing status:** **verified by PowerShell tokenizer parse-check only.** No disc was ripped, no live rip was run, and a real drive-not-ready condition was never reproduced - so the new prompt, the interactive re-prompt loop, and the `-Queue`/`-ProcessQueue` `exit 1` path have not been exercised against actual hardware. The underlying `Test-DriveReady` helper this relies on is pre-existing and already used elsewhere in Step 1, but its use at this new call site is not yet proven live.
 
+### Fixed
+- **`rip-audio.ps1`'s MusicBrainz connectivity check now surfaces the real exception instead of guessing.** All three `catch` blocks in the `Checking MusicBrainz API connectivity...` section discarded `$_` entirely and printed only a generic `(API may be down, rate-limited, or blocked)` hint, with nothing written to the session log either - so a timeout, a TLS handshake failure, a proxy/firewall block, and a genuine HTTP 503 rate-limit were all indistinguishable from each other, both on screen and after the fact in the log. Each now prints `Reason: <exception message>` and writes a matching `Write-Log` line.
+  - Covers the initial connectivity probe, the `-RequireMusicBrainz` retry loop (`[R]`/`[Q]`), and the normal retry loop (`[R]`/`[C]`/`[Q]`).
+  - Diagnostics only - no control flow, prompt wording, or fallback behaviour (CDDB, generic track names) changes. The existing generic hint line is kept and the real reason is added beneath it.
+  - **Note:** the first two of these three `catch` blocks were inadvertently included in the output-drive commit above (PR #138) without being described in its commit message or changelog entry; this entry documents all three together, and PR #139 carries the remaining one.
+
+**Testing status:** **verified by `Parser::ParseFile` (0 errors) only.** This repo has no test suite. The failure path was reproduced manually beforehand to confirm the old `catch` blocks yielded no diagnostic information, but a real MusicBrainz outage/timeout/TLS failure was not forced against the new code, so the exact rendered `Reason:` text has not been observed live.
+
 ## 2026-08-26 (once more)
 
 ### Added
