@@ -807,6 +807,11 @@ if ($StartFromStepNumber -le 1) {
             $lastCompletedTrack = 0
             $killedDueToErrors = $false
             $cdioErrorThreshold = 30
+            # Watchdog for the case the cdio-error counter can't catch: cyanrip going
+            # completely silent (no progress, no errors, nothing) - kept in sync with the
+            # identical watchdog in rip-audio.ps1's own copy of this function.
+            $silenceTimeoutMinutes = 5
+            $lastActivityTime = Get-Date
 
             $stdoutTask = $proc.StandardOutput.ReadLineAsync()
             $stderrTask = $proc.StandardError.ReadLineAsync()
@@ -832,6 +837,7 @@ if ($StartFromStepNumber -le 1) {
                         continue
                     }
                     $anyRead = $true
+                    $lastActivityTime = Get-Date
                     [void]$outputLines.Add($line)
 
                     $suppress = $false
@@ -862,7 +868,16 @@ if ($StartFromStepNumber -le 1) {
                     if ($taskRef -eq 'stdout') { $stdoutTask = $nextTask } else { $stderrTask = $nextTask }
                 }
                 if ($killedDueToErrors) { break }
-                if (-not $anyRead) { Start-Sleep -Milliseconds 50 }
+                if (-not $anyRead) {
+                    if (-not $proc.HasExited -and ((Get-Date) - $lastActivityTime).TotalMinutes -ge $silenceTimeoutMinutes) {
+                        Write-Host "`n*** SILENCE TIMEOUT: no cyanrip output for $silenceTimeoutMinutes minute(s) -- likely stuck on track $($lastCompletedTrack + 1) -- killing ***" -ForegroundColor Red
+                        Write-Log "Silence timeout: no cyanrip output for $silenceTimeoutMinutes minute(s) after track $lastCompletedTrack -- killing cyanrip"
+                        $killedDueToErrors = $true
+                        try { $proc.Kill() } catch {}
+                        break
+                    }
+                    Start-Sleep -Milliseconds 50
+                }
             }
 
             return @{ ExitCode = $proc.ExitCode; Output = $outputLines.ToArray(); Killed = $killedDueToErrors; LastCompletedTrack = $lastCompletedTrack }

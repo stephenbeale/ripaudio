@@ -1734,3 +1734,49 @@ constrained.
    leftover files and confirm the skip message and reduced track count
    both show correctly.
 5. Everything carried from the multi-disc entry above still stands.
+
+---
+
+### 2026-08-29 (yet again) - cyanrip Silence-Timeout Watchdog
+
+**Trigger:** the same physical Eagles disc-2 disc produced a fully silent,
+apparently-hung terminal *twice* in one session - no progress, no error
+text, nothing. User asked if it "should be verbose" (yes, it should), then
+confirmed via `busy-drive` detection that the process was genuinely still
+running, not crashed - just silent. User opted in to a watchdog fix at that
+point, having declined it the first time this came up earlier the same day.
+
+**Change:** new 5-minute silence-timeout watchdog in
+`Start-CyanripWithErrorDetection`, ported identically to both
+`rip-audio.ps1` and `continue-rip-audio.ps1`'s copies of the function.
+Tracks wall-clock time since cyanrip last produced *any* output (including
+lines suppressed from the console); kills the process if 5 minutes pass
+with nothing. Deliberately reuses the existing `Killed` result flag rather
+than a new code path, so it plugs directly into the already-proven
+skip-track/re-query-fresh/resume recovery logic at all 8 call sites in
+`rip-audio.ps1` with zero caller-side changes.
+
+**Why the existing cdio-error counter didn't catch this:** that counter
+(kills after 30 consecutive error lines) requires cyanrip to actually print
+recognisable error text. A stall deep in a paranoia-level retry loop, below
+even the 10%-progress-display threshold, can produce nothing at all for
+minutes at a time - no error, no progress, nothing to count.
+
+**Files changed:** `rip-audio.ps1`, `continue-rip-audio.ps1`,
+`README.md` (new "Silence timeout" paragraph), `CHANGELOG.md`, `CLAUDE.md`
+(this entry)
+
+**Testing status:** both files parse-checked clean, added lines ASCII-only.
+**Not exercised against a real silence timeout firing** - the mechanism
+plugs into already-proven recovery code, but the 5-minute trigger itself
+has not been observed catching an actual stall live yet.
+
+**Priority for Next Session:**
+1. Watch for the watchdog actually firing on a real stall (this exact disc
+   is the obvious candidate) and confirm the skip/resume behaves as
+   designed, not just as reasoned.
+2. Consider whether 5 minutes is the right threshold once there's a real
+   data point - too short risks killing a genuinely slow-but-working
+   paranoia recovery; too long just delays the same outcome.
+3. Everything carried from the three-bugs entry above still stands,
+   including that the Eagles disc-2 folder itself is still not cleaned up.

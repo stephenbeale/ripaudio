@@ -2030,6 +2030,12 @@ Write-Log "cyanrip command: $cmdDisplay"
 # If cyanrip hits repeated cdio errors (unreadable sectors), kill it and
 # auto-resume skipping the failed track rather than freezing indefinitely.
 $cdioErrorThreshold = 30  # consecutive cdio error lines before killing
+# Separate watchdog for the case the cdio-error counter can't catch: cyanrip going
+# completely silent (no progress lines, no errors, nothing) while working - or stuck -
+# deep in a paranoia-level retry loop below the 10% progress-display threshold on a
+# damaged/dirty sector. Confirmed live: the same disc twice produced a fully silent,
+# apparently-hung terminal with no error text at all to trigger the counter above.
+$silenceTimeoutMinutes = 5  # minutes with zero output before treating cyanrip as stuck
 $script:SkippedTracks = @()
 
 # A native crash (Windows structured-exception exit codes, e.g. -1073741819 /
@@ -2096,6 +2102,12 @@ function Start-CyanripWithErrorDetection {
     $consecutiveCdioErrors = 0
     $lastCompletedTrack = 0
     $killedDueToErrors = $false
+    $killedForSilence = $false
+    # Reset every time ANY output line is read (progress, error, anything) - tracks
+    # wall-clock time since cyanrip last said something, independent of the cdio-error
+    # counter above, which only advances on lines matching specific error text and
+    # never fires if cyanrip goes fully silent instead of erroring.
+    $lastActivityTime = Get-Date
 
     $stdoutTask = $proc.StandardOutput.ReadLineAsync()
     $stderrTask = $proc.StandardError.ReadLineAsync()
@@ -2131,6 +2143,7 @@ function Start-CyanripWithErrorDetection {
             }
 
             $anyRead = $true
+            $lastActivityTime = Get-Date
             [void]$outputLines.Add($line)
 
             # Collapse cyanrip's per-sector progress ticker down to one line
@@ -2184,6 +2197,15 @@ function Start-CyanripWithErrorDetection {
         if ($killedDueToErrors) { break }
 
         if (-not $anyRead) {
+            if (-not $proc.HasExited -and ((Get-Date) - $lastActivityTime).TotalMinutes -ge $silenceTimeoutMinutes) {
+                $failedTrack = $lastCompletedTrack + 1
+                Write-Host "`n*** SILENCE TIMEOUT: no cyanrip output for $silenceTimeoutMinutes minute(s) -- likely stuck on track $failedTrack -- killing ***" -ForegroundColor Red
+                Write-Log "Silence timeout: no cyanrip output for $silenceTimeoutMinutes minute(s) after track $lastCompletedTrack -- killing cyanrip (likely stuck on track $failedTrack)"
+                $killedDueToErrors = $true
+                $killedForSilence = $true
+                try { $proc.Kill() } catch {}
+                break
+            }
             Start-Sleep -Milliseconds 50
         }
     }
@@ -2192,6 +2214,7 @@ function Start-CyanripWithErrorDetection {
         ExitCode = $proc.ExitCode
         Output = $outputLines.ToArray()
         Killed = $killedDueToErrors
+        KilledForSilence = $killedForSilence
         LastCompletedTrack = $lastCompletedTrack
     }
 }
