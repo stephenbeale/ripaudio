@@ -264,6 +264,8 @@ If a disc is not found in MusicBrainz, the script will:
 - If tracks still have generic names, prompt to open Mp3tag (auto-detected from Program Files, 30s auto-Yes timeout)
 - Use `-RequireMusicBrainz` to stop instead of falling back
 
+**MusicBrainz connectivity retries back off automatically.** If the pre-rip connectivity check fails (e.g. a `503 Server Unavailable`), choosing `[R]` Retry waits a little longer before each successive attempt (5s, 10s, 15s, capped at 15s) rather than re-hitting the API instantly — a shared public service returning a transient error often needs a moment, and hammering it immediately just resends the request into the same rate-limit or outage window.
+
 ## Cover Art Sources
 
 Cover art is downloaded using a sequential fallback chain:

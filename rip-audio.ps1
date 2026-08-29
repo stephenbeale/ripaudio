@@ -1810,9 +1810,19 @@ try {
         Write-Host ""
 
         $resolved = $false
+        $mbRetryCount = 0
         while (-not $resolved) {
             $mbChoice = Read-Host "Choice (R/q)"
             if ($mbChoice -eq "" -or $mbChoice -match "^[Rr]") {
+                $mbRetryCount++
+                # A 503 from a shared public service often needs a moment, not an instant
+                # re-hit - hitting Enter/R repeatedly with no gap just resends the same
+                # request into the same rate limit/outage window. Backs off a little more
+                # on each successive retry (capped at 15s) rather than a flat delay, so a
+                # brief blip clears fast but a real outage doesn't get hammered.
+                $mbBackoffSeconds = [Math]::Min(5 * $mbRetryCount, 15)
+                Write-Host "Waiting ${mbBackoffSeconds}s before retrying (attempt $mbRetryCount) - avoids hammering a possibly rate-limited or still-recovering API..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds $mbBackoffSeconds
                 Write-Host "Retrying..." -ForegroundColor Yellow
                 try {
                     $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
@@ -1821,7 +1831,7 @@ try {
                 } catch {
                     Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
                     Write-Host "  Reason: $($_.Exception.Message)" -ForegroundColor DarkGray
-                    Write-Log "MusicBrainz connectivity retry failed: $($_.Exception.Message)"
+                    Write-Log "MusicBrainz connectivity retry $mbRetryCount failed: $($_.Exception.Message)"
                     Write-Host "  [R] Retry | [Q] Quit" -ForegroundColor White
                 }
             } elseif ($mbChoice -match "^[Qq]") {
@@ -1839,9 +1849,18 @@ try {
         Write-Host ""
 
         $resolved = $false
+        $mbRetryCount = 0
         while (-not $resolved) {
             $mbChoice = Read-Host "Choice (R/c/q)"
             if ($mbChoice -eq "" -or $mbChoice -match "^[Rr]") {
+                $mbRetryCount++
+                # Same reasoning as the -RequireMusicBrainz retry loop above: back off a
+                # little more on each successive retry (capped at 15s) instead of an
+                # instant re-hit, so a brief blip clears fast without hammering a real
+                # outage or rate limit.
+                $mbBackoffSeconds = [Math]::Min(5 * $mbRetryCount, 15)
+                Write-Host "Waiting ${mbBackoffSeconds}s before retrying (attempt $mbRetryCount) - avoids hammering a possibly rate-limited or still-recovering API..." -ForegroundColor DarkGray
+                Start-Sleep -Seconds $mbBackoffSeconds
                 Write-Host "Retrying..." -ForegroundColor Yellow
                 try {
                     $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
@@ -1850,7 +1869,7 @@ try {
                 } catch {
                     Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
                     Write-Host "  Reason: $($_.Exception.Message)" -ForegroundColor DarkGray
-                    Write-Log "MusicBrainz connectivity retry failed: $($_.Exception.Message)"
+                    Write-Log "MusicBrainz connectivity retry $mbRetryCount failed: $($_.Exception.Message)"
                     Write-Host "  [R] Retry | [C] Continue without metadata | [Q] Quit" -ForegroundColor White
                 }
             } elseif ($mbChoice -match "^[Cc]") {
