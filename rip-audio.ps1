@@ -1784,6 +1784,8 @@ try {
                     $resolved = $true
                 } catch {
                     Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
+                    Write-Host "  Reason: $($_.Exception.Message)" -ForegroundColor DarkGray
+                    Write-Log "MusicBrainz connectivity retry failed: $($_.Exception.Message)"
                     Write-Host "  [R] Retry | [C] Continue without metadata | [Q] Quit" -ForegroundColor White
                 }
             } elseif ($mbChoice -match "^[Cc]") {
