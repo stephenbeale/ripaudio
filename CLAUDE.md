@@ -1902,3 +1902,74 @@ for continuity only; not evaluated or touched as part of this close-out.
    the silence-timeout entry before it (watch for the watchdog firing live).
 4. Hardware-validate PR #144/#145 if not already done (carried from pt 4,
    status not re-checked this close-out).
+
+---
+
+### 2026-08-29 (pt 6) - Session Close: Eagles Disc 2 Re-Rip Validates PR #154
+
+**Trigger:** end-of-session close-out, after the user confirmed a real rip
+succeeded ("that seems to have worked now") following the Get-DiscTrackCount
+fix above.
+
+**Eagles disc 2 re-rip validated:** `F:\Music\Eagles\The Complete Greatest
+Hits CD 2` (the "Priority for Next Session" item #1 from the entry above)
+was deleted and re-ripped. New log
+(`The Complete Greatest Hits CD2.log`) shows ripping started 18:59:26 - about
+four minutes after PR #154's `-N`/stale-cleanup fix landed at 18:55:43 - and
+finished 19:22:31 with all 16 tracks ripped and encoded successfully,
+`Ripping errors: 0`, no stale-file collision. Folder contents confirmed clean
+by direct listing: 16 correctly-named tracks, one cue, one log, one cover
+image, no leftover 0.15MB stale file or orphaned un-renamed track. Timing and
+outcome are consistent with PR #154's fix being what let this attempt
+succeed where prior attempts didn't, and this is the first real rip to
+exercise it - but the cyanrip log itself shows a clean first-pass rip with no
+retries or MusicBrainz failures visible in the log, so this isn't a smoking-
+gun trace of the fix actively intervening, only a circumstantial (timing +
+outcome) validation. Track-count-only `-N` query worked; no direct evidence
+either way of the fallback/stale-cleanup code path having actually fired.
+
+**Eagles disc 1 also checked** (`F:\Music\Eagles\The Complete Greatest Hits
+CD 1`, ripped earlier in the session and never revisited until now): folder
+is complete and internally consistent - 17 correctly-named tracks, one cue,
+one log, one cover image, no stale/duplicate files. One cosmetic-only
+observation: its cue/log are still named `Unknown disc (0081)` rather than
+carrying the album name the way disc 2's do - not a defect, just a naming
+inconsistency between the two discs of the same release, not investigated
+further.
+
+**Still not validated against a real repeat of their triggering scenario:**
+the 5-minute cyanrip silence-timeout watchdog (PR #153) and the other fixes
+from the "Three Real Bugs From One Bad Rip" entry - tonight's clean CD2 rip
+didn't hit a silent stall, so the watchdog specifically has still never
+fired live.
+
+**git-manager spend limit, informational only:** for roughly the back half
+of this session, git workflow (branch/commit/push/PR open/sign-off
+comment/squash-merge) was done directly via `gh`/`git` from the main
+conversation rather than through the `git-manager` subagent, because
+`git-manager` hit the account's monthly spend limit mid-task. It failed
+cleanly on one PR in the sibling `ripdisc` repo, which was then recovered and
+completed manually - no work was lost. Not something to action; just flagging
+in case the limit has reset by next session and `git-manager` should resume
+being the default per this project's usual convention. This session's close-
+out verification itself was also done directly rather than via `git-manager`,
+same reason.
+
+**Session Verified Clean:**
+- `master`, up to date with `origin/master`, working tree clean, no stashes
+- `git fetch --prune` found nothing new to prune
+- Local branches: `master` only - `feature/continue-rip-audio` (merged by a
+  concurrent session partway through this session) confirmed fully gone from
+  both local and remote
+- `gh pr list --state open`: none
+
+**Priority for Next Session:**
+1. Watch for the cyanrip silence-timeout watchdog (PR #153) to fire live -
+   still unvalidated against a real stall.
+2. MusicBrainz 503 reliability (tracked in `Roadmap.md`'s Backlog) - recurred
+   multiple times this session, root cause still not diagnosed, only
+   client-side mitigations (including tonight's `-N` fix) in place so far.
+3. `search-metadata.ps1` doesn't yet understand the new `-DiscNum` shared
+   multi-disc folder format (tracked in `Roadmap.md`'s Backlog).
+4. Everything else carried from pt 5 above (continue-rip-audio.ps1 hardware
+   validation, crash-exit-resume porting) still stands.
