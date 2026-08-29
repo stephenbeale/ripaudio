@@ -320,6 +320,8 @@ Missing: 9 tracks (4, 5, 6, 7, 8, 9, 10, 11, 12)
 **Edge cases:**
 - **All tracks valid** — offers to skip the rip entirely or re-rip
 - **No valid tracks** — falls back to the standard Continue/Abort menu
+- **Can't determine track count** (no cue file, disc query fails) — falls back to Continue/Abort
+- **Queue mode** — auto-resumes when missing tracks are detected
 
 ### Recovering from a Flaky Drive/USB Connection
 
@@ -329,8 +331,6 @@ If your optical drive is on an unreliable USB port (random disconnects, or disco
 - **A corrupt-but-nonzero file is caught, not just a zero-byte one.** A mid-write disconnect can leave a file with some bytes but an invalid container (fails `metaflac --test`). This is checked the same way the resume feature validates existing tracks, both right after cyanrip finishes and again in the verify step — a corrupt track is flagged and excluded rather than silently counted as ripped.
 - **The final banner reflects trouble even when the exit code doesn't.** cyanrip can exit 0 while still leaving a corrupt track behind (a dropped connection doesn't always make cyanrip itself report failure). If any track was skipped, marked a data error, or found corrupt, the completion banner reads `COMPLETE WITH WARNINGS` instead of `COMPLETE!`, and the affected track(s) are listed in the FILE SUMMARY.
 - **No manual file deletion needed to retry.** If cyanrip produces nothing usable at all, the error message points you back to re-running the same command rather than deleting the output folder — the resume path cleans up corrupt/zero-byte files itself.
-- **Can't determine track count** (no cue file, disc query fails) — falls back to Continue/Abort
-- **Queue mode** — auto-resumes when missing tracks are detected
 
 ## MusicBrainz Release Selection
 
