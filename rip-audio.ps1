@@ -134,13 +134,20 @@ function Test-TrackIntegrity {
     param([string]$FilePath)
     $ext = [System.IO.Path]::GetExtension($FilePath).ToLower()
     if ($ext -eq ".flac") {
-        $metaflac = Get-Command metaflac -ErrorAction SilentlyContinue
-        if ($metaflac) {
-            & metaflac --test $FilePath 2>$null
+        # Verified live against the installed FLAC 1.5.0: metaflac has no --test option at
+        # all (it only edits/reads metadata blocks, it never decodes the audio stream) --
+        # "metaflac --test" always printed "unrecognized option" usage text and exited 1,
+        # so this check was unconditionally returning $false for every FLAC file regardless
+        # of validity. "flac --test" (the decoder, bundled in the same install) is the tool
+        # that actually verifies a FLAC file decodes cleanly; confirmed it correctly passes
+        # a good file and fails a deliberately truncated one.
+        $flacExe = Get-Command flac -ErrorAction SilentlyContinue
+        if ($flacExe) {
+            & flac --test --totally-silent $FilePath 2>$null
             return $LASTEXITCODE -eq 0
         }
     }
-    # For non-FLAC or no metaflac: check file size > 10KB
+    # For non-FLAC or no flac.exe: check file size > 10KB
     return (Get-Item $FilePath).Length -gt 10240
 }
 
