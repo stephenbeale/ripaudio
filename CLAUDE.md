@@ -1290,3 +1290,106 @@ work. No CLAUDE.md session-notes entry exists for it yet beyond this note.
    above, do not treat as urgent.
 5. PSGallery publish still pending — get API key from powershellgallery.com
    and run `Publish-Module`.
+
+---
+
+### 2026-08-29 (pt 4) - Session Close: PRs #144/#145/#147 (Drive List, Crash Resume, FLAC Test Fix); PR #143 Open
+
+**PR #144 merged (`f2e9177`) - `fix(rip): show all optical drives when -Drive is
+passed explicitly`:** user-reported bug with a real repro command in the PR body.
+An explicit `-Drive` printed only the single matched drive, unlike its sibling
+error-path branches in the same if/elseif chain (busy drive, drive not found) and
+unlike ripdisc's convention (established for PR #130) of always showing the full
+detected-drive list with a `<--`/`-Selected` marker. Now loops over
+`$opticalDrives` via `Write-DriveListLine` for every branch alike. Display-only,
+no selection/validation logic touched. **Not hardware-validated** - the user has
+not yet re-run their repro command to confirm all 3 of their real drives (D:, G:,
+H:) now list correctly.
+
+**PR #145 merged (`856553f`) - `fix(rip): auto-resume cyanrip crashes and
+re-query track count fresh`:** two-part fix for a real incident this session - a
+cyanrip crash (Windows access violation, exit `-1073741819`) on "Destination
+Anywhere" by Jon Bon Jovi after track 8, silently accepted as a finished 8-track
+rip.
+1. New `Test-CyanripCrashExit` helper (`$ExitCode -le -1000000`) widens the
+   resume-loop trigger, which previously fired only on `$result.Killed` (the
+   script's own deliberate watchdog-kill after repeated cdio errors) - a native
+   process crash never set that flag, so the existing skip-bad-track-and-resume
+   logic was unreachable for this whole failure class.
+2. The resume loop now calls `Get-DiscTrackCount -Fresh` to re-query the disc
+   live via `cyanrip -I` instead of trusting the crashed run's own
+   self-reported "Disc tracks: N" line, which can itself be corrupted by the
+   same flaky connection that caused the crash (in the real incident: disc has
+   ~12-14 tracks, crashed run self-reported a plausible-looking 9).
+
+   Related, **not acted on**: PR #141 (landed from a separate concurrent session
+   this session, already checked for conflicts - none found) has its own pre-rip
+   `$discMeta.TrackCount` that overlaps in spirit with this fresh-query fix but
+   isn't cross-checked against it - flagged as a possible follow-up, not done.
+
+   **Not hardware-validated** - no real crash was reproduced end-to-end through
+   the fixed resume loop; verified only by unit-testing `Test-CyanripCrashExit`
+   in isolation across 5 exit codes and by parser/parse-check.
+
+**PR #147 merged (`68d09d3`) - `fix(rip): use flac --test, not the nonexistent
+metaflac --test`:** root-caused why a clean, verified-good rip ("Welcome to
+Jamrock" by Damian Marley, all 15 tracks, cyanrip itself reported "Ripping
+errors: 0", user confirmed files play fine) hard-failed with "15 corrupt/zero-byte
+file(s)". `Test-TrackIntegrity`'s FLAC branch called `metaflac --test`, which is
+not a real metaflac option (metaflac only edits/reads metadata, never decodes
+audio) - verified live against the installed FLAC 1.5.0 that it always prints
+"unrecognized option" and exits 1, for every file, valid or not, so the function
+returned `$false` unconditionally. Fixed to call `flac --test --totally-silent`
+instead, probing for `flac` via `Get-Command` rather than `metaflac` - verified
+live that it passes real good files and correctly fails a deliberately truncated
+test file. Also fixed two stale `metaflac --test` doc references in README.md and
+Roadmap.md. Deliberately did **not** correct a third stale mention still sitting
+in CHANGELOG.md's existing 2026-08-29 entry for PR #141 (~line 44) - left in
+place as historical record per convention, with the new CHANGELOG entry noted as
+superseding it.
+
+The user was offered the chance to re-run the Damian Marley album through the
+now-fixed script to let it complete Steps 2-4 (verify/cover art/open), and
+**explicitly chose to leave the album as-is** - files are already correct and
+playable on disk at `F:\Music\Damian Marley\Welcome to Jamrock`; only the
+script's own bookkeeping/completion steps never ran. This was an active,
+informed choice this session, not an oversight.
+
+**Also merged this session, not evaluated as part of this close-out's own
+work:** PR #146 (`68c257d`) - `feat(rip): add -CheckEbayPrice switch for eBay UK
+sold-listings URL`, an opt-in convenience switch (off by default) that prints a
+clickable eBay UK sold-listings search URL in the FILE SUMMARY via a new
+`Get-EbaySoldListingsUrl` helper. Noted here for continuity only.
+
+**PR #143 open (`feature/continue-rip-audio`, opened 2026-08-29 07:40) - NOT
+touched or resolved this session:** adds a 979-line step-based resume script
+(`continue-rip-audio.ps1`) for interrupted rips. Conceptually overlaps with what
+#145 and #147 just changed (crash/resume handling, track-count trustworthiness)
+and may need a rebase or reconsideration before merge. It is the only open PR on
+the repo right now - left open and unresolved deliberately, per instruction, but
+flagged here so it stays visible.
+
+**Session Verified Clean:**
+- `master` at `68d09d3`, up to date with `origin/master`, working tree clean
+- No uncommitted changes, no unpushed commits, no stashes
+- Local branches: `master` (current) and `feature/continue-rip-audio` (tracks
+  `origin/feature/continue-rip-audio`, backing PR #143 - intentionally left
+  alone, do not delete)
+- `gh pr list --state open`: only #143
+
+**Priority for Next Session:**
+1. Hardware-validate PR #144: re-run the user's repro command with an explicit
+   `-Drive` and confirm all 3 real drives (D:, G:, H:) list with the selected
+   one marked.
+2. Hardware-validate PR #145: reproduce (or wait for) a real cyanrip crash and
+   confirm `Test-CyanripCrashExit` triggers the resume loop and
+   `Get-DiscTrackCount -Fresh` returns an accurate live count.
+3. Decide what to do with PR #143 - review it for overlap/conflict with #145's
+   and #147's just-landed changes before merging, rebasing, or closing it.
+4. Consider the flagged-not-done follow-up: cross-check PR #141's pre-rip
+   `$discMeta.TrackCount` against PR #145's `-Fresh` re-query fix.
+5. Carried forward unchanged from earlier this session (pt 3): live validation
+   of PR #138's output-drive prompt against real hardware; exercise
+   `DISCOGS_TOKEN` (now set) through a real interactive `search-metadata.ps1`
+   run; Dylan Thomas `Under Milk Wood` stays exactly as is until the user raises
+   it again; PSGallery publish still pending.
