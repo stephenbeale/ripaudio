@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## 2026-08-29 (continued)
+
+### Changed
+- **MusicBrainz connectivity retries now back off automatically instead of re-hitting the API instantly.** Live pattern this session: the pre-rip connectivity check failed repeatedly with `503 Server Unavailable` across multiple separate rip attempts, and hitting `[R]` Retry sent the exact same request again with no gap - a shared public service returning a transient error (rate limiting or a brief outage) often needs a moment, so an instant re-hit just resends into the same window.
+  - Both pre-flight connectivity-check retry loops (`-RequireMusicBrainz` and the normal `[R]/[C]/[Q]` path) now wait before each successive retry: 5s, then 10s, then 15s, capped at 15s. Resets each time the check is entered fresh (a new album/rip).
+  - Each retry attempt number is now included in the log line (`MusicBrainz connectivity retry N failed: ...`), so a genuinely sustained outage across many rips is easier to spot after the fact than before, when every failure logged identically.
+  - Does not touch the *other*, separate MusicBrainz-retry path (cyanrip itself reporting `MusicBrainz query failed`/`Connection failed` mid-rip, further down in the script) - that path re-invokes cyanrip on retry, a much heavier operation than a lightweight connectivity probe, and wasn't the one hit in the observed failures.
+
+**Testing status:** verified by PowerShell tokenizer parse-check only; added lines confirmed ASCII-only. Not exercised against a real, live MusicBrainz outage - the backoff timing itself has not been observed resolving a real 503 faster than instant retries would have. This does not "fix" MusicBrainz being down; it only stops the client from hammering it while it is.
+
 ## 2026-08-29
 
 ### Changed
