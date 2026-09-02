@@ -1314,7 +1314,16 @@ function Process-AlbumFolder {
     $existingTracks = Read-ExistingTags -FolderPath $FolderPath
 
     if (-not $existingTracks -or $existingTracks.Count -eq 0) {
-        $msg = "No FLAC files found in: $FolderPath"
+        # search-metadata.ps1 is entirely metaflac-based and only ever sees FLAC files.
+        # A folder ripped in another format (mp3/opus/aac/wav/alac) always lands here -
+        # check for that case so the error says why, instead of just "No FLAC files found"
+        # with no indication the folder isn't actually empty.
+        $otherAudio = Get-ChildItem -Path (Join-Path $FolderPath "*") -Include "*.mp3", "*.opus", "*.m4a", "*.wav" -ErrorAction SilentlyContinue
+        if ($otherAudio) {
+            $msg = "No FLAC files found in: $FolderPath (found $($otherAudio.Count) non-FLAC audio file(s) - search-metadata.ps1 only supports FLAC tagging; use Mp3tag or another tool for other formats)"
+        } else {
+            $msg = "No FLAC files found in: $FolderPath"
+        }
         if ($BatchMode) {
             Write-Host "  ERROR: $msg" -ForegroundColor Red
             Write-Log "  ERROR: $msg"

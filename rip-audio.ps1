@@ -3497,39 +3497,50 @@ if (-not $script:IsProcessingQueue) {
     $unknownTracks = $rippedFiles | Where-Object { $_.Name -like "*Unknown track*" }
     if ($unknownTracks.Count -gt 0) {
         Write-Host "`n  Disc not found in MusicBrainz -- $($unknownTracks.Count) track(s) are untagged." -ForegroundColor Yellow
-        Write-Host "  Run search-metadata.ps1 now to identify and tag this album? [Y/N] (auto-Yes in 30s): " -NoNewline -ForegroundColor White
-        $key = $null
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        while ($sw.Elapsed.TotalSeconds -lt 30) {
-            try {
-                if ([Console]::KeyAvailable) {
-                    $key = [Console]::ReadKey($true)
+        if ('flac' -notin $formatList) {
+            # search-metadata.ps1 is entirely metaflac-based (file scan, tag read/write,
+            # cover art embedding all shell out to metaflac) - it cannot see or tag
+            # mp3/opus/aac/wav/alac files at all. Launching it here for a non-flac rip
+            # used to hard-fail immediately with a confusing "No FLAC files found" error
+            # instead of ever reaching the Mp3tag fallback below. Skip the launch entirely
+            # for a non-flac output and let the Mp3tag fallback offer to tag it instead.
+            Write-Host "  search-metadata.ps1 only supports FLAC tagging and this album was ripped as '$format' - skipping auto-launch." -ForegroundColor Yellow
+            Write-Log "Skipped search-metadata.ps1 handoff: ripped format '$format' has no FLAC files for it to tag"
+        } else {
+            Write-Host "  Run search-metadata.ps1 now to identify and tag this album? [Y/N] (auto-Yes in 30s): " -NoNewline -ForegroundColor White
+            $key = $null
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            while ($sw.Elapsed.TotalSeconds -lt 30) {
+                try {
+                    if ([Console]::KeyAvailable) {
+                        $key = [Console]::ReadKey($true)
+                        break
+                    }
+                } catch [System.InvalidOperationException] {
+                    # Console input is redirected (e.g. running non-interactively) -
+                    # KeyAvailable throws every time in that case. Stop polling immediately
+                    # rather than re-throwing on every 200ms tick until the timeout naturally
+                    # elapses; the existing null-$key fallback below already auto-Yeses.
                     break
                 }
-            } catch [System.InvalidOperationException] {
-                # Console input is redirected (e.g. running non-interactively) -
-                # KeyAvailable throws every time in that case. Stop polling immediately
-                # rather than re-throwing on every 200ms tick until the timeout naturally
-                # elapses; the existing null-$key fallback below already auto-Yeses.
-                break
+                Start-Sleep -Milliseconds 200
             }
-            Start-Sleep -Milliseconds 200
-        }
-        $sw.Stop()
-        $choice = if ($key) { "$($key.KeyChar)".ToUpper() } else { $null }
-        if ($null -eq $choice) { Write-Host "Y (auto)" -ForegroundColor Gray; $choice = "Y" }
-        else { Write-Host $choice }
-        if ($choice -ne "N") {
-            Write-Host "  Launching search-metadata.ps1..." -ForegroundColor Cyan
-            Write-Log "Launching search-metadata.ps1 for untagged disc: $finalOutputDir"
-            $searchScript = Join-Path $PSScriptRoot "search-metadata.ps1"
-            # Quote paths: Start-Process joins -ArgumentList on spaces, so an
-            # unquoted path with spaces is split into positional parameters.
-            Start-Process powershell.exe -ArgumentList @(
-                "-NoProfile", "-ExecutionPolicy", "Bypass",
-                "-File", "`"$($searchScript.TrimEnd('\'))`"",
-                "-Path", "`"$($finalOutputDir.TrimEnd('\'))`""
-            ) -Wait -NoNewWindow
+            $sw.Stop()
+            $choice = if ($key) { "$($key.KeyChar)".ToUpper() } else { $null }
+            if ($null -eq $choice) { Write-Host "Y (auto)" -ForegroundColor Gray; $choice = "Y" }
+            else { Write-Host $choice }
+            if ($choice -ne "N") {
+                Write-Host "  Launching search-metadata.ps1..." -ForegroundColor Cyan
+                Write-Log "Launching search-metadata.ps1 for untagged disc: $finalOutputDir"
+                $searchScript = Join-Path $PSScriptRoot "search-metadata.ps1"
+                # Quote paths: Start-Process joins -ArgumentList on spaces, so an
+                # unquoted path with spaces is split into positional parameters.
+                Start-Process powershell.exe -ArgumentList @(
+                    "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-File", "`"$($searchScript.TrimEnd('\'))`"",
+                    "-Path", "`"$($finalOutputDir.TrimEnd('\'))`""
+                ) -Wait -NoNewWindow
+            }
         }
     }
 
@@ -3645,9 +3656,16 @@ public class Win32Mp3tagAuto {
     }
 
     # After search-metadata.ps1 (or if it was skipped), check if tracks are still untagged.
-    # If so, offer to open Mp3tag for manual tagging.
-    $stillUntagged = Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -match 'Unknown track|Unknown disc' -or $_.Name -match '^\d{2} - .+ - .+\.flac$' }
+    # If so, offer to open Mp3tag for manual tagging. Checked across whatever format(s)
+    # were actually ripped, not just *.flac - a mp3/opus/aac/wav/alac rip never goes
+    # through search-metadata.ps1 (it's flac-only, see above) so this is the only
+    # untagged-detection that ever runs for those formats.
+    $audioExtensions = $formatList | ForEach-Object { $formatExtMap[$_] } | Where-Object { $_ }
+    if (-not $audioExtensions) { $audioExtensions = @("*.flac") }
+    $stillUntagged = @(foreach ($ext in $audioExtensions) {
+        Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'Unknown track|Unknown disc' -or $_.Name -match '^\d{2} - .+ - .+\.\w+$' }
+    })
     if ($stillUntagged.Count -gt 0) {
         $mp3tagPath = "${env:ProgramFiles}\Mp3tag\Mp3tag.exe"
         if (-not (Test-Path $mp3tagPath)) {

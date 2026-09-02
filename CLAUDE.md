@@ -1973,3 +1973,76 @@ same reason.
    multi-disc folder format (tracked in `Roadmap.md`'s Backlog).
 4. Everything else carried from pt 5 above (continue-rip-audio.ps1 hardware
    validation, crash-exit-resume porting) still stands.
+
+---
+
+### 2026-09-02 - Non-FLAC Rips Crashed the Untagged-Disc Handoff
+
+**Trigger:** real user repro -
+`.\rip-audio.ps1 -artist "Michel Thomas" -album "French Foundation Course CD 2"
+-Drive D -OutputDrive F -format mp3`. MusicBrainz found no match, the post-rip
+"untagged tracks" handoff auto-launched `search-metadata.ps1`, and it died
+immediately with `No FLAC files found in: <path>`. The run ended there - the
+Mp3tag manual-tagging fallback was never offered either.
+
+**Root cause:** the handoff launched `search-metadata.ps1` unconditionally on a
+MusicBrainz miss, with no regard for output format. `search-metadata.ps1` is
+entirely metaflac-based - file scan, tag read/write and cover art embedding all
+shell out to `metaflac` - so it can only ever see `*.flac` files. Every
+`mp3`/`opus`/`aac`/`wav`/`alac` rip that hit an untagged disc took this path.
+
+**Second, masked bug found while fixing it:** the `$stillUntagged` Mp3tag-fallback
+check further down hardcoded `-Filter "*.flac"` too, so a pure-mp3 rip always
+found zero files and never reached the Mp3tag offer either. The two FLAC
+assumptions were hiding each other - the crash above meant execution rarely got
+this far - and fixing only the handoff would have left non-FLAC users with no
+follow-up at all rather than a fallback.
+
+**Fixed (three changes, two files):**
+- `rip-audio.ps1` handoff block: checks `'flac' -notin $formatList` and skips the
+  offer entirely for a non-FLAC rip, with an explanatory console line and
+  `Write-Log` entry in place of the crash.
+- `rip-audio.ps1` `$stillUntagged` check: extension list now built from
+  `$formatExtMap` / `$formatList` (the same map already used earlier in the
+  script to build `$rippedFiles`) rather than hardcoded, so the Mp3tag offer
+  fires for whatever format was actually ripped. Generic-filename regex widened
+  from `\.flac$` to `\.\w+$` to match.
+- `search-metadata.ps1` Step 1: when no FLAC files are found, checks for other
+  audio files (`*.mp3`, `*.opus`, `*.m4a`, `*.wav`) in the folder and, if any are
+  present, explains why rather than leaving the bare "No FLAC files found" on a
+  folder that plainly isn't empty.
+
+**Deliberately not done:** `search-metadata.ps1` remains FLAC-only. This routes
+non-FLAC rips away from it and into the Mp3tag fallback rather than teaching it
+other formats - a much larger change, since every tag operation in that script is
+a `metaflac` shell-out. Also untouched: the generic-filename regex still doesn't
+recognise the `N.NN - ` prefix from `-DiscNum` shared multi-disc folders
+(pre-existing gap, already documented in the `-DiscNum` entry above).
+
+**Harmless edge case, noted not fixed:** `-format aac,alac` maps both formats to
+`*.m4a`, so `$audioExtensions` can hold a duplicate and the same file be counted
+twice. `$stillUntagged` is only ever used as a `.Count -gt 0` boolean gate, so
+this changes no behaviour; left alone to keep the diff minimal.
+
+**Files changed:** `rip-audio.ps1`, `search-metadata.ps1`, `CHANGELOG.md`,
+`CLAUDE.md` (this entry)
+
+**Testing status:** both scripts parse-checked clean (`PSParser::Tokenize`, 0
+errors), added lines confirmed ASCII-only per this repo's convention. **Not
+hardware-validated** - no real mp3 rip hitting an untagged disc has been run
+against the fix. Both fixes are reasoned correct against the exact failure
+sequence in the reported repro, not independently reproduced end to end.
+
+**Process note - self-approval (recurring, expected):** `gh pr review --approve`
+still cannot succeed on this repo; sign-off recorded as a PR comment and the PR
+squash-merged with zero formal approvals, same as every prior session.
+
+**Priority for Next Session:**
+1. Live validation of this fix: re-run the Michel Thomas repro (mp3 rip, disc not
+   in MusicBrainz) and confirm the skip message appears instead of the crash, and
+   that the Mp3tag fallback is then actually offered for the mp3 files.
+2. Consider whether the generic-filename regex is worth widening to recognise the
+   `N.NN - ` `-DiscNum` prefix - now relevant to more formats than before.
+3. Everything carried from pt 6 above still stands (silence-timeout watchdog
+   unvalidated, MusicBrainz 503 reliability, `search-metadata.ps1` vs `-DiscNum`,
+   continue-rip-audio.ps1 hardware validation).
