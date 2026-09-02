@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## 2026-09-02 - Non-FLAC Rips Crashed the Untagged-Disc Handoff
+
+### Fixed
+- **The post-rip "untagged tracks" handoff launched `search-metadata.ps1` regardless of output format, and `search-metadata.ps1` is FLAC-only.** Whenever a ripped disc had no MusicBrainz match, `rip-audio.ps1` offered (and auto-Yes'd after 30s) a launch of `search-metadata.ps1`. That script is entirely metaflac-based - file scan, tag read/write and cover art embedding all shell out to `metaflac` - so it can only ever see `*.flac` files. Ripping in `mp3` (or `opus`/`aac`/`wav`/`alac`) and hitting an untagged disc therefore hard-failed the handoff immediately with `No FLAC files found in: <path>`, and the run ended there.
+  - Real repro: `.\rip-audio.ps1 -artist "Michel Thomas" -album "French Foundation Course CD 2" -Drive D -OutputDrive F -format mp3` - MusicBrainz found no match, `search-metadata.ps1` auto-launched, failed with that exact error, and no fallback was offered.
+  - The handoff block now checks `'flac' -notin $formatList` and skips the launch entirely for a non-FLAC rip, with an explanatory console line and log entry instead of a crash.
+- **The Mp3tag manual-tagging fallback was also hardcoded to `*.flac`, so skipping the handoff alone would have left non-FLAC rips with no follow-up at all.** The `$stillUntagged` check further down used `-Filter "*.flac"`, meaning a pure-mp3 rip always found zero files and never reached the Mp3tag offer either - the two FLAC assumptions were masking each other, since the crash above meant execution rarely got this far anyway.
+  - The extension list is now built from `$formatExtMap` / `$formatList` (the same map already used earlier in the script to build `$rippedFiles`), so the Mp3tag offer fires for whatever format was actually ripped. The generic-filename regex was widened from `\.flac$` to `\.\w+$` to match.
+- **`search-metadata.ps1`'s "No FLAC files found" error was confusing when the folder plainly wasn't empty.** Step 1 now checks for other audio files (`*.mp3`, `*.opus`, `*.m4a`, `*.wav`) in the folder and, if any are present, says why: `search-metadata.ps1 only supports FLAC tagging; use Mp3tag or another tool for other formats`.
+
+**Known gap, not addressed here:** `search-metadata.ps1` remains FLAC-only - this change routes non-FLAC rips away from it and into the Mp3tag fallback rather than teaching it other formats. Also unchanged: the generic-filename regex still doesn't recognise the `N.NN - ` prefix from `-DiscNum` shared multi-disc folders (pre-existing, already noted in the `-DiscNum` entry below).
+
+**Testing status:** both files parse-checked clean (`PSParser::Tokenize`, 0 errors), added lines confirmed ASCII-only. **Not hardware-validated** - no real mp3 rip hitting an untagged disc has been run against the fix; the change is reasoned correct against the exact failure sequence in the reported repro.
+
 ## 2026-08-29 (still going) - Get-DiscTrackCount's Own MusicBrainz Dependency, and a Stale-File Collision
 
 ### Fixed
