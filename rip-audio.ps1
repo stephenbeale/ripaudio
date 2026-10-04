@@ -2676,6 +2676,11 @@ if ($postRipValid.Count -eq 0) {
         "No disc in drive $driveLetter - please insert an audio CD"
     } elseif ($cyanripOutputText -match "not an audio" -or $cyanripOutputText -match "data disc") {
         "Disc in $driveLetter is not an audio CD"
+    } elseif ($cyanripOutputText -match "Unable to open device") {
+        # cyanrip senses the drive but libcdio can't open it: either another app holds it,
+        # or the disc isn't an audio CD (a DVD/data disc also triggers the bogus
+        # "number of minutes (255) truncated" warning just before this).
+        "Drive $driveLetter is either busy or doesn't contain an audio CD"
     } elseif ($cyanripOutputText -match "drive not found" -or $cyanripOutputText -match "cannot open") {
         "Could not access drive $driveLetter - verify drive letter is correct"
     } elseif ($cyanripOutputText -match 'could not read TOC|Invalid number of tracks|Could not determine disc ID') {
