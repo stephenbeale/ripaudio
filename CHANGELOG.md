@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## 2026-10-04 - Clearer "Unable to open device" Error
+
+### Fixed
+- **cyanrip's `Unable to open device!` fell through to the generic "exited with code 1 and produced no audio files" message.** cyanrip senses the drive but can't open it when another app holds the drive or the disc isn't an audio CD (e.g. a DVD - which also triggers cyanrip's bogus `number of minutes (255) truncated` warning). Now reported as `Drive E: is either busy or doesn't contain an audio CD`.
+  - Real repro: `.\rip-audio.ps1 -artist "Jethro Tull" -album "This Was" -OutputDrive F -Drive E` with a DVD (`SILICON VALLEY S2 D2`) in `E:`.
+
+**Testing status:** parse-checked clean, added lines ASCII-only. Not re-run against the drive.
+
 ## 2026-09-02 - Non-FLAC Rips Crashed the Untagged-Disc Handoff
 
 ### Fixed
