@@ -2046,3 +2046,20 @@ squash-merged with zero formal approvals, same as every prior session.
 3. Everything carried from pt 6 above still stands (silence-timeout watchdog
    unvalidated, MusicBrainz 503 reliability, `search-metadata.ps1` vs `-DiscNum`,
    continue-rip-audio.ps1 hardware validation).
+
+---
+
+### 2026-10-04 - Clearer "Unable to open device" Error (PR #156)
+
+**Trigger:** `.ip-audio.ps1 -artist "Jethro Tull" -album "This Was" -OutputDrive F -Drive E` with a DVD (`SILICON VALLEY S2 D2`) in `E:` - the audio CD was actually in `G:`. cyanrip printed `Unable to open device!` and the script fell through to the generic "cyanrip exited with code 1 and produced no audio files" message, which the user found confusing.
+
+**PR #156 (`7d0af8b`) - `fix/unable-to-open-device-message`:** new branch in the silent-failure message chain mapping `Unable to open device` to `Drive X: is either busy or doesn't contain an audio CD`. Placed before the existing `cannot open` check (which never matched this wording). README now has a "Common rip failure messages" table.
+
+**Testing status:** parse-checked clean, ASCII-only. Not re-run against the drive.
+
+**Follow-up (Roadmap Backlog):** warn-and-confirm before ripping when the selected drive's label isn't `Audio CD` - catches this before the prompts rather than after cyanrip fails.
+
+**Priority for Next Session:**
+1. Re-run the Jethro Tull rip with `-Drive G`.
+2. Implement the up-front disc-label warning (Roadmap Backlog).
+3. Everything carried from the 2026-09-02 entry still stands.
