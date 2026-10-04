@@ -439,6 +439,18 @@ If an error occurs:
 - Relevant directory is opened for inspection
 - Log file location is provided
 
+### Common rip failure messages
+
+When cyanrip produces no audio at all, the script translates cyanrip's own output into a plain-English reason:
+
+| Message | Likely cause |
+|---------|--------------|
+| `No disc in drive X: - please insert an audio CD` | Drive is empty |
+| `Disc in X: is not an audio CD` | cyanrip recognised a data disc |
+| `Drive X: is either busy or doesn't contain an audio CD` | cyanrip printed `Unable to open device!` - another app holds the drive, or the disc is a DVD/data disc (often preceded by cyanrip's bogus `number of minutes (255) truncated to 99` warning). Check the drive listing at the top of the run: an audio CD always shows as `[Audio CD]`, so a real volume label (e.g. `[SILICON VALLEY S2 D2]`) means you've probably picked the wrong drive |
+| `Could not access drive X: - verify drive letter is correct` | Drive letter not found |
+| `cyanrip could not read the disc TOC ...` | Dirty/damaged disc or a flaky drive connection |
+
 **Silence timeout:** if cyanrip goes completely silent for 5 minutes (no progress, no errors, nothing) - most often a paranoia-level retry loop stuck on a damaged or dirty sector - it's killed automatically and treated the same as a detected read error: the track is skipped, the disc's track count is re-queried live, and the rip resumes on the remaining tracks. This catches stalls the existing consecutive-error counter can't, since that counter only advances on lines matching specific error text and never fires if cyanrip stops producing output entirely.
 
 ## Supported Formats
