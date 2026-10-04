@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented here.
 
+## 2026-10-04 - Crash Resume on Every Path, Honest Completion, MusicBrainz Backoff
+
+Fixes the seven `rip-audio.ps1` bugs found after the Jethro Tull "This Was" crash (cyanrip exit `0xC0000005` in track 3, reported as "Partial rip accepted" / "COMPLETE, Total tracks: 2").
+
+### Fixed
+- **Crash auto-resume only covered the first cyanrip launch.** New `Invoke-CyanripWithAutoResume` wraps every launch path (first run, release re-selection, MusicBrainz retry, continue without metadata, CDDB fallback). Resume runs reuse the caller's own arguments (`-N`, `-R`, `-P`, `-b`, ...) with `-l` replaced by the remaining tracks, and a resume of a `-l` list only re-rips tracks from that list.
+- **Any non-zero exit with one valid file counted as a finished rip.** After the rip, the track numbers on disk are compared against the disc's real track count (queried live). Missing tracks print a red warning, appear in the FILE SUMMARY, and the banner reads `INCOMPLETE - N of M tracks missing` instead of `COMPLETE!`.
+- **Zero-byte files were never flagged as corrupt.** The corrupt-file check now covers every audio file, not just non-empty ones.
+- **TRACKTOTAL came from the number of files** (1/3, 2/3 on a 10-track disc). It now uses the disc's track count.
+- **Resuming while MusicBrainz was down lost the titles.** `.discid` now keeps an earlier run's `RELEASEID` instead of overwriting it. After a no-MusicBrainz rip, the titles are fetched from that release (or from the disc ID when it maps to exactly one release) and applied through the CDDB rename/tag path. Tracks that already have real titles are no longer renamed to `NN - Artist - Album`, and cyanrip's `Unknown track` is no longer kept as a TITLE tag.
+- **MusicBrainz 503s went straight to a prompt.** All API calls go through `Invoke-MusicBrainzRequest`: at least 1.1s between requests, and a 503/429 is retried after 2s, 4s, then 8s. The pre-rip check uses a direct lookup instead of a `release?query=test` search, and any answer below 500 counts as reachable.
+
+### Added
+- **Warning before the prompts when the selected drive doesn't hold an audio CD** (label isn't `Audio CD`), with a `Rip anyway? (y/N)` confirm. Not applied in `-Queue`/`-ProcessQueue`. Closes the Roadmap backlog item.
+
+**Testing status:** parse-checked clean, added lines ASCII-only. 17 checks against the extracted functions pass: resume argument building for full-disc and `-l` runs, repeated crashes, ordinary failures not resumed, generic-name detection, 503 retry/backoff timing (mocked), 404 not retried, plus live MusicBrainz calls (health check, and a title lookup for the real "This Was" disc returning 10 tracks). Not run against a real disc. `continue-rip-audio.ps1` is unchanged.
+
 ## 2026-10-04 - Fail Fast When cyanrip Is Missing
 
 ### Fixed

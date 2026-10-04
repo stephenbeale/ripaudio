@@ -2063,3 +2063,23 @@ squash-merged with zero formal approvals, same as every prior session.
 1. Re-run the Jethro Tull rip with `-Drive G`.
 2. Implement the up-front disc-label warning (Roadmap Backlog).
 3. Everything carried from the 2026-09-02 entry still stands.
+
+---
+
+### 2026-10-04 (later) - The Seven Jethro Tull Bugs (a-g)
+
+**Trigger:** the "This Was" crash (exit `0xC0000005` in track 3, logged as COMPLETE with 2 tracks) and the resume run that followed (MusicBrainz 503, ended as "Unknown disc (OTRY)").
+
+**Fixed in one branch** (`fix/rip-crash-and-metadata-robustness`), details in CHANGELOG:
+- a. `Invoke-CyanripWithAutoResume` now wraps all 6 cyanrip launch sites, not just the first. The single-track data-error retry (`$retryArgs`) is deliberately left on `Start-CyanripWithErrorDetection`, since it has its own retry prompt.
+- b/c. Post-rip completeness check against a live track count (`$script:MissingTracks`, `$script:DiscTrackTotal`). Zero-byte files now count as corrupt.
+- d. TRACKTOTAL comes from `$script:DiscTrackTotal`.
+- e. `.discid` keeps an earlier `RELEASEID`. `Get-MusicBrainzTrackTitles` recovers titles after a `-N` rip. The generic rename only touches placeholder names (`Test-GenericTrackName`).
+- f. `Invoke-MusicBrainzRequest` (1.1s spacing, 2/4/8s retry on 503/429) and `Invoke-MusicBrainzHealthCheck` (direct lookup, <500 = reachable).
+- g. Disc-label warn-and-confirm right after `-Drive` is normalised.
+
+**Testing status:** parse-checked clean, ASCII-only. 17 extracted-function checks pass, including live MusicBrainz lookups. **Not run against a real disc.**
+
+**Priority for Next Session:**
+1. Next real rip: watch for the label warning, the completeness check, and (if MusicBrainz is down) the post-rip title recovery.
+2. Port `Invoke-CyanripWithAutoResume` and the label warning to `continue-rip-audio.ps1`.

@@ -205,6 +205,94 @@ function Get-DiscTrackCount {
     return $null
 }
 
+# MusicBrainz allows about 1 request per second per IP and answers 503 when that's
+# exceeded or the service is overloaded. Every API call goes through here so requests
+# are spaced at least 1.1s apart, and a 503/429 is retried after 2s, 4s, then 8s
+# instead of failing (or dropping the user into a prompt) on the first refusal.
+$script:MbLastRequest = [datetime]::MinValue
+function Invoke-MusicBrainzRequest {
+    param([string]$Uri, [int]$TimeoutSec = 10, [switch]$Raw)
+    $headers = @{
+        "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
+        "Accept" = "application/json"
+    }
+    $retryDelays = @(2, 4, 8)
+    for ($attempt = 0; ; $attempt++) {
+        $waitMs = 1100 - ((Get-Date) - $script:MbLastRequest).TotalMilliseconds
+        if ($waitMs -gt 0) { Start-Sleep -Milliseconds ([int]$waitMs) }
+        $script:MbLastRequest = Get-Date
+        try {
+            if ($Raw) {
+                return Invoke-WebRequest -Uri $Uri -Headers $headers -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
+            }
+            return Invoke-RestMethod -Uri $Uri -Headers $headers -TimeoutSec $TimeoutSec -ErrorAction Stop
+        } catch {
+            $status = $null
+            try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+            if ($attempt -ge $retryDelays.Count -or $status -notin @(503, 429)) { throw }
+            Write-Host "  MusicBrainz busy (HTTP $status) - retrying in $($retryDelays[$attempt])s..." -ForegroundColor DarkGray
+            Write-Log "MusicBrainz HTTP $status for $Uri - retry $($attempt + 1) in $($retryDelays[$attempt])s"
+            Start-Sleep -Seconds $retryDelays[$attempt]
+        }
+    }
+}
+
+# Reachability probe for the pre-rip check. Uses a direct lookup (one artist by ID)
+# rather than the old release?query=test search, since searches are the most expensive
+# requests MusicBrainz serves and the first to be refused under load. Any HTTP answer
+# below 500 (a 404 included) proves the API is up; only network errors, 5xx and 429
+# after retries count as unreachable. Throws on failure so callers can show the reason.
+function Invoke-MusicBrainzHealthCheck {
+    try {
+        Invoke-MusicBrainzRequest -Uri "https://musicbrainz.org/ws/2/artist/b10bbbfc-cf9e-42e0-be17-e2c3e1d2600d?fmt=json" -Raw | Out-Null
+    } catch {
+        $status = $null
+        try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($status -and $status -lt 500 -and $status -ne 429) { return }
+        throw
+    }
+}
+
+# Track titles for an already-identified disc, used after a rip that had to run without
+# MusicBrainz (-N) - typically a resume while the API was down. Looks up the release the
+# earlier run chose (RELEASEID in .discid) or, failing that, the disc ID, and picks the
+# medium holding this disc. Returns @{ Artist; Album; Tracks } or $null. Never prompts:
+# a disc ID that maps to several releases is skipped rather than guessed.
+function Get-MusicBrainzTrackTitles {
+    param([string]$ReleaseId, [string]$DiscId, [int]$TrackCount)
+    try {
+        if ($ReleaseId) {
+            $release = Invoke-MusicBrainzRequest -Uri "https://musicbrainz.org/ws/2/release/$($ReleaseId)?inc=artist-credits+media+recordings+discids&fmt=json"
+        } elseif ($DiscId) {
+            $resp = Invoke-MusicBrainzRequest -Uri "https://musicbrainz.org/ws/2/discid/$($DiscId)?inc=artist-credits+recordings&fmt=json"
+            if (@($resp.releases).Count -ne 1) { return $null }
+            $release = $resp.releases[0]
+        } else {
+            return $null
+        }
+        $media = @($release.media)
+        $medium = $media | Where-Object { $DiscId -and (@($_.discs | ForEach-Object { $_.id }) -contains $DiscId) } | Select-Object -First 1
+        if (-not $medium -and $TrackCount) { $medium = $media | Where-Object { $_.'track-count' -eq $TrackCount } | Select-Object -First 1 }
+        if (-not $medium -and $media.Count -eq 1) { $medium = $media[0] }
+        if (-not $medium -or -not $medium.tracks) { return $null }
+        return @{
+            Artist = (@($release.'artist-credit') | ForEach-Object { $_.name }) -join " / "
+            Album  = $release.title
+            Tracks = @($medium.tracks | ForEach-Object { $_.title })
+        }
+    } catch {
+        Write-Log "MusicBrainz track-title lookup failed: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+# Generic placeholder names: cyanrip's -N output ("05 - Unknown track"), a bare track
+# number, or "05 - Track 05". Anything else carries a real title worth keeping.
+function Test-GenericTrackName {
+    param([string]$BaseName)
+    return $BaseName -match '^\d{2}$' -or $BaseName -match '^\d{2}\s*-\s*(Track\s*\d+|Unknown track.*)$'
+}
+
 function Get-DiscMetadata {
     param([string]$DriveLetter)
 
@@ -293,16 +381,11 @@ function Get-DiscMetadata {
         }
         if ($releases.Count -gt 0) {
             # Fetch track info for each release to help differentiate versions
-            $trackHeaders = @{
-                "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
-                "Accept" = "application/json"
-            }
             Write-Host "Fetching track details for each release..." -ForegroundColor Gray
             foreach ($rel in $releases) {
                 try {
-                    if ($releases.IndexOf($rel) -gt 0) { Start-Sleep -Seconds 1 }
                     $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=media+recordings&fmt=json"
-                    $trackResp = Invoke-RestMethod -Uri $trackUrl -Headers $trackHeaders -TimeoutSec 10
+                    $trackResp = Invoke-MusicBrainzRequest -Uri $trackUrl
                     if ($trackResp.media -and $trackResp.media.Count -gt 0) {
                         $medium = $trackResp.media[0]
                         $rel.TrackCount = $medium.'track-count'
@@ -350,10 +433,6 @@ function Get-DiscMetadata {
     # Fallback: Query MusicBrainz API for metadata (only when cyanrip output
     # didn't contain Album/Artist, e.g. multiple releases requiring selection)
     Write-Host "Querying MusicBrainz for release details..." -ForegroundColor Yellow
-    $mbHeaders = @{
-        "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
-        "Accept" = "application/json"
-    }
     try {
         if ($releaseUuid) {
             $url = "https://musicbrainz.org/ws/2/release/$($releaseUuid)?inc=artist-credits+media+discids&fmt=json"
@@ -361,7 +440,7 @@ function Get-DiscMetadata {
             # discid endpoint returns releases by default; only artist-credits is needed as inc
             $url = "https://musicbrainz.org/ws/2/discid/$($discId)?inc=artist-credits&fmt=json"
         }
-        $response = Invoke-RestMethod -Uri $url -Headers $mbHeaders -TimeoutSec 10
+        $response = Invoke-MusicBrainzRequest -Uri $url
 
         # discid lookup returns releases array; direct release lookup returns the release object
         $release = if ($response.releases) { $response.releases[0] } else { $response }
@@ -1060,6 +1139,26 @@ if (-not $Drive) {
 # Normalize -Drive (add colon if missing)
 $driveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
 
+# Audio CDs always report the volume label "Audio CD"; any other label means a DVD or
+# data disc, i.e. probably the wrong drive (-Drive E with the CD in G:). Without this
+# the mistake only surfaced after every prompt, as cyanrip's "Unable to open device".
+# Warn-and-confirm rather than block: enhanced CDs carry a real label but still hold
+# audio. No label (empty or unreadable drive) is left to the later checks. Skipped in
+# -Queue/-ProcessQueue, where the disc is inserted later per entry.
+if (-not $Queue -and -not $ProcessQueue) {
+    $selectedDiscLabel = Get-RipAudioDiscLabel -DriveLetter $driveLetter
+    if ($selectedDiscLabel -and $selectedDiscLabel -ne 'Audio CD') {
+        Write-Host "`nWARNING: the disc in $driveLetter is labelled '$selectedDiscLabel', not 'Audio CD' - it looks like a DVD or data disc." -ForegroundColor Yellow
+        Write-Log "Drive $driveLetter disc label is '$selectedDiscLabel', expected 'Audio CD'"
+        $labelChoice = Read-Host "Rip from $driveLetter anyway? (y/N)"
+        if ($labelChoice -notmatch '^[Yy]') {
+            Write-Host "Aborted. Re-run with -Drive set to the drive holding the audio CD." -ForegroundColor Yellow
+            Enable-ConsoleClose
+            exit 0
+        }
+    }
+}
+
 # ========== OUTPUT DRIVE SELECTION ==========
 # Ask which drive to write ripped albums to when -OutputDrive wasn't passed, then
 # validate it's actually ready before proceeding - previously this silently defaulted
@@ -1174,6 +1273,8 @@ do {
     $script:CurrentStep = $null
     $script:CddbResult = $null
     $script:ReleaseChoice = $null
+    $script:KnownDiscId = $null
+    $script:KnownReleaseId = $null
     $script:ResumeTrackList = $null
     $script:MetadataSource = "MusicBrainz"
     $script:CoverArtSource = ""
@@ -1186,6 +1287,8 @@ do {
     $script:CorruptTracks = @()
     $script:SkippedTracks = @()
     $script:DataErrorTracks = @()
+    $script:MissingTracks = @()
+    $script:DiscTrackTotal = $null
     $itemFailed = $false
 
     if ($script:IsProcessingQueue) {
@@ -1894,10 +1997,9 @@ if ($script:SkipRip) {
 # Note: The API (musicbrainz.org/ws/2/) is different from the website and requires User-Agent
 Write-Host "`nChecking MusicBrainz API connectivity..." -ForegroundColor Yellow
 $skipMusicBrainz = $false
-$mbHeaders = @{ "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)" }
 try {
-    # Test the actual API endpoint that cyanrip uses
-    $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+    # Lightweight lookup, retried with backoff on 503 (see Invoke-MusicBrainzHealthCheck)
+    Invoke-MusicBrainzHealthCheck
     Write-Host "MusicBrainz API: OK" -ForegroundColor Green
 } catch {
     Write-Host "MusicBrainz API: UNREACHABLE" -ForegroundColor Red
@@ -1933,7 +2035,7 @@ try {
                 Start-Sleep -Seconds $mbBackoffSeconds
                 Write-Host "Retrying..." -ForegroundColor Yellow
                 try {
-                    $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+                    Invoke-MusicBrainzHealthCheck
                     Write-Host "MusicBrainz API: OK" -ForegroundColor Green
                     $resolved = $true
                 } catch {
@@ -1971,7 +2073,7 @@ try {
                 Start-Sleep -Seconds $mbBackoffSeconds
                 Write-Host "Retrying..." -ForegroundColor Yellow
                 try {
-                    $mbTest = Invoke-WebRequest -Uri "https://musicbrainz.org/ws/2/release?query=test&limit=1" -Headers $mbHeaders -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+                    Invoke-MusicBrainzHealthCheck
                     Write-Host "MusicBrainz API: OK" -ForegroundColor Green
                     $resolved = $true
                 } catch {
@@ -1997,20 +2099,31 @@ try {
     }
 }
 
-# Save disc ID to .discid file for future metadata lookups
-if ($discMeta -and $discMeta.DiscId) {
-    $discIdFile = Join-Path $finalOutputDir ".discid"
+# Save disc ID to .discid file for future metadata lookups. A resume run while
+# MusicBrainz is down has no release ID of its own, so keep the one an earlier run in
+# this folder recorded - it's what lets the titles be recovered after the rip.
+$discIdFile = Join-Path $finalOutputDir ".discid"
+$script:KnownDiscId = if ($discMeta) { $discMeta.DiscId } else { $null }
+$script:KnownReleaseId = if ($discMeta) { $discMeta.ReleaseId } else { $null }
+if (Test-Path -LiteralPath $discIdFile) {
+    $savedIds = Get-Content -LiteralPath $discIdFile -ErrorAction SilentlyContinue
+    $savedDiscId = ($savedIds | Where-Object { $_ -match '^DISCID=(.+)$' } | ForEach-Object { $Matches[1] } | Select-Object -First 1)
+    $savedReleaseId = ($savedIds | Where-Object { $_ -match '^RELEASEID=(.+)$' } | ForEach-Object { $Matches[1] } | Select-Object -First 1)
+    if (-not $script:KnownDiscId) { $script:KnownDiscId = $savedDiscId }
+    if (-not $script:KnownReleaseId -and $savedDiscId -eq $script:KnownDiscId) { $script:KnownReleaseId = $savedReleaseId }
+}
+if ($script:KnownDiscId) {
     $discIdContent = @(
         "# MusicBrainz Disc ID - do not edit"
         "# Created by rip-audio.ps1 on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-        "DISCID=$($discMeta.DiscId)"
+        "DISCID=$($script:KnownDiscId)"
     )
-    if ($discMeta.ReleaseId) {
-        $discIdContent += "RELEASEID=$($discMeta.ReleaseId)"
+    if ($script:KnownReleaseId) {
+        $discIdContent += "RELEASEID=$($script:KnownReleaseId)"
     }
-    $discIdContent | Set-Content -Path $discIdFile -Encoding UTF8
-    Write-Host "Saved disc ID: $($discMeta.DiscId)" -ForegroundColor Gray
-    Write-Log "Saved .discid file: $($discMeta.DiscId)"
+    $discIdContent | Set-Content -LiteralPath $discIdFile -Encoding UTF8
+    Write-Host "Saved disc ID: $($script:KnownDiscId)" -ForegroundColor Gray
+    Write-Log "Saved .discid file: $($script:KnownDiscId)"
 }
 
 Write-Host ""
@@ -2271,6 +2384,70 @@ function Start-CyanripWithErrorDetection {
     }
 }
 
+# Runs cyanrip and, if the run is killed by the watchdog (cdio errors / silence) or
+# crashes outright (native exit code), skips the failed track and resumes the rest -
+# both usually mean the same flaky USB/drive connection. Every cyanrip launch path
+# goes through here (first run, release re-selection, MusicBrainz retry, continue
+# without metadata, CDDB fallback), so a crash on any of them is resumed the same way;
+# previously only the first launch was covered. Resume runs reuse the caller's own
+# arguments (-N, -R, -P, -b, ...) with -l replaced by the remaining tracks.
+function Invoke-CyanripWithAutoResume {
+    param([string[]]$CyanripArgs, [string]$WorkDir)
+
+    $result = Start-CyanripWithErrorDetection -CyanripArgs $CyanripArgs -WorkDir $WorkDir
+
+    # Tracks this launch was asked for: its -l list (resume mode) or, if none, the whole disc.
+    $listIdx = [array]::IndexOf($CyanripArgs, '-l')
+    $requested = if ($listIdx -ge 0) { @($CyanripArgs[$listIdx + 1] -split ',' | ForEach-Object { [int]$_ }) } else { $null }
+    $baseArgs = @()
+    for ($i = 0; $i -lt $CyanripArgs.Count; $i++) {
+        if ($listIdx -ge 0 -and ($i -eq $listIdx -or $i -eq $listIdx + 1)) { continue }
+        $baseArgs += $CyanripArgs[$i]
+    }
+
+    while ($result.Killed -or (Test-CyanripCrashExit $result.ExitCode)) {
+        if (-not $result.Killed) {
+            Write-Host "`ncyanrip crashed (exit $($result.ExitCode)) after track $($result.LastCompletedTrack) -- re-querying the disc for an accurate track count before deciding what's left..." -ForegroundColor Yellow
+            Write-Log "cyanrip crashed with exit $($result.ExitCode) after track $($result.LastCompletedTrack) -- re-querying disc fresh"
+        }
+
+        if (-not $requested) {
+            # Re-query the disc fresh rather than trusting "Disc tracks: N" from the run
+            # that just failed: a connection dropping mid-TOC-read can make cyanrip see far
+            # fewer tracks than the disc has (e.g. "2 instead of 13"), which risks
+            # concluding "no more tracks" when several are left. Fall back to the run's own
+            # figure only if the live query fails too.
+            $total = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh
+            if (-not $total -and (($result.Output -join "`n") -match 'Disc tracks:\s+(\d+)')) { $total = [int]$Matches[1] }
+            if (-not $total) {
+                $script:SkippedTracks += ($result.LastCompletedTrack + 1)
+                Write-Host "Cannot determine total tracks -- unable to auto-resume" -ForegroundColor Red
+                Write-Log "Auto-resume abandoned: track count unknown after track $($result.LastCompletedTrack)"
+                break
+            }
+            $requested = @(1..$total)
+        }
+
+        $pending = @($requested | Where-Object { $_ -gt $result.LastCompletedTrack })
+        if ($pending.Count -eq 0) { break }
+        $failedTrack = $pending[0]
+        $script:SkippedTracks += $failedTrack
+        $requested = @($pending | Select-Object -Skip 1)
+
+        if ($requested.Count -eq 0) {
+            Write-Host "No more tracks to rip after skipping track $failedTrack" -ForegroundColor Yellow
+            break
+        }
+
+        $trackList = $requested -join ","
+        Write-Host "`nResuming rip from track $($requested[0]) (skipped: $($script:SkippedTracks -join ', '))..." -ForegroundColor Cyan
+        Write-Log "Resuming: ripping tracks $trackList (skipped: $($script:SkippedTracks -join ', '))"
+        $result = Start-CyanripWithErrorDetection -CyanripArgs ($baseArgs + @("-l", $trackList)) -WorkDir $WorkDir
+    }
+
+    return $result
+}
+
 # Back up any non-empty audio files already in the output directory. If
 # cyanrip fails to read the TOC on a damaged disc it opens (and thereby
 # truncates) output files BEFORE it fails, which destroys any existing
@@ -2295,73 +2472,7 @@ if ($preRipAudio.Count -gt 0) {
 
 Push-Location $parentDir
 try {
-    $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
-
-    # If killed due to cdio errors, or cyanrip crashed outright (native exit code -
-    # both usually mean the same underlying flaky USB/drive connection - skip the
-    # failed track and resume remaining tracks.
-    while ($result.Killed -or (Test-CyanripCrashExit $result.ExitCode)) {
-        $failedTrack = $result.LastCompletedTrack + 1
-        $script:SkippedTracks += $failedTrack
-        $wasCrash = -not $result.Killed
-
-        # Total track count: re-query the disc fresh rather than trusting "Disc tracks: N"
-        # from this same run's own output. On a crash in particular, that number can itself
-        # be wrong - a flaky connection dropping mid-TOC-read can make cyanrip see far fewer
-        # tracks than the disc actually has (its own discovery output has documented this,
-        # e.g. "2 instead of 13"), which is exactly the kind of corruption that can also cause
-        # the crash. Trusting the crashed run's self-reported total risks concluding "no more
-        # tracks to rip" when the real disc has several more left.
-        if ($wasCrash) {
-            Write-Host "`ncyanrip crashed (exit $($result.ExitCode)) after track $($result.LastCompletedTrack) -- re-querying the disc for an accurate track count before deciding what's left..." -ForegroundColor Yellow
-            Write-Log "cyanrip crashed with exit $($result.ExitCode) after track $($result.LastCompletedTrack) -- re-querying disc fresh"
-        }
-        $totalFromOutput = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh
-        if (-not $totalFromOutput) {
-            # Fall back to whatever this run itself reported, if a fresh live query failed
-            # (e.g. drive transiently not responding) rather than giving up immediately.
-            $allOutput = $result.Output -join "`n"
-            if ($allOutput -match 'Disc tracks:\s+(\d+)') {
-                $totalFromOutput = [int]$Matches[1]
-            }
-        }
-
-        if (-not $totalFromOutput) {
-            Write-Host "Cannot determine total tracks -- unable to auto-resume" -ForegroundColor Red
-            break
-        }
-
-        # Build list of remaining tracks (after the failed one)
-        $remainingTracks = @()
-        for ($t = $failedTrack + 1; $t -le $totalFromOutput; $t++) {
-            $remainingTracks += $t
-        }
-
-        if ($remainingTracks.Count -eq 0) {
-            Write-Host "No more tracks to rip after skipping track $failedTrack" -ForegroundColor Yellow
-            break
-        }
-
-        $trackList = $remainingTracks -join ","
-        Write-Host "`nResuming rip from track $($remainingTracks[0]) (skipped: $($script:SkippedTracks -join ', '))..." -ForegroundColor Cyan
-        Write-Log "Resuming: ripping tracks $trackList (skipped: $($script:SkippedTracks -join ', '))"
-
-        # Build resume args with -l flag for remaining tracks
-        $resumeArgs = @(
-            "-D", $albumFolder,
-            "-o", $format,
-            "-d", $driveLetter,
-            "-s", "0",
-            "-l", $trackList
-        )
-        if ($ParanoiaLevel -ge 0) { $resumeArgs += @("-P", "$ParanoiaLevel") }
-        if ($Retries -ge 1) { $resumeArgs += @("-r", "$Retries") }
-        if ($Quality -gt 0 -and $hasLossy) { $resumeArgs += @("-b", "$Quality") }
-        if ($skipMusicBrainz) { $resumeArgs += @("-N") }
-        if ($script:ReleaseChoice) { $resumeArgs += @("-R", $script:ReleaseChoice) }
-
-        $result = Start-CyanripWithErrorDetection -CyanripArgs $resumeArgs -WorkDir $parentDir
-    }
+    $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
 
     $cyanripExitCode = $result.ExitCode
     $cyanripOutput = $result.Output
@@ -2397,16 +2508,11 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
 
     if ($releases.Count -gt 0) {
         # Fetch track info for each release to help differentiate versions
-        $trackHeaders = @{
-            "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
-            "Accept" = "application/json"
-        }
         Write-Host "Fetching track details for each release..." -ForegroundColor Gray
         foreach ($rel in $releases) {
             try {
-                if ($releases.IndexOf($rel) -gt 0) { Start-Sleep -Seconds 1 }
                 $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=media+recordings&fmt=json"
-                $trackResp = Invoke-RestMethod -Uri $trackUrl -Headers $trackHeaders -TimeoutSec 10
+                $trackResp = Invoke-MusicBrainzRequest -Uri $trackUrl
                 if ($trackResp.media -and $trackResp.media.Count -gt 0) {
                     $medium = $trackResp.media[0]
                     $rel.TrackCount = $medium.'track-count'
@@ -2461,12 +2567,9 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
 
         Push-Location $parentDir
         try {
-            $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
+            $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
             $cyanripExitCode = $result.ExitCode
             $cyanripOutput = $result.Output
-            if ($result.Killed) {
-                $script:SkippedTracks += ($result.LastCompletedTrack + 1)
-            }
         } catch {
             Pop-Location
             Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -2500,10 +2603,9 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
 
             Push-Location $parentDir
             try {
-                $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
+                $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
                 $cyanripOutput = $result.Output
-                if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -2530,10 +2632,9 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             $cyanripArgs += @("-N")
             Push-Location $parentDir
             try {
-                $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
+                $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
                 $cyanripOutput = $result.Output
-                if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -2586,10 +2687,9 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 
         Push-Location $parentDir
         try {
-            $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
+            $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
             $cyanripExitCode = $result.ExitCode
             $cyanripOutput = $result.Output
-            if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
         } catch {
             Pop-Location
             Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -2623,10 +2723,9 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 
             Push-Location $parentDir
             try {
-                $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
+                $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
                 $cyanripOutput = $result.Output
-                if ($result.Killed) { $script:SkippedTracks += ($result.LastCompletedTrack + 1) }
             } catch {
                 Pop-Location
                 Stop-WithError -Step "STEP 1/4: cyanrip" -Message "Failed to execute cyanrip: $_"
@@ -2653,8 +2752,9 @@ $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
 # instead of sailing through renaming/tagging into a "COMPLETE!" summary that doesn't
 # reflect what's actually on disk.
 $script:CorruptTracks = @()
+$script:MissingTracks = @()
 $postRipValid = @($postRipNonEmpty | Where-Object { Test-TrackIntegrity -FilePath $_.FullName })
-$postRipCorrupt = @($postRipNonEmpty | Where-Object { $_.FullName -notin @($postRipValid | ForEach-Object { $_.FullName }) })
+$postRipCorrupt = @($postRipAudio | Where-Object { $_.FullName -notin @($postRipValid | ForEach-Object { $_.FullName }) })
 
 # Restore any pre-rip audio files that cyanrip destroyed (truncated to 0
 # bytes) before failing. For each backed-up file, if the corresponding
@@ -2681,7 +2781,7 @@ if ($script:PreRipBackupDir -and (Test-Path $script:PreRipBackupDir)) {
         $postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
         $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
         $postRipValid = @($postRipNonEmpty | Where-Object { Test-TrackIntegrity -FilePath $_.FullName })
-        $postRipCorrupt = @($postRipNonEmpty | Where-Object { $_.FullName -notin @($postRipValid | ForEach-Object { $_.FullName }) })
+        $postRipCorrupt = @($postRipAudio | Where-Object { $_.FullName -notin @($postRipValid | ForEach-Object { $_.FullName }) })
     }
     try { Remove-Item -LiteralPath $script:PreRipBackupDir -Recurse -Force -ErrorAction Stop } catch { Write-Log "Could not remove backup dir $($script:PreRipBackupDir): $_" }
     $script:PreRipBackupDir = $null
@@ -2737,6 +2837,33 @@ if ($postRipValid.Count -eq 0) {
         Write-Host "This usually means the drive connection dropped partway through that track. Re-run this same command with the disc still in the drive to resume just the affected track(s)." -ForegroundColor Yellow
         Write-Log "Corrupt/zero-byte post-rip file(s): $corruptNames"
         $script:CorruptTracks = $postRipCorrupt.Name
+    }
+
+    # Having some valid files isn't the same as having the whole disc: a crash after
+    # track 2 of 10 used to end in "Partial rip accepted" and a COMPLETE summary with 2
+    # tracks. Compare the track numbers on disk against the disc's real track count
+    # (queried live, since a crashed run's cue file can be wrong) and record anything
+    # missing that wasn't already reported as skipped.
+    $script:DiscTrackTotal = Get-DiscTrackCount -OutputDir $finalOutputDir -DriveLetter $driveLetter -Fresh
+    if ($script:DiscTrackTotal) {
+        $foundTrackNums = @($postRipValid | ForEach-Object {
+            if ($_.BaseName -match '^(\d+)\.(\d+)\s*-') {
+                # -DiscNum shared folder: only this disc's own "N.NN - " files count
+                if ($DiscNum -gt 0 -and [int]$Matches[1] -eq $DiscNum) { [int]$Matches[2] }
+            } elseif ($_.BaseName -match '^(\d+)(\s*-|$)') {
+                [int]$Matches[1]
+            }
+        } | Sort-Object -Unique)
+        if ($foundTrackNums.Count -gt 0) {
+            $script:MissingTracks = @(1..$script:DiscTrackTotal | Where-Object { $_ -notin $foundTrackNums -and $_ -notin $script:SkippedTracks })
+        }
+        if ($script:MissingTracks.Count -gt 0) {
+            Write-Host "`nWARNING: only $($foundTrackNums.Count) of $($script:DiscTrackTotal) tracks are on disk - missing: $($script:MissingTracks -join ', ')" -ForegroundColor Red
+            Write-Host "Re-run this same command with the disc still in the drive to rip just the missing tracks." -ForegroundColor Yellow
+            Write-Log "Incomplete rip: $($foundTrackNums.Count)/$($script:DiscTrackTotal) tracks on disk, missing $($script:MissingTracks -join ', ') (cyanrip exit $cyanripExitCode)"
+        }
+    } else {
+        Write-Log "Could not query the disc's track count after the rip - completeness check skipped"
     }
 }
 
@@ -2891,20 +3018,33 @@ foreach ($ext in $audioExtensions) {
     }
 }
 
-$hasGenericNames = $false
-if ($rippedTracks.Count -gt 0) {
-    foreach ($t in $rippedTracks) {
-        if ($t.BaseName -match '^\d{2}\s*-\s*Track\s*\d+$' -or $t.BaseName -match '^\d{2}$') {
-            $hasGenericNames = $true
-            break
-        }
+$hasGenericNames = @($rippedTracks | Where-Object { Test-GenericTrackName $_.BaseName }).Count -gt 0
+
+# A rip that ran without MusicBrainz (typically a resume while the API was down) comes
+# out as "NN - Unknown track". If an earlier run in this folder already identified the
+# release (RELEASEID in .discid), or the disc ID maps to exactly one release, fetch the
+# titles now - MusicBrainz is often back by the time the rip finishes - and feed them
+# through the same rename/tag path CDDB titles use.
+$script:TitleSource = "CDDB"
+if ($rippedTracks.Count -gt 0 -and $skipMusicBrainz -and $hasGenericNames -and -not $script:CddbResult -and ($script:KnownReleaseId -or $script:KnownDiscId)) {
+    Write-Host "`nLooking up track titles for the already-identified disc..." -ForegroundColor Yellow
+    $recovered = Get-MusicBrainzTrackTitles -ReleaseId $script:KnownReleaseId -DiscId $script:KnownDiscId -TrackCount $script:DiscTrackTotal
+    if ($recovered -and $recovered.Tracks.Count -gt 0 -and (-not $script:DiscTrackTotal -or $recovered.Tracks.Count -eq $script:DiscTrackTotal)) {
+        $script:CddbResult = $recovered
+        $script:TitleSource = "MusicBrainz"
+        $script:MetadataSource = "MusicBrainz (after rip)"
+        Write-Host "Found $($recovered.Tracks.Count) titles: $($recovered.Artist) - $($recovered.Album)" -ForegroundColor Green
+        Write-Log "Recovered $($recovered.Tracks.Count) track titles after a no-MusicBrainz rip (release $($script:KnownReleaseId), disc $($script:KnownDiscId))"
+    } else {
+        Write-Host "Titles not available - generic names kept for new tracks; existing titled tracks are left as they are" -ForegroundColor Gray
+        Write-Log "Post-rip title lookup found nothing usable"
     }
 }
 
 if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
     if ($script:CddbResult -and $script:CddbResult.Tracks.Count -gt 0) {
-        # Use CDDB track names for renaming
-        Write-Host "`nRenaming tracks with CDDB metadata..." -ForegroundColor Yellow
+        # Use CDDB (or post-rip MusicBrainz) track names for renaming
+        Write-Host "`nRenaming tracks with $($script:TitleSource) metadata..." -ForegroundColor Yellow
 
         foreach ($track in ($rippedTracks | Sort-Object Name)) {
             if ($track.BaseName -match '^(\d{2})') {
@@ -2922,7 +3062,7 @@ if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
                     try {
                         Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
                         Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
-                        Write-Log "Renamed (CDDB): $($track.Name) -> $newName"
+                        Write-Log "Renamed ($($script:TitleSource)): $($track.Name) -> $newName"
                     } catch {
                         Write-Host "  Failed to rename: $($track.Name)" -ForegroundColor Yellow
                         Write-Log "WARNING: Failed to rename $($track.Name): $_"
@@ -2930,7 +3070,7 @@ if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
                 }
             }
         }
-        Write-Host "Track renaming complete (CDDB)" -ForegroundColor Green
+        Write-Host "Track renaming complete ($($script:TitleSource))" -ForegroundColor Green
     } else {
         # No CDDB data - rename using script params (generic: ## - Artist - Album)
         Write-Host "`nRenaming tracks with disc details..." -ForegroundColor Yellow
@@ -2938,7 +3078,9 @@ if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
         $namingArtist = if ($artist) { $artist } else { "Unknown Artist" }
         $namingAlbum = $album
 
-        foreach ($track in ($rippedTracks | Sort-Object Name)) {
+        # Only placeholder names: on a resume, tracks ripped by an earlier run already
+        # carry real titles and must not be flattened to "NN - Artist - Album".
+        foreach ($track in ($rippedTracks | Where-Object { Test-GenericTrackName $_.BaseName } | Sort-Object Name)) {
             if ($track.BaseName -match '^(\d{2})') {
                 $trackNum = $Matches[1]
                 $newName = "$trackNum - $namingArtist - $namingAlbum$($track.Extension)"
@@ -3013,7 +3155,9 @@ if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
         # Use CDDB data for tags when available, otherwise fall back to script params
         $tagArtist = if ($script:CddbResult -and $script:CddbResult.Artist) { $script:CddbResult.Artist } elseif ($artist) { $artist } else { "Unknown Artist" }
         $tagAlbum = if ($script:CddbResult -and $script:CddbResult.Album) { $script:CddbResult.Album } else { $album }
-        $totalTracks = $rippedTracks.Count
+        # The disc's real track count, not the number of files: a partial or resumed
+        # rip would otherwise tag tracks as 1/3, 2/3 on a 10-track disc.
+        $totalTracks = if ($script:DiscTrackTotal -and $script:DiscTrackTotal -ge $rippedTracks.Count) { $script:DiscTrackTotal } else { $rippedTracks.Count }
 
         foreach ($track in $rippedTracks) {
             # Extract track number from filename
@@ -3035,7 +3179,7 @@ if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
             if (-not $trackTitle) {
                 try {
                     $existingTags = & metaflac --show-tag=TITLE $track.FullName 2>$null
-                    if ($existingTags -and $existingTags -notmatch "Track\s*\d+") {
+                    if ($existingTags -and $existingTags -notmatch "Track\s*\d+|Unknown track") {
                         $trackTitle = ($existingTags -split '=', 2)[1]
                     }
                 } catch {}
@@ -3266,7 +3410,7 @@ if ($existingArt -and $existingArt.Count -gt 0) {
             $mbQuery = if ($artist) { "release:`"$album`" AND artist:`"$artist`"" } else { "release:`"$album`"" }
             $mbEncodedQuery = [System.Web.HttpUtility]::UrlEncode($mbQuery)
             $mbSearchUrl = "https://musicbrainz.org/ws/2/release?query=$mbEncodedQuery&limit=1&fmt=json"
-            $mbSearchResponse = Invoke-RestMethod -Uri $mbSearchUrl -Headers $mbSearchHeaders -TimeoutSec 10
+            $mbSearchResponse = Invoke-MusicBrainzRequest -Uri $mbSearchUrl
 
             if ($mbSearchResponse.releases -and $mbSearchResponse.releases.Count -gt 0) {
                 $mbReleaseId = $mbSearchResponse.releases[0].id
@@ -3434,9 +3578,11 @@ Complete-CurrentStep
 # during ripping) can both leave real gaps in the output. Reflect that in the banner
 # itself rather than only in the FILE SUMMARY further down, so a walk-away rip that
 # hit trouble doesn't read as an unqualified success at a glance.
-$hasIncompleteTracks = $script:CorruptTracks.Count -gt 0 -or $script:SkippedTracks.Count -gt 0 -or $script:DataErrorTracks.Count -gt 0
+$hasIncompleteTracks = $script:CorruptTracks.Count -gt 0 -or $script:SkippedTracks.Count -gt 0 -or $script:DataErrorTracks.Count -gt 0 -or $script:MissingTracks.Count -gt 0
 Write-Host "`n========================================" -ForegroundColor Cyan
-if ($hasIncompleteTracks) {
+if ($script:MissingTracks.Count -gt 0) {
+    Write-Host "INCOMPLETE - $($script:MissingTracks.Count) of $($script:DiscTrackTotal) tracks missing, see FILE SUMMARY below" -ForegroundColor Red
+} elseif ($hasIncompleteTracks) {
     Write-Host "COMPLETE WITH WARNINGS - see FILE SUMMARY below" -ForegroundColor Yellow
 } else {
     Write-Host "COMPLETE!" -ForegroundColor Green
@@ -3481,6 +3627,9 @@ if ($script:SkippedTracks.Count -gt 0) {
 if ($script:DataErrorTracks.Count -gt 0) {
     Write-Host "  Data errors: $($script:DataErrorTracks.Count) track(s) marked _DATA_ERROR (tracks $($script:DataErrorTracks -join ', '))" -ForegroundColor Red
 }
+if ($script:MissingTracks.Count -gt 0) {
+    Write-Host "  Missing: $($script:MissingTracks.Count) of $($script:DiscTrackTotal) track(s) never ripped (tracks $($script:MissingTracks -join ', ')) - re-run this command with the disc still in the drive" -ForegroundColor Red
+}
 if ($script:CorruptTracks.Count -gt 0) {
     Write-Host "  Corrupt/zero-byte (not usable): $($script:CorruptTracks.Count) file(s) ($($script:CorruptTracks -join ', ')) - re-run this command with the disc still in the drive to resume" -ForegroundColor Red
 }
@@ -3508,6 +3657,9 @@ if ($script:SkippedTracks.Count -gt 0) {
 }
 if ($script:DataErrorTracks.Count -gt 0) {
     Write-Log "Data errors: $($script:DataErrorTracks.Count) track(s) marked _DATA_ERROR (tracks $($script:DataErrorTracks -join ', '))"
+}
+if ($script:MissingTracks.Count -gt 0) {
+    Write-Log "Missing: $($script:MissingTracks.Count) of $($script:DiscTrackTotal) track(s) never ripped (tracks $($script:MissingTracks -join ', '))"
 }
 if ($script:CorruptTracks.Count -gt 0) {
     Write-Log "Corrupt/zero-byte (not usable): $($script:CorruptTracks.Count) file(s) ($($script:CorruptTracks -join ', '))"
