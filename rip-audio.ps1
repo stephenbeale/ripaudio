@@ -857,6 +857,23 @@ if ($Queue -and $ProcessQueue) {
 
 # ========== CONFIGURATION ==========
 
+# ========== CYANRIP PREFLIGHT ==========
+# Fail fast if cyanrip isn't resolvable, before any drive/folder prompts. Without this the
+# script asks every question, then dies at STEP 1 with a raw CommandNotFoundException
+# (seen 2026-10-04: cyanrip.exe vanished from its winget package folder, leaving only a
+# renamed trz*.tmp copy). -Queue only adds to the queue file, so it doesn't need cyanrip.
+if (-not $Queue -and -not (Get-Command cyanrip -ErrorAction SilentlyContinue)) {
+    Write-Host "ERROR: cyanrip was not found on PATH." -ForegroundColor Red
+    $cyanripPkgDir = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages\cyanreg.cyanrip_Microsoft.Winget.Source_8wekyb3d8bbwe"
+    if ((Test-Path $cyanripPkgDir) -and -not (Test-Path (Join-Path $cyanripPkgDir "cyanrip.exe"))) {
+        Write-Host "  The winget package folder exists but has no cyanrip.exe:" -ForegroundColor Yellow
+        Write-Host "    $cyanripPkgDir" -ForegroundColor Yellow
+        Write-Host "  An interrupted upgrade/uninstall can leave the exe renamed to trz*.tmp there." -ForegroundColor Yellow
+    }
+    Write-Host "  Fix: winget install --id cyanreg.cyanrip --force   (then open a new terminal)" -ForegroundColor Yellow
+    exit 1
+}
+
 # ========== DRIVE DISCOVERY ==========
 # Query optical drives and busy state once - used for auto-detect, explicit -Drive
 # validation, and the drive listing shown either way (mirrors ripdisc's MakeMKV drive list:

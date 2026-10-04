@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## 2026-10-04 - Fail Fast When cyanrip Is Missing
+
+### Fixed
+- **A missing cyanrip only surfaced at STEP 1, after every prompt had been answered, as a raw `CommandNotFoundException`.** Real repro: `.\rip-audio.ps1 -artist "Jethro Tull" -album "Stand Up" -OutputDrive F -Drive G` - `cyanrip.exe` had vanished from its winget package folder at 10:45 (only a renamed `trz*.tmp` copy remained, the pattern an interrupted upgrade/uninstall leaves behind). No code change caused it; the exe was restored by hand.
+  - New preflight check right after parameter validation: if `cyanrip` isn't resolvable, print a clear error with the `winget install --id cyanreg.cyanrip --force` fix (plus a hint about the `trz*.tmp` leftover when the package folder exists without the exe) and exit 1 before any prompts. `-Queue` is exempt since it only writes the queue file.
+
+**Testing status:** parse-checked clean, added lines ASCII-only. Preflight exercised for real with cyanrip stripped from PATH (exits 1 with the message, no prompts shown).
+
 ## 2026-10-04 - Clearer "Unable to open device" Error
 
 ### Fixed
