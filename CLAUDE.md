@@ -2083,3 +2083,27 @@ squash-merged with zero formal approvals, same as every prior session.
 **Priority for Next Session:**
 1. Next real rip: watch for the label warning, the completeness check, and (if MusicBrainz is down) the post-rip title recovery.
 2. Port `Invoke-CyanripWithAutoResume` and the label warning to `continue-rip-audio.ps1`.
+
+---
+
+### 2026-10-28 - Release Picker Shows Artist, Kept Choice, Auto-Start Countdown (PR #160)
+
+**Trigger:** live rip of Sade "Promise" (4 MusicBrainz releases) during intermittent MusicBrainz 503s/timeouts. A direct test during the session gave 200, then 503, then 503, which matches the existing Roadmap backlog item "MusicBrainz 503 reliability" (no new item opened).
+
+**PR #160 (`853f089`) - `feature/release-picker-show-artist`**, all in `rip-audio.ps1`:
+1. Release picker shows the artist: per-release fetch adds `inc=artist-credits`; new `Get-ReleaseArtistCredit` helper; both pickers updated.
+2. Lost release choice fixed: per-release fetch also adds `discids` and the picked release's response is reused, removing the second "release details" request. That request timed out live, `Get-DiscMetadata` returned `$null`, and the user got a manual album/artist prompt plus a second release prompt after the "No more inputs needed" banner. The catch now returns the partial result, `ReleaseChoice` is kept even with no album, and an empty manual album entry falls back to the album already found.
+3. Discovery `cyanrip -I` retries after 5s, 10s, 15s on "MusicBrainz query failed" (three live runs had died at "Could not determine disc ID" from a single 503).
+4. Discovery hides cyanrip's raw release list (MusicBrainz IDs and the "-R argument" hint); disc ID goes to the log only.
+5. No "[ A few more questions to answer... ]" hint before the final prompt.
+6. Final "Press Enter to continue" is a 20s auto-start countdown: Enter starts now, Esc aborts with exit 0, Ctrl+C quits. Falls back to the blocking prompt when the red low-track-count warning (2 tracks or fewer) shows; starts immediately if input is redirected.
+
+**Testing status:** all parse-checked with 0 errors, added lines ASCII-only. Items 1 and 2 **confirmed live** on the real disc (picked 2, went straight to "Detected: Sade - Promise"). Items 3, 4, 5, 6 **not run live**; item 4's filter regex was tested against real output lines only.
+
+**Process note - self-approval (recurring, expected):** sign-off recorded as a PR comment, squash-merged with zero formal approvals.
+
+**Priority for Next Session:**
+1. On the next real rip, watch the 20s countdown (Enter / Esc / timeout paths, and the blocking fallback with a 2-track disc) and confirm the hidden release list looks right.
+2. Watch whether the discovery retry rescues a real MusicBrainz 503.
+3. Consider other `Show-QuestionHint` sites that may overpromise, e.g. when the release picker is the only question.
+4. Everything carried from earlier entries still stands (MusicBrainz 503 reliability backlog item, continue-rip-audio.ps1 hardware validation).
