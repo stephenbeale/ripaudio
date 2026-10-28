@@ -210,6 +210,17 @@ function Get-DiscTrackCount {
 # are spaced at least 1.1s apart, and a 503/429 is retried after 2s, 4s, then 8s
 # instead of failing (or dropping the user into a prompt) on the first refusal.
 $script:MbLastRequest = [datetime]::MinValue
+
+# Build a display artist ("A feat. B") from a MusicBrainz release's artist-credit array.
+# Returns $null when the release was fetched without inc=artist-credits.
+function Get-ReleaseArtistCredit {
+    param($Release)
+    if (-not $Release -or -not $Release.'artist-credit') { return $null }
+    $parts = foreach ($credit in $Release.'artist-credit') { "$($credit.name)$($credit.joinphrase)" }
+    $artist = ($parts -join '').Trim()
+    if ($artist) { return $artist } else { return $null }
+}
+
 function Invoke-MusicBrainzRequest {
     param([string]$Uri, [int]$TimeoutSec = 10, [switch]$Raw)
     $headers = @{
@@ -298,13 +309,28 @@ function Get-DiscMetadata {
 
     Write-Host "Querying disc in drive $DriveLetter..." -ForegroundColor Yellow
 
-    $outputLines = [System.Collections.ArrayList]::new()
-    & cyanrip -I -d $DriveLetter -s 0 2>&1 | ForEach-Object {
-        Write-Host $_ -ForegroundColor Gray
-        [void]$outputLines.Add([string]$_)
+    # cyanrip's own MusicBrainz lookup has no retry: a single 503 makes it stop before it
+    # even prints the disc ID, which throws away everything and drops to manual entry.
+    # MusicBrainz 503s are often momentary, so back off and try again a few times.
+    $mbRetryDelays = @(5, 10, 15)
+    for ($attempt = 0; $attempt -le $mbRetryDelays.Count; $attempt++) {
+        $outputLines = [System.Collections.ArrayList]::new()
+        & cyanrip -I -d $DriveLetter -s 0 2>&1 | ForEach-Object {
+            # Hide cyanrip's raw release list (MusicBrainz IDs, "-R argument" hint) - the
+            # script shows its own numbered picker for it. Still captured for parsing.
+            if ("$_" -notmatch '^\s*\d+\s+\(ID:|Multiple releases found in database|Please specify which release') {
+                Write-Host $_ -ForegroundColor Gray
+            }
+            [void]$outputLines.Add([string]$_)
+        }
+        $output = $outputLines.ToArray()
+        $outputText = $output -join "`n"
+        if ($outputText -notmatch 'MusicBrainz query failed' -or $attempt -eq $mbRetryDelays.Count) { break }
+        $delay = $mbRetryDelays[$attempt]
+        Write-Host "MusicBrainz is busy - retrying in ${delay}s (attempt $($attempt + 2) of $($mbRetryDelays.Count + 1))..." -ForegroundColor Yellow
+        Write-Log "Disc query: MusicBrainz query failed, retry $($attempt + 1) in ${delay}s"
+        Start-Sleep -Seconds $delay
     }
-    $output = $outputLines.ToArray()
-    $outputText = $output -join "`n"
 
     $result = @{ Album = $null; Artist = $null; DiscNum = $null; TotalDiscs = $null; ReleaseChoice = $null; DiscId = $null; ReleaseId = $null; TrackCount = $null }
 
@@ -342,7 +368,7 @@ function Get-DiscMetadata {
         # mostly-empty result here is equivalent to the old $null for their purposes.
         return $result
     }
-    Write-Host "Disc ID: $discId" -ForegroundColor Gray
+    Write-Log "Disc ID: $discId"
     $result.DiscId = $discId
 
     # Try to parse metadata directly from cyanrip output first.
@@ -372,6 +398,7 @@ function Get-DiscMetadata {
 
     # Check for multiple releases (user selection needed before API call)
     $releaseUuid = $null
+    $cachedRelease = $null
     if ($outputText -match "Multiple releases found") {
         $releases = @()
         foreach ($line in $output) {
@@ -384,8 +411,13 @@ function Get-DiscMetadata {
             Write-Host "Fetching track details for each release..." -ForegroundColor Gray
             foreach ($rel in $releases) {
                 try {
-                    $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=media+recordings&fmt=json"
+                    # discids included so the response can be reused as-is once the user picks
+                    # this release, instead of a second request that may fail (and, when it did,
+                    # discarded the choice, re-asked for album/artist and re-prompted at rip time).
+                    $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=artist-credits+media+recordings+discids&fmt=json"
                     $trackResp = Invoke-MusicBrainzRequest -Uri $trackUrl
+                    $rel.Response = $trackResp
+                    $rel.Artist = Get-ReleaseArtistCredit -Release $trackResp
                     if ($trackResp.media -and $trackResp.media.Count -gt 0) {
                         $medium = $trackResp.media[0]
                         $rel.TrackCount = $medium.'track-count'
@@ -402,7 +434,9 @@ function Get-DiscMetadata {
             Show-QuestionHint
             Write-Host "Multiple releases found. Select one:" -ForegroundColor Cyan
             foreach ($rel in $releases) {
-                $info = "  $($rel.Index): $($rel.Description)"
+                $info = "  $($rel.Index): "
+                if ($rel.Artist) { $info += "$($rel.Artist) - " }
+                $info += $rel.Description
                 if ($rel.TrackCount) {
                     $info += " | $($rel.TrackCount) tracks"
                     if ($rel.FirstTrack -and $rel.LastTrack) {
@@ -426,21 +460,26 @@ function Get-DiscMetadata {
             $selectedIdx = [int]$choice - 1
             $result.ReleaseChoice = $choice
             $releaseUuid = $releases[$selectedIdx].UUID
+            $cachedRelease = $releases[$selectedIdx].Response
             Write-Host "Selected release $choice" -ForegroundColor Green
         }
     }
 
     # Fallback: Query MusicBrainz API for metadata (only when cyanrip output
     # didn't contain Album/Artist, e.g. multiple releases requiring selection)
-    Write-Host "Querying MusicBrainz for release details..." -ForegroundColor Yellow
     try {
-        if ($releaseUuid) {
-            $url = "https://musicbrainz.org/ws/2/release/$($releaseUuid)?inc=artist-credits+media+discids&fmt=json"
+        if ($cachedRelease) {
+            $response = $cachedRelease
         } else {
-            # discid endpoint returns releases by default; only artist-credits is needed as inc
-            $url = "https://musicbrainz.org/ws/2/discid/$($discId)?inc=artist-credits&fmt=json"
+            Write-Host "Querying MusicBrainz for release details..." -ForegroundColor Yellow
+            if ($releaseUuid) {
+                $url = "https://musicbrainz.org/ws/2/release/$($releaseUuid)?inc=artist-credits+media+discids&fmt=json"
+            } else {
+                # discid endpoint returns releases by default; only artist-credits is needed as inc
+                $url = "https://musicbrainz.org/ws/2/discid/$($discId)?inc=artist-credits&fmt=json"
+            }
+            $response = Invoke-MusicBrainzRequest -Uri $url
         }
-        $response = Invoke-MusicBrainzRequest -Uri $url
 
         # discid lookup returns releases array; direct release lookup returns the release object
         $release = if ($response.releases) { $response.releases[0] } else { $response }
@@ -471,7 +510,9 @@ function Get-DiscMetadata {
         }
     } catch {
         Write-Host "MusicBrainz API query failed: $_" -ForegroundColor Yellow
-        return $null
+        # Return the partial result rather than $null so a release the user already
+        # picked (ReleaseChoice) still reaches cyanrip as -R and isn't asked again.
+        return $result
     }
 
     return $result
@@ -1344,6 +1385,12 @@ if (-not $album -and -not $script:IsProcessingQueue) {
     Write-Timestamp "Disc metadata discovery started"
     $discMeta = Get-DiscMetadata -DriveLetter $driveLetter
 
+    # Keep a release the user already picked even if the rest of discovery failed,
+    # otherwise cyanrip re-prompts for it after the "no more inputs" banner.
+    if ($discMeta -and $discMeta.ReleaseChoice) {
+        $script:ReleaseChoice = $discMeta.ReleaseChoice
+    }
+
     if ($discMeta -and $discMeta.Album) {
         $album = $discMeta.Album
 
@@ -1358,10 +1405,6 @@ if (-not $album -and -not $script:IsProcessingQueue) {
             $artist = $discMeta.Artist
         }
 
-        if ($discMeta.ReleaseChoice) {
-            $script:ReleaseChoice = $discMeta.ReleaseChoice
-        }
-
         # Display detected metadata
         $detectedLabel = if ($artist) { "$artist - $album" } else { $album }
         if ($discMeta.TotalDiscs -and $discMeta.TotalDiscs -gt 1) {
@@ -1374,6 +1417,7 @@ if (-not $album -and -not $script:IsProcessingQueue) {
         Write-Host "`nCould not auto-detect disc metadata." -ForegroundColor Yellow
         Write-Host "Please provide album details manually." -ForegroundColor Yellow
         $album = Read-Host "Album name (required)"
+        if (-not $album -and $discMeta -and $discMeta.Album) { $album = $discMeta.Album }
         if (-not $album) {
             Write-Host "ERROR: Album name is required." -ForegroundColor Red
             exit 1
@@ -1535,8 +1579,41 @@ if ($RequireMusicBrainz) {
 Write-Host "========================================" -ForegroundColor Cyan
 if (-not $script:IsProcessingQueue) {
     $host.UI.RawUI.WindowTitle = "rip-audio - INPUT"
-    Show-QuestionHint
-    $response = Read-Host "Press Enter to continue, or Ctrl+C to abort"
+    # No Show-QuestionHint here: this is the last prompt before the rip, so
+    # "a few more questions" would be untrue.
+    Write-Host ""
+    if ($discMeta -and $discMeta.TrackCount -and $discMeta.TrackCount -le 2) {
+        # The red low-track-count warning above asks a human to check the drive before
+        # continuing - auto-starting would defeat that, so wait for a real answer.
+        $null = Read-Host "Press Enter to continue, or Ctrl+C to abort"
+    } else {
+        # Auto-start so a rip isn't left waiting at this prompt after all the details are in.
+        $autoStartSeconds = 20
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $aborted = $false
+        while ($sw.Elapsed.TotalSeconds -lt $autoStartSeconds) {
+            $remaining = [math]::Ceiling($autoStartSeconds - $sw.Elapsed.TotalSeconds)
+            Write-Host ("`rStarting in {0,2}s - Enter to start now, Esc to abort, Ctrl+C to quit " -f $remaining) -NoNewline -ForegroundColor White
+            try {
+                if ([Console]::KeyAvailable) {
+                    $key = [Console]::ReadKey($true)
+                    if ($key.Key -eq [ConsoleKey]::Escape) { $aborted = $true }
+                    break
+                }
+            } catch [System.InvalidOperationException] {
+                # Console input is redirected - KeyAvailable throws every time. Start now
+                # rather than spinning out the countdown.
+                break
+            }
+            Start-Sleep -Milliseconds 200
+        }
+        $sw.Stop()
+        Write-Host ""
+        if ($aborted) {
+            Write-Host "Aborted - nothing was ripped." -ForegroundColor Yellow
+            exit 0
+        }
+    }
 }
 
 # Disable close button to prevent accidental window closure during rip
@@ -2511,8 +2588,9 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
         Write-Host "Fetching track details for each release..." -ForegroundColor Gray
         foreach ($rel in $releases) {
             try {
-                $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=media+recordings&fmt=json"
+                $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=artist-credits+media+recordings&fmt=json"
                 $trackResp = Invoke-MusicBrainzRequest -Uri $trackUrl
+                $rel.Artist = Get-ReleaseArtistCredit -Release $trackResp
                 if ($trackResp.media -and $trackResp.media.Count -gt 0) {
                     $medium = $trackResp.media[0]
                     $rel.TrackCount = $medium.'track-count'
@@ -2528,7 +2606,9 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
 
         Write-Host "Select a release:" -ForegroundColor Cyan
         foreach ($rel in $releases) {
-            $info = "  $($rel.Index): $($rel.Description)"
+            $info = "  $($rel.Index): "
+            if ($rel.Artist) { $info += "$($rel.Artist) - " }
+            $info += $rel.Description
             if ($rel.TrackCount) {
                 $info += " | $($rel.TrackCount) tracks"
                 if ($rel.FirstTrack -and $rel.LastTrack) {

@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## 2026-10-28 - Release Picker Shows the Artist, Release Choice Kept, Auto-Start Countdown
+
+### Fixed
+- **The picked release was lost when the follow-up "release details" request timed out.** After the user chose a release, `Get-DiscMetadata` made a second MusicBrainz request for the release details; when that timed out live it returned `$null`, discarding the choice, re-asking for album/artist, and making cyanrip re-prompt for the release after the "No more inputs needed" banner. The per-release fetch now also includes `discids`, and the picked release's response is reused instead of making the second request. The catch now returns the partial result, `ReleaseChoice` is kept even when the album is missing, and an empty manual album entry falls back to the album already found.
+- **A single MusicBrainz 503 during disc discovery meant no disc ID and an immediate drop to manual entry.** The discovery `cyanrip -I` now retries after 5s, 10s and 15s when its output contains `MusicBrainz query failed`.
+
+### Changed
+- **Release picker shows the artist.** The per-release MusicBrainz fetch now includes `artist-credits`, and a new `Get-ReleaseArtistCredit` helper builds the credit. Both pickers (disc discovery and rip time) show `N: Artist - Title (Country) (Date) | ...`.
+- **Discovery hides cyanrip's raw release list:** the MusicBrainz ID lines, `Multiple releases found in database` and the `-R argument` hint are no longer printed (still captured for parsing). The Disc ID line now goes only to the log.
+- **Removed the `[ A few more questions to answer... ]` hint** before the final `Press Enter to continue` prompt, since that is the last prompt.
+- **The final prompt is now a 20-second auto-start countdown:** Enter starts now, Esc aborts with exit 0 before the log is created, Ctrl+C quits. It falls back to the old blocking `Read-Host` when the red low-track-count warning (2 tracks or fewer) is showing, and starts immediately if console input is redirected.
+
+**Testing status:** the artist display and kept release choice were confirmed on a real disc (Sade "Promise", 4 releases, picked 2, went straight to `Detected: Sade - Promise` with no re-prompt). The discovery retry, output filtering, hint removal and countdown were parse-checked only (0 errors), new lines confirmed ASCII-only, and the discovery filter regex tested against real cyanrip output lines; not run live.
+
 ## 2026-10-04 - Crash Resume on Every Path, Honest Completion, MusicBrainz Backoff
 
 Fixes the seven `rip-audio.ps1` bugs found after the Jethro Tull "This Was" crash (cyanrip exit `0xC0000005` in track 3, reported as "Partial rip accepted" / "COMPLETE, Total tracks: 2").
