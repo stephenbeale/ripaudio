@@ -217,10 +217,17 @@ function Stop-WithError {
 # existing convention of small per-script utility copies over a shared module.
 function Test-TrackIntegrity {
     param([string]$FilePath)
-    $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
-    if ($metaflacPath) {
-        & metaflac --test $FilePath 2>$null
-        return $LASTEXITCODE -eq 0
+    # Same check as rip-audio.ps1's Test-TrackIntegrity (PR #147): metaflac has no --test
+    # option, so "metaflac --test" exited 1 for every file and this function called every
+    # FLAC corrupt - search-metadata.ps1 then stopped with "No FLAC files found" on any
+    # album (found 2026-11-22 on a good 19-track rip). "flac --test" decodes the audio.
+    $ext = [System.IO.Path]::GetExtension($FilePath).ToLower()
+    if ($ext -eq ".flac") {
+        $flacExe = Get-Command flac -ErrorAction SilentlyContinue
+        if ($flacExe) {
+            & flac --test --totally-silent $FilePath 2>$null
+            return $LASTEXITCODE -eq 0
+        }
     }
     return (Get-Item $FilePath).Length -gt 10240
 }

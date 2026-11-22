@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-22 - search-metadata.ps1 Called Every FLAC Corrupt; Generic Rips Skipped It
+
+### Fixed
+- **search-metadata.ps1 rejected every FLAC file as corrupt** ("Skipped 19 corrupt file(s)", then "No FLAC files found"). Its `Test-TrackIntegrity` (added 2026-08-29) still called `metaflac --test`, which is not a metaflac option, so it exited 1 for every file - the same bug PR #147 fixed in rip-audio.ps1. It now uses `flac --test --totally-silent`, like rip-audio.ps1. Found on a good 19-track rip (Tom Jones & Jools Holland; `flac --test` passes); with the fix, a dry run finds all 19 track titles via Deezer while MusicBrainz was returning 503.
+- **A rip continued without MusicBrainz never offered search-metadata.ps1.** Those files are named `NN - Artist - Album.flac` (Metadata source: Generic), but the offer only looked for "Unknown track" in the names, so the run went straight to Mp3tag. Generic-named files now count as untagged too.
+
 ## 2026-11-22 - Identify the Disc When MusicBrainz Is Busy; "Fix Names After the Rip" Prompts
 
 ### Fixed
