@@ -2,10 +2,14 @@
 
 All notable changes to this project are documented here.
 
-## 2026-11-22 - search-metadata.ps1 Called Every FLAC Corrupt; Generic Rips Skipped It
+## 2026-11-22 - search-metadata.ps1 Called Every FLAC Corrupt; Generic Rips Skipped It; -KeepArtist
+
+### Added
+- `search-metadata.ps1 -KeepArtist`: keep the album's current artist (its tags/folder, or `-Artist`) instead of the one the search returned, while still taking track titles, album, date, genre and cover from the search. Deezer lists "Tom Jones & Jools Holland" under just "Jools Holland". A per-track artist is still used when it is really that track's own (a featured guest), not the source's album artist repeated. Applied after the artist-mismatch check, so a wrong album is still caught.
 
 ### Fixed
 - **search-metadata.ps1 rejected every FLAC file as corrupt** ("Skipped 19 corrupt file(s)", then "No FLAC files found"). Its `Test-TrackIntegrity` (added 2026-08-29) still called `metaflac --test`, which is not a metaflac option, so it exited 1 for every file - the same bug PR #147 fixed in rip-audio.ps1. It now uses `flac --test --totally-silent`, like rip-audio.ps1. Found on a good 19-track rip (Tom Jones & Jools Holland; `flac --test` passes); with the fix, a dry run finds all 19 track titles via Deezer while MusicBrainz was returning 503.
+- **The artist check called "Tom Jones & Jools Holland" and MusicBrainz's "Tom Jones, Jools Holland" different artists** and skipped the album. `Test-ArtistMismatch` now compares words: `&`, `and`, `+`, `with`, `feat`/`ft`, commas, punctuation and a leading "The" are ignored, and the same words in any order match. 12/12 cases, including real mismatches (Cher vs The Rolling Stones, Dylan Thomas vs Richard Burton, Tom Jones vs Tom Petty) still flagged.
 - **A rip continued without MusicBrainz never offered search-metadata.ps1.** Those files are named `NN - Artist - Album.flac` (Metadata source: Generic), but the offer only looked for "Unknown track" in the names, so the run went straight to Mp3tag. Generic-named files now count as untagged too.
 
 ## 2026-11-22 - Identify the Disc When MusicBrainz Is Busy; "Fix Names After the Rip" Prompts
