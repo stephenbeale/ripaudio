@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-22 - Identify the Disc When MusicBrainz Is Busy; "Fix Names After the Rip" Prompts
+
+### Fixed
+- **When MusicBrainz refused cyanrip's lookup, ripaudio could not even read the disc ID and went straight to "Album name (required)".** cyanrip asks for the release with its whole track listing, the request MusicBrainz drops first when overloaded (2026-11-22: every such request got 503 while smaller ones mostly got through), and cyanrip prints the disc ID only after that lookup succeeds. New `Get-DiscIdentityFallback`, run by `Get-DiscMetadata` after cyanrip's retries fail: `cyanrip -I -N` reads the disc ID, track count and barcode (MCN) with no network, then MusicBrainz is asked smaller questions (disc ID with artist names, disc ID alone, barcode search), each retried on 503 by `Invoke-MusicBrainzRequest`. Live on two real discs during the outage: "Tom Jones & Jools Holland" and "Luther Vandross - The Ultimate Luther Vandross" (the second after three 503 retries).
+- The pre-rip "MusicBrainz API: OK" check could pass right after discovery had seen cyanrip's lookup fail, so the rip then hit the 503 anyway. When discovery saw that failure, the check now reports MusicBrainz as busy straight away.
+
+### Changed
+- Both MusicBrainz-failure prompts (pre-rip check and after cyanrip) now explain that the disc can still be ripped and the names fixed afterwards (CDDB, then search-metadata.ps1, then Mp3tag), and **Enter = Continue** (was Retry): `Show-MusicBrainzBusyHelp`. The manual "Album name" prompt says the name only sets the folder and track names can be fixed after the rip.
+
 ## 2026-10-28 - Release Picker Shows the Artist, Release Choice Kept, Auto-Start Countdown
 
 ### Fixed

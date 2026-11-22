@@ -221,6 +221,74 @@ function Get-ReleaseArtistCredit {
     if ($artist) { return $artist } else { return $null }
 }
 
+# Shown wherever MusicBrainz fails, before the [C]/[R]/[Q] choice: ripping does not
+# need MusicBrainz, and the names can be fixed afterwards by the steps that already run
+# after the rip. Continue is the default (Enter) - retrying a 503 straight away rarely helps.
+function Show-MusicBrainzBusyHelp {
+    Write-Host "MusicBrainz is busy or unreachable - the disc can still be ripped." -ForegroundColor Yellow
+    Write-Host "Track names can be fixed after the rip: CDDB (gnudb) first, then" -ForegroundColor Gray
+    Write-Host "search-metadata.ps1 (MusicBrainz / Discogs / iTunes / Deezer), then Mp3tag." -ForegroundColor Gray
+    Write-Host "  [C] Continue - rip now, fix names afterwards  (Enter)" -ForegroundColor White
+    Write-Host "  [R] Retry MusicBrainz" -ForegroundColor White
+    Write-Host "  [Q] Quit" -ForegroundColor White
+    Write-Host ""
+}
+
+# Fallback when cyanrip's own MusicBrainz lookup fails (it asks for the release WITH its
+# track listing, the request MusicBrainz sheds first when overloaded - 2026-11-22 every
+# such request got 503 while smaller ones mostly got through).
+# 1. cyanrip -I -N reads the disc ID, track count and barcode (MCN) with no network.
+# 2. Smaller MusicBrainz questions: the disc ID with artist names only, then the disc ID
+#    alone, then a barcode search.
+# Returns @{ Album; Artist; Date; DiscId; TrackCount; Source; Others } or $null.
+# -CyanripOutput / -Request are seams for tests.
+function Get-DiscIdentityFallback {
+    param(
+        [string]$DriveLetter,
+        [string[]]$CyanripOutput = $null,
+        [scriptblock]$Request = { param($u) Invoke-MusicBrainzRequest -Uri $u }
+    )
+    if ($null -eq $CyanripOutput) {
+        $CyanripOutput = @(& cyanrip -I -N -d $DriveLetter -s 0 2>&1 | ForEach-Object { "$_" })
+    }
+    $text = $CyanripOutput -join "`n"
+    $discId = if ($text -match 'DiscID:\s+(\S+)') { $Matches[1] } elseif ($text -match '[&?]id=([A-Za-z0-9_.~-]+)') { $Matches[1] } else { $null }
+    $mcn = if ($text -match 'Disc MCN:\s+(\d{8,14})') { $Matches[1] } else { $null }
+    $tracks = if ($text -match 'Disc tracks:\s+(\d+)') { [int]$Matches[1] } else { $null }
+    if ($mcn -and $mcn -match '^0+$') { $mcn = $null }   # some discs report an all-zero MCN
+    if (-not $discId -and -not $mcn) { return $null }
+
+    $found = $null
+    if ($discId) {
+        foreach ($q in @('?inc=artist-credits&fmt=json', '?fmt=json')) {
+            try {
+                $r = & $Request "https://musicbrainz.org/ws/2/discid/$discId$q"
+                if ($r -and $r.releases -and @($r.releases).Count -gt 0) { $found = @{ Releases = @($r.releases); Source = "MusicBrainz disc ID" }; break }
+            } catch {
+                Write-Log "Fallback disc ID lookup ($q) failed: $($_.Exception.Message)"
+            }
+        }
+    }
+    # Barcode: also fills in the artist when only the plain disc ID lookup got through
+    if ($mcn -and (-not $found -or -not (Get-ReleaseArtistCredit -Release $found.Releases[0]))) {
+        try {
+            $r = & $Request "https://musicbrainz.org/ws/2/release?query=barcode:$mcn&fmt=json"
+            if ($r -and $r.releases -and @($r.releases).Count -gt 0) {
+                if (-not $found) { $found = @{ Releases = @($r.releases); Source = "MusicBrainz barcode" } }
+                elseif (-not $found.Artist) { $found.Artist = Get-ReleaseArtistCredit -Release @($r.releases)[0] }
+            }
+        } catch {
+            Write-Log "Fallback barcode lookup failed: $($_.Exception.Message)"
+        }
+    }
+    if (-not $found) { return $null }
+    $first = $found.Releases[0]
+    $artist = Get-ReleaseArtistCredit -Release $first
+    if (-not $artist) { $artist = $found.Artist }
+    $others = @($found.Releases | Select-Object -Skip 1 | ForEach-Object { "$($_.title)" } | Where-Object { $_ -and $_ -ne "$($first.title)" } | Sort-Object -Unique)
+    return @{ Album = "$($first.title)"; Artist = $artist; Date = "$($first.date)"; DiscId = $discId; TrackCount = $tracks; Source = $found.Source; Others = $others }
+}
+
 function Invoke-MusicBrainzRequest {
     param([string]$Uri, [int]$TimeoutSec = 10, [switch]$Raw)
     $headers = @{
@@ -357,6 +425,33 @@ function Get-DiscMetadata {
     } elseif ($outputText -match '[&?]id=([A-Za-z0-9_.~-]+)') {
         # Fallback: extract from MusicBrainz URL parameter (e.g. stub message)
         $discId = $Matches[1]
+    }
+
+    # cyanrip's MusicBrainz lookup failed on every attempt: try the smaller lookups before
+    # giving up and asking for the album name (Get-DiscIdentityFallback).
+    if ($outputText -match 'MusicBrainz query failed') {
+        Write-Host "`nMusicBrainz would not answer cyanrip's full lookup - trying smaller lookups (disc ID, barcode)..." -ForegroundColor Yellow
+        Write-Log "cyanrip MusicBrainz lookup failed on all attempts - trying fallback lookups"
+        $script:MbFullLookupFailed = $true
+        $fb = $null
+        try { $fb = Get-DiscIdentityFallback -DriveLetter $DriveLetter } catch { Write-Log "Fallback lookup error: $($_.Exception.Message)" }
+        if ($fb -and $fb.Album) {
+            $result.Album = $fb.Album
+            $result.Artist = $fb.Artist
+            $result.DiscId = $fb.DiscId
+            if (-not $result.TrackCount -and $fb.TrackCount) { $result.TrackCount = $fb.TrackCount }
+            $result.FallbackSource = $fb.Source
+            $label = if ($fb.Artist) { "$($fb.Artist) - $($fb.Album)" } else { $fb.Album }
+            if ($fb.Date) { $label += " ($($fb.Date))" }
+            Write-Host "Found via $($fb.Source): $label" -ForegroundColor Green
+            if ($fb.Others.Count -gt 0) { Write-Host "  (other releases with this disc: $($fb.Others -join '; '))" -ForegroundColor DarkGray }
+            Write-Host "  Track names come later: MusicBrainz again during the rip, else CDDB / search-metadata.ps1 / Mp3tag." -ForegroundColor Gray
+            Write-Log "Fallback identified disc via $($fb.Source): $label (disc ID $($fb.DiscId))"
+            return $result
+        }
+        if ($fb -and $fb.DiscId -and -not $discId) { $discId = $fb.DiscId }
+        Write-Host "The smaller lookups found nothing either." -ForegroundColor Yellow
+        Write-Log "Fallback lookups found nothing"
     }
 
     if (-not $discId) {
@@ -1415,7 +1510,8 @@ if (-not $album -and -not $script:IsProcessingQueue) {
     } else {
         # Discovery failed — prompt user for album name
         Write-Host "`nCould not auto-detect disc metadata." -ForegroundColor Yellow
-        Write-Host "Please provide album details manually." -ForegroundColor Yellow
+        Write-Host "Type the album name and the rip goes ahead - the name only sets the folder." -ForegroundColor Yellow
+        Write-Host "Track names can be fixed after the rip (CDDB, search-metadata.ps1, Mp3tag)." -ForegroundColor Gray
         $album = Read-Host "Album name (required)"
         if (-not $album -and $discMeta -and $discMeta.Album) { $album = $discMeta.Album }
         if (-not $album) {
@@ -2075,6 +2171,10 @@ if ($script:SkipRip) {
 Write-Host "`nChecking MusicBrainz API connectivity..." -ForegroundColor Yellow
 $skipMusicBrainz = $false
 try {
+    # The health check is a small request and can pass while MusicBrainz is still refusing
+    # the full disc lookup cyanrip makes (2026-11-22: "MusicBrainz API: OK", then cyanrip
+    # 503). If discovery just saw that happen, say so now rather than after cyanrip fails.
+    if ($script:MbFullLookupFailed) { throw "cyanrip's disc lookup got 503 (MusicBrainz busy) a moment ago" }
     # Lightweight lookup, retried with backoff on 503 (see Invoke-MusicBrainzHealthCheck)
     Invoke-MusicBrainzHealthCheck
     Write-Host "MusicBrainz API: OK" -ForegroundColor Green
@@ -2130,16 +2230,13 @@ try {
             }
         }
     } else {
-        Write-Host "  [R] Retry connection" -ForegroundColor White
-        Write-Host "  [C] Continue without metadata (generic track names)" -ForegroundColor White
-        Write-Host "  [Q] Quit" -ForegroundColor White
-        Write-Host ""
+        Show-MusicBrainzBusyHelp
 
         $resolved = $false
         $mbRetryCount = 0
         while (-not $resolved) {
-            $mbChoice = Read-Host "Choice (R/c/q)"
-            if ($mbChoice -eq "" -or $mbChoice -match "^[Rr]") {
+            $mbChoice = Read-Host "Choice (C/r/q)"
+            if ($mbChoice -match "^[Rr]") {
                 $mbRetryCount++
                 # Same reasoning as the -RequireMusicBrainz retry loop above: back off a
                 # little more on each successive retry (capped at 15s) instead of an
@@ -2157,9 +2254,9 @@ try {
                     Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
                     Write-Host "  Reason: $($_.Exception.Message)" -ForegroundColor DarkGray
                     Write-Log "MusicBrainz connectivity retry $mbRetryCount failed: $($_.Exception.Message)"
-                    Write-Host "  [R] Retry | [C] Continue without metadata | [Q] Quit" -ForegroundColor White
+                    Write-Host "  [C] Continue - rip now, fix names afterwards (Enter) | [R] Retry | [Q] Quit" -ForegroundColor White
                 }
-            } elseif ($mbChoice -match "^[Cc]") {
+            } elseif ($mbChoice -eq "" -or $mbChoice -match "^[Cc]") {
                 Write-Host "Will continue without MusicBrainz metadata" -ForegroundColor Yellow
                 Write-Log "MusicBrainz API unreachable - user chose to continue without metadata"
                 $skipMusicBrainz = $true
@@ -2668,15 +2765,12 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
         Stop-WithError -Step "STEP 1/4: cyanrip" -Message "MusicBrainz connection failed and -RequireMusicBrainz is set"
     }
 
-    Write-Host "  [R] Retry connection" -ForegroundColor White
-    Write-Host "  [C] Continue without metadata (generic track names)" -ForegroundColor White
-    Write-Host "  [Q] Quit" -ForegroundColor White
-    Write-Host ""
+    Show-MusicBrainzBusyHelp
 
     $validChoice = $false
     while (-not $validChoice) {
-        $retryChoice = Read-Host "Choice (R/c/q)"
-        if ($retryChoice -eq "" -or $retryChoice -match "^[Rr]") {
+        $retryChoice = Read-Host "Choice (C/r/q)"
+        if ($retryChoice -match "^[Rr]") {
             $validChoice = $true
             Write-Host "`nRetrying MusicBrainz connection..." -ForegroundColor Green
             Write-Log "User chose to retry MusicBrainz connection"
@@ -2696,13 +2790,10 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             # If still failing with connection error, loop back
             if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query failed" -or $cyanripOutputText -match "Connection failed")) {
                 $validChoice = $false
-                Write-Host "`nConnection still failing." -ForegroundColor Yellow
-                Write-Host "  [R] Retry connection" -ForegroundColor White
-                Write-Host "  [C] Continue without metadata" -ForegroundColor White
-                Write-Host "  [Q] Quit" -ForegroundColor White
-                Write-Host ""
+                Write-Host "`nStill failing." -ForegroundColor Yellow
+                Show-MusicBrainzBusyHelp
             }
-        } elseif ($retryChoice -match "^[Cc]") {
+        } elseif ($retryChoice -eq "" -or $retryChoice -match "^[Cc]") {
             $validChoice = $true
             Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
             Write-Log "User chose to continue without MusicBrainz metadata (connection failed)"
