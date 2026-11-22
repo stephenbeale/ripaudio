@@ -3839,7 +3839,14 @@ if ($script:CorruptTracks.Count -gt 0) {
 # If MusicBrainz had no match the tracks will be named "Unknown track".
 # Offer to run search-metadata.ps1 to identify and tag them before closing.
 if (-not $script:IsProcessingQueue) {
-    $unknownTracks = $rippedFiles | Where-Object { $_.Name -like "*Unknown track*" }
+    # Also the generic "NN - Artist - Album" names a rip without MusicBrainz gets
+    # (Metadata source: Generic) - those never contain "Unknown track", so before
+    # 2026-11-22 a [C]ontinue-without-MusicBrainz rip skipped this offer and went
+    # straight to Mp3tag.
+    $unknownTracks = @($rippedFiles | Where-Object {
+        $_.Name -like "*Unknown track*" -or
+        ($script:MetadataSource -eq 'Generic' -and $_.Name -match '^\d{2} - .+ - .+\.\w+$')
+    })
     if ($unknownTracks.Count -gt 0) {
         Write-Host "`n  Disc not found in MusicBrainz -- $($unknownTracks.Count) track(s) are untagged." -ForegroundColor Yellow
         if ('flac' -notin $formatList) {

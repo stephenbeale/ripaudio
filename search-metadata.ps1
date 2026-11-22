@@ -27,7 +27,13 @@ param(
     [switch]$EmbedOnly,
 
     [Parameter()]
-    [switch]$Reset
+    [switch]$Reset,
+
+    # Keep the album's current artist (from its tags/folder, or -Artist) instead of the
+    # one the search returned - e.g. Deezer lists "Tom Jones & Jools Holland" under just
+    # "Jools Holland". Track titles, album, date, genre and cover still come from the search.
+    [Parameter()]
+    [switch]$KeepArtist
 )
 
 # Ensure metaflac (and other external tools) output is read as UTF-8
@@ -217,10 +223,17 @@ function Stop-WithError {
 # existing convention of small per-script utility copies over a shared module.
 function Test-TrackIntegrity {
     param([string]$FilePath)
-    $metaflacPath = Get-Command metaflac -ErrorAction SilentlyContinue
-    if ($metaflacPath) {
-        & metaflac --test $FilePath 2>$null
-        return $LASTEXITCODE -eq 0
+    # Same check as rip-audio.ps1's Test-TrackIntegrity (PR #147): metaflac has no --test
+    # option, so "metaflac --test" exited 1 for every file and this function called every
+    # FLAC corrupt - search-metadata.ps1 then stopped with "No FLAC files found" on any
+    # album (found 2026-11-22 on a good 19-track rip). "flac --test" decodes the audio.
+    $ext = [System.IO.Path]::GetExtension($FilePath).ToLower()
+    if ($ext -eq ".flac") {
+        $flacExe = Get-Command flac -ErrorAction SilentlyContinue
+        if ($flacExe) {
+            & flac --test --totally-silent $FilePath 2>$null
+            return $LASTEXITCODE -eq 0
+        }
     }
     return (Get-Item $FilePath).Length -gt 10240
 }
@@ -1037,7 +1050,26 @@ function Show-MetadataComparison {
 function Test-ArtistMismatch {
     param([string]$ExpectedArtist, [string]$FoundArtist)
     if (-not $ExpectedArtist -or -not $FoundArtist) { return $false }
-    $match = ($FoundArtist -like "*$ExpectedArtist*") -or ($ExpectedArtist -like "*$FoundArtist*")
+    # Compare words, not punctuation: "Tom Jones & Jools Holland", "Tom Jones and Jools
+    # Holland" and MusicBrainz's "Tom Jones, Jools Holland" are the same credit (2026-11-22
+    # this was flagged as a mismatch and the album skipped). Joiners (&, and, +, x, with,
+    # feat/ft/featuring) and punctuation are dropped, and a leading "The" is ignored.
+    $norm = {
+        param($s)
+        $t = " $("$s".ToLowerInvariant()) " -replace '[&+,;/]', ' ' -replace '[^\p{L}\p{Nd}\s]', ''
+        $t = $t -replace '\s(and|with|feat|featuring|ft|x)\s', ' ' -replace '\s(and|with|feat|featuring|ft|x)\s', ' '
+        (($t -replace '^\s*the\s+', ' ') -replace '\s+', ' ').Trim()
+    }
+    $e = & $norm $ExpectedArtist
+    $f = & $norm $FoundArtist
+    if (-not $e -or -not $f) { return $false }
+    $match = ($f -like "*$e*") -or ($e -like "*$f*")
+    if (-not $match) {
+        # Same set of words in any order ("Jools Holland & Tom Jones")
+        $ew = @($e -split ' ' | Sort-Object -Unique) -join ' '
+        $fw = @($f -split ' ' | Sort-Object -Unique) -join ' '
+        $match = ($ew -eq $fw)
+    }
     return -not $match
 }
 
@@ -1261,7 +1293,8 @@ function Process-AlbumFolder {
         [switch]$BatchMode,
         [switch]$DryRunMode,
         [switch]$EmbedOnlyMode,
-        [switch]$ResetMode
+        [switch]$ResetMode,
+        [switch]$KeepArtistMode
     )
 
     # Reset step tracking for each album
@@ -1879,6 +1912,16 @@ function Process-AlbumFolder {
         }
     }
 
+    # -KeepArtist: the album's current artist wins over the search's. Applied after the
+    # mismatch guard, so a search that found a different artist's album is still caught.
+    $sourceAlbumArtist = $merged.Artist
+    if ($KeepArtistMode -and $folderArtist) {
+        $merged.Artist = $folderArtist
+        $merged.AlbumArtist = $folderArtist
+        Write-Host "  Keeping the current artist: $folderArtist (search said $sourceAlbumArtist)" -ForegroundColor Cyan
+        Write-Log "  -KeepArtist: artist kept as '$folderArtist' (search returned '$sourceAlbumArtist')"
+    }
+
     Complete-CurrentStep
 
     # ========== STEP 3: CONFIRM CHANGES ==========
@@ -1962,7 +2005,10 @@ function Process-AlbumFolder {
             if (-not $trackTitle) { $trackTitle = "Track $($i + 1)" }
 
             $trackArtist = $merged.Artist
-            if ($merged.Tracks -and $i -lt $merged.Tracks.Count -and $merged.Tracks[$i].Artist) {
+            # With -KeepArtist, a per-track artist is only used when it is really that track's own
+            # (e.g. a featured guest), not the source's album artist repeated on every track
+            if ($merged.Tracks -and $i -lt $merged.Tracks.Count -and $merged.Tracks[$i].Artist -and
+                (-not $KeepArtistMode -or $merged.Tracks[$i].Artist -ne $sourceAlbumArtist)) {
                 $trackArtist = $merged.Tracks[$i].Artist
             }
 
@@ -2209,7 +2255,7 @@ if ($Recurse) {
         try {
             $result = Process-AlbumFolder -FolderPath $folder `
                 -ForceMode:$true -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
-                -BatchMode -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly -ResetMode:$Reset
+                -BatchMode -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly -ResetMode:$Reset -KeepArtistMode:$KeepArtist
 
             $batchResults += $result
 
@@ -2308,7 +2354,7 @@ if ($Recurse) {
     $result = Process-AlbumFolder -FolderPath $Path `
         -ArtistHint $Artist -AlbumHint $Album `
         -ForceMode:$Force -SkipRenameMode:$SkipRename -SkipCoverArtMode:$SkipCoverArt `
-        -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly -ResetMode:$Reset
+        -DryRunMode:$DryRun -EmbedOnlyMode:$EmbedOnly -ResetMode:$Reset -KeepArtistMode:$KeepArtist
 
     # ========== SUMMARY ==========
     $dryRunLabel = if ($DryRun) { "[DRY RUN] " } else { "" }
