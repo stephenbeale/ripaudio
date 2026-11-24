@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-24 - Wrong Cover Art (Another Album's iTunes Hit); Busy-MusicBrainz Prompt Continues After 30 s
+
+### Fixed
+- **The Essential Neil Diamond (both discs) got Neil Diamond's "Acoustic Christmas" cover.** Three causes, all fixed in rip-audio.ps1, continue-rip-audio.ps1 and get-metadata.ps1:
+  - Cover Art Archive was only asked when the `.cue` had a `RELEASE_ID`, which a rip without MusicBrainz (`-N`) never writes. The release found by the disc lookup (`$script:KnownReleaseId`, or `RELEASEID` in `.discid` for continue-rip-audio.ps1) is now used; Disc 2's release had archive art.
+  - Searches included the " Disc 2" folder suffix (`Get-ArtSearchAlbum` drops " Disc N" / " CD N").
+  - iTunes and Deezer took the first hit whatever its name (iTunes' first hit for this album is "The Jazz Singer"). They now take the first of up to 10 hits whose album name matches (`Test-AlbumTitleMatch`: words only, bracketed edition notes ignored, equal or containing when 8+ characters), else none.
+  - The two existing folders were fixed by hand: Front.jpg and the embedded picture in all 38 FLACs replaced with the Cover Art Archive front (`flac --test` passes).
+
+### Changed
+- The busy-MusicBrainz `Choice (C/r/q)` prompts (before the rip and when cyanrip's lookup fails) count down and take Continue after 30 s, so an unattended rip is not left waiting. New `Read-ChoiceWithTimeout` (falls back to Read-Host when input is redirected).
+
+### Tests
+- New tests/Test-CoverArtAndPrompts.ps1 16/16 (`-Live` checks iTunes); Test-MbFallbackLookups 12/12.
+
 ## 2026-11-24 - Release Picker in One Request; Picked Release's Track Names Kept for a 503 at Rip Time
 
 ### Fixed
