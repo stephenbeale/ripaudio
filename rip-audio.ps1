@@ -226,8 +226,14 @@ function Get-ReleaseArtistCredit {
 # after the rip. Continue is the default (Enter) - retrying a 503 straight away rarely helps.
 function Show-MusicBrainzBusyHelp {
     Write-Host "MusicBrainz is busy or unreachable - the disc can still be ripped." -ForegroundColor Yellow
-    Write-Host "Track names can be fixed after the rip: CDDB (gnudb) first, then" -ForegroundColor Gray
-    Write-Host "search-metadata.ps1 (MusicBrainz / Discogs / iTunes / Deezer), then Mp3tag." -ForegroundColor Gray
+    if ($script:DiscoveryTitles -and $script:DiscoveryTitles.Tracks.Count -gt 0) {
+        $t = $script:DiscoveryTitles
+        Write-Host "Track names are already saved from the disc lookup ($($t.Source): $($t.Tracks.Count) tracks, $($t.Album))" -ForegroundColor Green
+        Write-Host "- Continue rips now and names the files with them." -ForegroundColor Green
+    } else {
+        Write-Host "Track names can be fixed after the rip: CDDB (gnudb) first, then" -ForegroundColor Gray
+        Write-Host "search-metadata.ps1 (MusicBrainz / Discogs / iTunes / Deezer), then Mp3tag." -ForegroundColor Gray
+    }
     Write-Host "  [C] Continue - rip now, fix names afterwards  (Enter)" -ForegroundColor White
     Write-Host "  [R] Retry MusicBrainz" -ForegroundColor White
     Write-Host "  [Q] Quit" -ForegroundColor White
@@ -290,12 +296,14 @@ function Get-DiscIdentityFallback {
 }
 
 function Invoke-MusicBrainzRequest {
-    param([string]$Uri, [int]$TimeoutSec = 10, [switch]$Raw)
+    # -RetryDelays: optional lookups (the release picker's extra details) pass a shorter
+    # list so a busy MusicBrainz costs seconds, not 14 s per request.
+    param([string]$Uri, [int]$TimeoutSec = 10, [switch]$Raw, [int[]]$RetryDelays = @(2, 4, 8))
     $headers = @{
         "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
         "Accept" = "application/json"
     }
-    $retryDelays = @(2, 4, 8)
+    $retryDelays = @($RetryDelays)
     for ($attempt = 0; ; $attempt++) {
         $waitMs = 1100 - ((Get-Date) - $script:MbLastRequest).TotalMilliseconds
         if ($waitMs -gt 0) { Start-Sleep -Milliseconds ([int]$waitMs) }
@@ -349,20 +357,71 @@ function Get-MusicBrainzTrackTitles {
         } else {
             return $null
         }
-        $media = @($release.media)
-        $medium = $media | Where-Object { $DiscId -and (@($_.discs | ForEach-Object { $_.id }) -contains $DiscId) } | Select-Object -First 1
-        if (-not $medium -and $TrackCount) { $medium = $media | Where-Object { $_.'track-count' -eq $TrackCount } | Select-Object -First 1 }
-        if (-not $medium -and $media.Count -eq 1) { $medium = $media[0] }
-        if (-not $medium -or -not $medium.tracks) { return $null }
-        return @{
-            Artist = (@($release.'artist-credit') | ForEach-Object { $_.name }) -join " / "
-            Album  = $release.title
-            Tracks = @($medium.tracks | ForEach-Object { $_.title })
-        }
+        return Get-ReleaseDiscTitles -Release $release -DiscId $DiscId -TrackCount $TrackCount
     } catch {
         Write-Log "MusicBrainz track-title lookup failed: $($_.Exception.Message)"
         return $null
     }
+}
+
+# The medium of a MusicBrainz release that holds this disc: the one listing the disc ID,
+# else the one with the same track count, else the only one. $null when none fits.
+function Get-ReleaseDiscMedium {
+    param($Release, [string]$DiscId, [int]$TrackCount)
+    if (-not $Release) { return $null }
+    $media = @($Release.media | Where-Object { $_ })
+    $medium = $media | Where-Object { $DiscId -and (@($_.discs | ForEach-Object { $_.id }) -contains $DiscId) } | Select-Object -First 1
+    if (-not $medium -and $TrackCount) { $medium = $media | Where-Object { $_.'track-count' -eq $TrackCount } | Select-Object -First 1 }
+    if (-not $medium -and $media.Count -eq 1) { $medium = $media[0] }
+    return $medium
+}
+
+# @{ Artist; Album; Tracks } for this disc from a release fetched with recordings, or $null.
+function Get-ReleaseDiscTitles {
+    param($Release, [string]$DiscId, [int]$TrackCount)
+    $medium = Get-ReleaseDiscMedium -Release $Release -DiscId $DiscId -TrackCount $TrackCount
+    if (-not $medium -or -not $medium.tracks) { return $null }
+    return @{
+        Artist = (@($Release.'artist-credit') | ForEach-Object { $_.name }) -join " / "
+        Album  = "$($Release.title)"
+        Tracks = @($medium.tracks | ForEach-Object { "$($_.title)" })
+    }
+}
+
+# Details (artist, media, discs, tracks) for every release cyanrip listed, for the
+# release picker. ONE disc ID request returns all of them (checked 2026-11-24: The
+# Essential Neil Diamond disc 1, 8 releases, same order, every medium with its discs and
+# tracks), instead of one request per release - 8 requests x up to 14 s of 503 retries
+# was the slow part. Releases that one request does not cover are fetched one by one
+# with a single short retry, and that stops at the first refusal: the picker still works
+# without details. Returns a hashtable UUID -> release object.
+# -Request is a seam for tests: param($uri, $retryDelays).
+function Get-ReleasePickerDetails {
+    param(
+        [string]$DiscId,
+        [string[]]$ReleaseIds,
+        [scriptblock]$Request = { param($u, $d) Invoke-MusicBrainzRequest -Uri $u -RetryDelays $d }
+    )
+    $details = @{}
+    if ($DiscId) {
+        try {
+            $resp = & $Request "https://musicbrainz.org/ws/2/discid/$($DiscId)?inc=artist-credits+recordings&fmt=json" @(2, 4)
+            foreach ($rel in @($resp.releases)) { if ($rel -and $rel.id) { $details[$rel.id] = $rel } }
+        } catch {
+            Write-Log "Release picker: disc ID details lookup failed: $($_.Exception.Message)"
+        }
+    }
+    foreach ($id in $ReleaseIds) {
+        if ($details.ContainsKey($id)) { continue }
+        try {
+            $details[$id] = & $Request "https://musicbrainz.org/ws/2/release/$($id)?inc=artist-credits+media+recordings+discids&fmt=json" @(2)
+        } catch {
+            Write-Host "  MusicBrainz is busy - showing the remaining releases without track details." -ForegroundColor DarkGray
+            Write-Log "Release picker: details for $id failed, skipping the rest: $($_.Exception.Message)"
+            break
+        }
+    }
+    return $details
 }
 
 # Generic placeholder names: cyanrip's -N output ("05 - Unknown track"), a bare track
@@ -504,25 +563,23 @@ function Get-DiscMetadata {
         if ($releases.Count -gt 0) {
             # Fetch track info for each release to help differentiate versions
             Write-Host "Fetching track details for each release..." -ForegroundColor Gray
+            # Responses include discids, so the picked one is reused as-is (no second
+            # request that may fail and discard the choice) and its track names are kept
+            # for a rip that then has to run without MusicBrainz.
+            $pickerDetails = Get-ReleasePickerDetails -DiscId $discId -ReleaseIds @($releases | ForEach-Object { $_.UUID })
             foreach ($rel in $releases) {
-                try {
-                    # discids included so the response can be reused as-is once the user picks
-                    # this release, instead of a second request that may fail (and, when it did,
-                    # discarded the choice, re-asked for album/artist and re-prompted at rip time).
-                    $trackUrl = "https://musicbrainz.org/ws/2/release/$($rel.UUID)?inc=artist-credits+media+recordings+discids&fmt=json"
-                    $trackResp = Invoke-MusicBrainzRequest -Uri $trackUrl
-                    $rel.Response = $trackResp
-                    $rel.Artist = Get-ReleaseArtistCredit -Release $trackResp
-                    if ($trackResp.media -and $trackResp.media.Count -gt 0) {
-                        $medium = $trackResp.media[0]
-                        $rel.TrackCount = $medium.'track-count'
-                        if ($medium.tracks -and $medium.tracks.Count -gt 0) {
-                            $rel.FirstTrack = $medium.tracks[0].title
-                            $rel.LastTrack = $medium.tracks[-1].title
-                        }
+                $trackResp = $pickerDetails[$rel.UUID]
+                if (-not $trackResp) { continue }
+                $rel.Response = $trackResp
+                $rel.Artist = Get-ReleaseArtistCredit -Release $trackResp
+                # This disc's medium, not always the first (disc 2 of a set)
+                $medium = Get-ReleaseDiscMedium -Release $trackResp -DiscId $discId -TrackCount $result.TrackCount
+                if ($medium) {
+                    $rel.TrackCount = $medium.'track-count'
+                    if ($medium.tracks -and @($medium.tracks).Count -gt 0) {
+                        $rel.FirstTrack = @($medium.tracks)[0].title
+                        $rel.LastTrack = @($medium.tracks)[-1].title
                     }
-                } catch {
-                    # Continue without track info if API call fails
                 }
             }
 
@@ -581,6 +638,13 @@ function Get-DiscMetadata {
 
         $result.Album = $release.title
         $result.ReleaseId = $release.id
+        # Keep this disc's track names (the picker's response has them): if cyanrip's own
+        # lookup then gets a 503 at rip time, the rip runs with -N and these name the files.
+        $titles = Get-ReleaseDiscTitles -Release $release -DiscId $discId -TrackCount $result.TrackCount
+        if ($titles -and $titles.Tracks.Count -gt 0) {
+            $result.Titles = $titles
+            $result.TitlesSource = "MusicBrainz"
+        }
         if ($release.'artist-credit' -and $release.'artist-credit'.Count -gt 0) {
             $result.Artist = ($release.'artist-credit' | ForEach-Object { $_.name }) -join " / "
         }
@@ -1408,6 +1472,7 @@ do {
     $script:CompletedSteps = @()
     $script:CurrentStep = $null
     $script:CddbResult = $null
+    $script:DiscoveryTitles = $null
     $script:ReleaseChoice = $null
     $script:KnownDiscId = $null
     $script:KnownReleaseId = $null
@@ -1482,6 +1547,11 @@ if (-not $album -and -not $script:IsProcessingQueue) {
 
     # Keep a release the user already picked even if the rest of discovery failed,
     # otherwise cyanrip re-prompts for it after the "no more inputs" banner.
+    if ($discMeta -and $discMeta.Titles) {
+        # Track names found before the rip (the picked MusicBrainz release, or gnudb)
+        $script:DiscoveryTitles = $discMeta.Titles
+        $script:DiscoveryTitles.Source = $discMeta.TitlesSource
+    }
     if ($discMeta -and $discMeta.ReleaseChoice) {
         $script:ReleaseChoice = $discMeta.ReleaseChoice
     }
@@ -3197,6 +3267,20 @@ $hasGenericNames = @($rippedTracks | Where-Object { Test-GenericTrackName $_.Bas
 # titles now - MusicBrainz is often back by the time the rip finishes - and feed them
 # through the same rename/tag path CDDB titles use.
 $script:TitleSource = "CDDB"
+# Names saved before the rip (the release picked in the picker, or gnudb) - no network.
+# Only when the count matches the disc, so a wrong medium never names the files.
+if ($rippedTracks.Count -gt 0 -and $skipMusicBrainz -and $hasGenericNames -and -not $script:CddbResult -and $script:DiscoveryTitles) {
+    $dt = $script:DiscoveryTitles
+    if ($dt.Tracks.Count -gt 0 -and (-not $script:DiscTrackTotal -or $dt.Tracks.Count -eq $script:DiscTrackTotal)) {
+        $script:CddbResult = $dt
+        $script:TitleSource = $dt.Source
+        $script:MetadataSource = if ($dt.Source -eq 'CDDB') { 'CDDB' } else { 'MusicBrainz (saved before the rip)' }
+        Write-Host "`nUsing the $($dt.Tracks.Count) track names saved before the rip ($($dt.Source)): $($dt.Artist) - $($dt.Album)" -ForegroundColor Green
+        Write-Log "Using track names saved at discovery ($($dt.Source), $($dt.Tracks.Count) tracks)"
+    } else {
+        Write-Log "Saved discovery names not used: $($dt.Tracks.Count) names vs $($script:DiscTrackTotal) tracks on the disc"
+    }
+}
 if ($rippedTracks.Count -gt 0 -and $skipMusicBrainz -and $hasGenericNames -and -not $script:CddbResult -and ($script:KnownReleaseId -or $script:KnownDiscId)) {
     Write-Host "`nLooking up track titles for the already-identified disc..." -ForegroundColor Yellow
     $recovered = Get-MusicBrainzTrackTitles -ReleaseId $script:KnownReleaseId -DiscId $script:KnownDiscId -TrackCount $script:DiscTrackTotal

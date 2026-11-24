@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-24 - Release Picker in One Request; Picked Release's Track Names Kept for a 503 at Rip Time
+
+### Fixed
+- **"Fetching track details for each release..." was slow while MusicBrainz was busy.** It made one request per release, each retried 2 s, 4 s, 8 s on 503: about a minute for The Essential Neil Diamond (8 releases), and two releases still showed no details. New `Get-ReleasePickerDetails` makes ONE disc ID request (`discid/<id>?inc=artist-credits+recordings`), which returns every release with its artist, media, disc IDs and tracks in cyanrip's order (checked live: 8 releases in 2 s). Releases that request misses are fetched one by one with a single 2 s retry, stopping at the first refusal; the picker still works without details. `Invoke-MusicBrainzRequest` takes `-RetryDelays`.
+- The picker showed the first medium's tracks; it now shows this disc's medium (`Get-ReleaseDiscMedium`: the medium listing the disc ID, else the same track count, else the only one).
+- **cyanrip's own lookup could get a 503 at rip time right after a release was picked**, and [C] Continue then gave generic names. The picked release's track names for this disc are now kept (`Get-ReleaseDiscTitles`); the busy prompt says so, and after the `-N` rip the files are named from them (only when the count matches the disc). Metadata source: "MusicBrainz (saved before the rip)".
+
+### Not done
+- gnudb (CDDB) now refuses reads without a real email address in `hello=` ("500 Unknown application / developer email"), so the existing post-rip CDDB fallback returns nothing. Not changed: no email is sent (user decision). A barcode lookup via iTunes/Deezer (no key, no email) was measured on 38 logged barcodes: iTunes 20, Deezer 8, iTunes often a deluxe edition.
+
+### Tests
+- New `tests/Test-MbFallbackLookups.ps1` (12/12): one request covers all releases, partial cover, busy stop-after-first-failure and retry budgets, disc-2 medium choice.
+
 ## 2026-11-22 - search-metadata.ps1 Called Every FLAC Corrupt; Generic Rips Skipped It; -KeepArtist
 
 ### Added
