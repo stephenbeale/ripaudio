@@ -481,7 +481,7 @@ function Get-ReleasePickerDetails {
 # number, or "05 - Track 05". Anything else carries a real title worth keeping.
 function Test-GenericTrackName {
     param([string]$BaseName)
-    return $BaseName -match '^\d{2}$' -or $BaseName -match '^\d{2}\s*-\s*(Track\s*\d+|Unknown track.*)$'
+    return $BaseName -match '^\d{1,2}$' -or $BaseName -match '^\d{1,2}\s*-\s*(Track\s*\d+|Unknown track.*)$'
 }
 
 function Get-DiscMetadata {
@@ -3354,12 +3354,12 @@ if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
         # Use CDDB (or post-rip MusicBrainz) track names for renaming
         Write-Host "`nRenaming tracks with $($script:TitleSource) metadata..." -ForegroundColor Yellow
 
-        foreach ($track in ($rippedTracks | Sort-Object Name)) {
-            if ($track.BaseName -match '^(\d{2})') {
+        foreach ($track in ($rippedTracks | Sort-Object { if ($_.BaseName -match '^(\d+)') { [int]$Matches[1] } else { 999 } }, Name)) {
+            if ($track.BaseName -match '^(\d{1,2})(?=\s*-\s|$)') {
                 $trackNum = [int]$Matches[1]
                 $trackIdx = $trackNum - 1
                 $trackTitle = if ($trackIdx -lt $script:CddbResult.Tracks.Count) { $script:CddbResult.Tracks[$trackIdx] } else { "Track $($Matches[1])" }
-                $newName = "$($Matches[1]) - $trackTitle$($track.Extension)"
+                $newName = "{0:D2} - {1}{2}" -f [int]$Matches[1], $trackTitle, $track.Extension
 
                 # Sanitize filename (remove invalid characters)
                 $newName = $newName -replace '[\\/:*?"<>|]', '_'
@@ -3389,8 +3389,8 @@ if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
         # Only placeholder names: on a resume, tracks ripped by an earlier run already
         # carry real titles and must not be flattened to "NN - Artist - Album".
         foreach ($track in ($rippedTracks | Where-Object { Test-GenericTrackName $_.BaseName } | Sort-Object Name)) {
-            if ($track.BaseName -match '^(\d{2})') {
-                $trackNum = $Matches[1]
+            if ($track.BaseName -match '^(\d{1,2})(?=\s*-\s|$)') {
+                $trackNum = "{0:D2}" -f [int]$Matches[1]
                 $newName = "$trackNum - $namingArtist - $namingAlbum$($track.Extension)"
 
                 $newName = $newName -replace '[\\/:*?"<>|]', '_'
@@ -3470,7 +3470,7 @@ if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
         foreach ($track in $rippedTracks) {
             # Extract track number from filename
             $trackNum = 1
-            if ($track.BaseName -match '^(\d{2})') {
+            if ($track.BaseName -match '^(\d{1,2})(?=\s*-\s|$)') {
                 $trackNum = [int]$Matches[1]
             }
 
@@ -4000,7 +4000,7 @@ if (-not $script:IsProcessingQueue) {
     # straight to Mp3tag.
     $unknownTracks = @($rippedFiles | Where-Object {
         $_.Name -like "*Unknown track*" -or
-        ($script:MetadataSource -eq 'Generic' -and $_.Name -match '^\d{2} - .+ - .+\.\w+$')
+        ($script:MetadataSource -eq 'Generic' -and $_.Name -match '^\d{1,2} - .+ - .+\.\w+$')
     })
     if ($unknownTracks.Count -gt 0) {
         Write-Host "`n  Disc not found in MusicBrainz -- $($unknownTracks.Count) track(s) are untagged." -ForegroundColor Yellow
@@ -4171,7 +4171,7 @@ public class Win32Mp3tagAuto {
     if (-not $audioExtensions) { $audioExtensions = @("*.flac") }
     $stillUntagged = @(foreach ($ext in $audioExtensions) {
         Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match 'Unknown track|Unknown disc' -or $_.Name -match '^\d{2} - .+ - .+\.\w+$' }
+            Where-Object { $_.Name -match 'Unknown track|Unknown disc' -or $_.Name -match '^\d{1,2} - .+ - .+\.\w+$' }
     })
     if ($stillUntagged.Count -gt 0) {
         $mp3tagPath = "${env:ProgramFiles}\Mp3tag\Mp3tag.exe"
