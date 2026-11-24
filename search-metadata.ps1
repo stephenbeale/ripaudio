@@ -298,13 +298,27 @@ function Read-ExistingTags {
         $tracks += $tagData
     }
 
-    # Sort by track number when available (fixes alphabetical misordering of e.g. (1),(10),(2))
-    $hasTrackNums = ($tracks | Where-Object { $_.TrackNumber }).Count -gt 0
-    if ($hasTrackNums) {
-        $tracks = @($tracks | Sort-Object { [int]($_.TrackNumber -replace '/.*$', '' -replace '\D', '') })
-    }
+    return @(Get-TrackOrder -Tracks $tracks)
+}
 
-    return $tracks
+# Disc order of the files. TRACKNUMBER tags are used only when every file has one and no
+# two are the same: 2026-11-24 every Dire Straits file was tagged 1/9 (a ripaudio bug with
+# single-digit file names), sorting by that was arbitrary and each title went to the wrong
+# file. Otherwise the file name's leading number, compared as a number ("2 - x" before
+# "10 - x", fixes (1),(10),(2) too), then the name.
+function Get-TrackOrder {
+    param([object[]]$Tracks)
+    $nums = @($Tracks | ForEach-Object { "$($_.TrackNumber)" -replace '/.*$', '' -replace '\D', '' })
+    $usable = ($nums.Count -gt 0) -and (@($nums | Where-Object { -not $_ }).Count -eq 0) -and
+        (@($nums | Sort-Object -Unique).Count -eq $nums.Count)
+    if ($usable) {
+        return @($Tracks | Sort-Object { [int]("$($_.TrackNumber)" -replace '/.*$', '' -replace '\D', '') })
+    }
+    if (@($nums | Where-Object { $_ }).Count -gt 0) {
+        Write-Log "Track number tags are missing or repeated ($($nums -join ',')) - using file name order"
+    }
+    $nameNum = { if ("$($_.FileName)" -match '^(\d+)') { [int]$Matches[1] } elseif ("$($_.FileName)" -match '\((\d+)\)') { [int]$Matches[1] } else { 9999 } }
+    return @($Tracks | Sort-Object $nameNum, FileName)
 }
 
 function Get-TrackDurations {

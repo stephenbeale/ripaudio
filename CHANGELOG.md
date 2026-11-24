@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-24 - Discs With 9 or Fewer Tracks: Every Track Tagged 1, Then Titles Given to the Wrong Files
+
+### Fixed
+- **Dire Straits - Brothers in Arms (9 tracks, ripped without MusicBrainz) came out with every title on the wrong file** ("So Far Away", 5:12, was named "07 - The Man's Too Strong"). cyanrip names files `1 - Unknown track.flac` (no leading zero) when a disc has 9 or fewer tracks:
+  - rip-audio.ps1 only read two-digit numbers (`'^(\d{2})'`), so every file was tagged track 1/9, "Track 01", the generic-name check missed them, and the post-rip renames skipped them. All six patterns now take one or two digits followed by " - " (a multi-disc `2-01 - Title` is still not read as track 2), new names are zero-padded (`01 - ...`) and files are sorted by number.
+  - search-metadata.ps1 sorted the files by TRACKNUMBER even though all nine said 1, so the order was arbitrary. New `Get-TrackOrder`: tags only when every file has one and none repeat, else the file name's leading number (numeric, so 2 before 10), then the name.
+- The Brothers in Arms folder was fixed by hand from search-metadata's UNDO lines and the cue (file N = track N): names and TITLE/TRACKNUMBER now match, checked against the track lengths; `flac --test` passes. Musica Surfica (2026-10-29) was tagged the same way but renamed later by another tool; its order follows the cue and was not changed.
+
+### Tests
+- New tests/Test-TrackNumbers.ps1 13/13 (the real shuffled Dire Straits order); Test-CoverArtAndPrompts 15/15, Test-MbFallbackLookups 12/12.
+
 ## 2026-11-24 - Wrong Cover Art (Another Album's iTunes Hit); Busy-MusicBrainz Prompt Continues After 30 s
 
 ### Fixed
