@@ -27,6 +27,25 @@ $script:AllSteps = @(
 $script:CompletedSteps = @()
 $script:CurrentStep = $null
 
+# Album name for cover searches: without the " Disc N" / " CD N" suffix rip-audio.ps1 adds
+# to multi-disc folders ("The Essential Neil Diamond Disc 2" -> "The Essential Neil Diamond").
+function Get-ArtSearchAlbum {
+    param([string]$Album)
+    return ("$Album" -replace '(?i)\s*[-,]?\s*\b(Disc|CD)\s*\d+\s*$', '').Trim()
+}
+
+# Does a search hit's album name match the album? (same as rip-audio.ps1) Stops a different
+# album's cover being taken just because it came first (2026-11-24: "Acoustic Christmas").
+function Test-AlbumTitleMatch {
+    param([string]$Found, [string]$Wanted)
+    $norm = { param($t) ((("$t" -replace '\([^)]*\)|\[[^\]]*\]', ' ').ToLowerInvariant()) -replace '[^a-z0-9]+', '') }
+    $f = & $norm $Found; $w = & $norm $Wanted
+    if (-not $f -or -not $w) { return $false }
+    if ($f -eq $w) { return $true }
+    $short = [Math]::Min($f.Length, $w.Length)
+    return ($short -ge 8 -and ($f.Contains($w) -or $w.Contains($f)))
+}
+
 function Set-CurrentStep {
     param([int]$StepNumber)
     $script:CurrentStep = $script:AllSteps | Where-Object { $_.Number -eq $StepNumber }
@@ -286,13 +305,15 @@ function Get-CoverArt {
     # Source 2: iTunes Search API (free, no auth, high-quality artwork)
     if ($Album) {
         try {
-            $itunesQuery = if ($Artist) { "$Artist $Album" } else { $Album }
+            $artSearchAlbum = Get-ArtSearchAlbum -Album $Album
+            $itunesQuery = if ($Artist) { "$Artist $artSearchAlbum" } else { $artSearchAlbum }
             $itunesEncoded = [System.Web.HttpUtility]::UrlEncode($itunesQuery)
-            $itunesUrl = "https://itunes.apple.com/search?term=$itunesEncoded&media=music&entity=album&limit=1"
+            $itunesUrl = "https://itunes.apple.com/search?term=$itunesEncoded&media=music&entity=album&limit=10"
             $itunesResponse = Invoke-RestMethod -Uri $itunesUrl -TimeoutSec 10
+            $itunesHit = @($itunesResponse.results) | Where-Object { Test-AlbumTitleMatch -Found $_.collectionName -Wanted $artSearchAlbum } | Select-Object -First 1
 
-            if ($itunesResponse.results -and $itunesResponse.results.Count -gt 0) {
-                $artworkUrl = $itunesResponse.results[0].artworkUrl100
+            if ($itunesHit) {
+                $artworkUrl = $itunesHit.artworkUrl100
                 if ($artworkUrl) {
                     $artworkUrl = $artworkUrl -replace '100x100bb', '600x600bb'
                     $outputFile = Join-Path $OutputPath "Front.jpg"
@@ -313,15 +334,17 @@ function Get-CoverArt {
     # Source 3: Deezer API (free, no auth, up to 1000x1000 artwork)
     if ($Album) {
         try {
-            $deezerQuery = if ($Artist) { "$Artist $Album" } else { $Album }
+            $artSearchAlbum = Get-ArtSearchAlbum -Album $Album
+            $deezerQuery = if ($Artist) { "$Artist $artSearchAlbum" } else { $artSearchAlbum }
             $deezerEncoded = [System.Web.HttpUtility]::UrlEncode($deezerQuery)
             $deezerUrl = "https://api.deezer.com/search/album?q=$deezerEncoded"
             $deezerResponse = Invoke-RestMethod -Uri $deezerUrl -TimeoutSec 10
+            $deezerHit = @($deezerResponse.data) | Where-Object { Test-AlbumTitleMatch -Found $_.title -Wanted $artSearchAlbum } | Select-Object -First 1
 
-            if ($deezerResponse.data -and $deezerResponse.data.Count -gt 0) {
-                $coverUrl = $deezerResponse.data[0].cover_xl
-                if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_big }
-                if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_medium }
+            if ($deezerHit) {
+                $coverUrl = $deezerHit.cover_xl
+                if (-not $coverUrl) { $coverUrl = $deezerHit.cover_big }
+                if (-not $coverUrl) { $coverUrl = $deezerHit.cover_medium }
 
                 if ($coverUrl) {
                     $outputFile = Join-Path $OutputPath "Front.jpg"

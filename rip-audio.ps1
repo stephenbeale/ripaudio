@@ -224,6 +224,59 @@ function Get-ReleaseArtistCredit {
 # Shown wherever MusicBrainz fails, before the [C]/[R]/[Q] choice: ripping does not
 # need MusicBrainz, and the names can be fixed afterwards by the steps that already run
 # after the rip. Continue is the default (Enter) - retrying a 503 straight away rarely helps.
+# A one-key choice that picks -Default after -Seconds, so an unattended rip is not left
+# waiting (the busy-MusicBrainz prompt: Continue is safe, the names are fixed afterwards).
+# Shows a countdown; a listed key answers at once, Enter takes the default. With console
+# input redirected (tests, piped input) it falls back to Read-Host, where an empty answer
+# or end of input is the default.
+function Read-ChoiceWithTimeout {
+    param([string]$Prompt, [string[]]$Keys, [string]$Default, [int]$Seconds = 30)
+    $keyAvailable = $null
+    try { $keyAvailable = [Console]::KeyAvailable } catch [System.InvalidOperationException] { }
+    if ($null -eq $keyAvailable) {
+        $answer = Read-Host $Prompt
+        if ([string]::IsNullOrWhiteSpace($answer)) { return $Default }
+        return "$answer".Trim()
+    }
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt $Seconds) {
+        $remaining = [math]::Ceiling($Seconds - $sw.Elapsed.TotalSeconds)
+        Write-Host ("`r{0} - {1} in {2,2}s: " -f $Prompt, $Default, $remaining) -NoNewline -ForegroundColor White
+        if ([Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true)
+            if ($key.Key -eq [ConsoleKey]::Enter) { Write-Host ""; return $Default }
+            $ch = "$($key.KeyChar)".ToUpper()
+            if ($Keys -contains $ch) { Write-Host $ch; return $ch }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    Write-Host ""
+    Write-Host "No answer in ${Seconds}s - $Default" -ForegroundColor DarkGray
+    Write-Log "No answer to '$Prompt' in ${Seconds}s - took $Default"
+    return $Default
+}
+
+# Album name for cover searches: without the " Disc N" / " CD N" suffix this script adds
+# to multi-disc folders ("The Essential Neil Diamond Disc 2" -> "The Essential Neil Diamond").
+function Get-ArtSearchAlbum {
+    param([string]$Album)
+    return ("$Album" -replace '(?i)\s*[-,]?\s*\b(Disc|CD)\s*\d+\s*$', '').Trim()
+}
+
+# Does a search hit's album name match the album? Lower case, letters and digits only, a
+# bracketed edition note ignored ("(Remastered)", "[Deluxe Edition]"); then equal, or one
+# contains the other when the shorter has 8+ characters. Stops a different album's cover
+# being taken just because it came first.
+function Test-AlbumTitleMatch {
+    param([string]$Found, [string]$Wanted)
+    $norm = { param($t) ((("$t" -replace '\([^)]*\)|\[[^\]]*\]', ' ').ToLowerInvariant()) -replace '[^a-z0-9]+', '') }
+    $f = & $norm $Found; $w = & $norm $Wanted
+    if (-not $f -or -not $w) { return $false }
+    if ($f -eq $w) { return $true }
+    $short = [Math]::Min($f.Length, $w.Length)
+    return ($short -ge 8 -and ($f.Contains($w) -or $w.Contains($f)))
+}
+
 function Show-MusicBrainzBusyHelp {
     Write-Host "MusicBrainz is busy or unreachable - the disc can still be ripped." -ForegroundColor Yellow
     if ($script:DiscoveryTitles -and $script:DiscoveryTitles.Tracks.Count -gt 0) {
@@ -234,7 +287,7 @@ function Show-MusicBrainzBusyHelp {
         Write-Host "Track names can be fixed after the rip: CDDB (gnudb) first, then" -ForegroundColor Gray
         Write-Host "search-metadata.ps1 (MusicBrainz / Discogs / iTunes / Deezer), then Mp3tag." -ForegroundColor Gray
     }
-    Write-Host "  [C] Continue - rip now, fix names afterwards  (Enter)" -ForegroundColor White
+    Write-Host "  [C] Continue - rip now, fix names afterwards  (Enter, or automatically after 30s)" -ForegroundColor White
     Write-Host "  [R] Retry MusicBrainz" -ForegroundColor White
     Write-Host "  [Q] Quit" -ForegroundColor White
     Write-Host ""
@@ -2305,7 +2358,7 @@ try {
         $resolved = $false
         $mbRetryCount = 0
         while (-not $resolved) {
-            $mbChoice = Read-Host "Choice (C/r/q)"
+            $mbChoice = Read-ChoiceWithTimeout -Prompt "Choice (C/r/q)" -Keys "C","R","Q" -Default "C"
             if ($mbChoice -match "^[Rr]") {
                 $mbRetryCount++
                 # Same reasoning as the -RequireMusicBrainz retry loop above: back off a
@@ -2324,7 +2377,7 @@ try {
                     Write-Host "MusicBrainz API: Still unreachable" -ForegroundColor Red
                     Write-Host "  Reason: $($_.Exception.Message)" -ForegroundColor DarkGray
                     Write-Log "MusicBrainz connectivity retry $mbRetryCount failed: $($_.Exception.Message)"
-                    Write-Host "  [C] Continue - rip now, fix names afterwards (Enter) | [R] Retry | [Q] Quit" -ForegroundColor White
+                    Write-Host "  [C] Continue - rip now, fix names afterwards (Enter / 30s) | [R] Retry | [Q] Quit" -ForegroundColor White
                 }
             } elseif ($mbChoice -eq "" -or $mbChoice -match "^[Cc]") {
                 Write-Host "Will continue without MusicBrainz metadata" -ForegroundColor Yellow
@@ -2839,7 +2892,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
 
     $validChoice = $false
     while (-not $validChoice) {
-        $retryChoice = Read-Host "Choice (C/r/q)"
+        $retryChoice = Read-ChoiceWithTimeout -Prompt "Choice (C/r/q)" -Keys "C","R","Q" -Default "C"
         if ($retryChoice -match "^[Rr]") {
             $validChoice = $true
             Write-Host "`nRetrying MusicBrainz connection..." -ForegroundColor Green
@@ -3618,6 +3671,15 @@ if ($existingArt -and $existingArt.Count -gt 0) {
             Write-Host "  Found Release ID: $releaseId" -ForegroundColor Gray
         }
     }
+    # A rip that ran without MusicBrainz (-N) writes no RELEASE_ID into the cue, but the
+    # release is usually known from the disc lookup or .discid (2026-11-24: Neil Diamond
+    # Disc 2 got another album's iTunes cover although its release had archive art).
+    if (-not $releaseId -and $script:KnownReleaseId) {
+        $releaseId = $script:KnownReleaseId
+        Write-Host "  Release ID from the disc lookup: $releaseId" -ForegroundColor Gray
+    }
+    # Searches use the album name without this script's " Disc N" folder suffix
+    $artSearchAlbum = Get-ArtSearchAlbum -Album $album
 
     $artDownloaded = $false
 
@@ -3662,7 +3724,7 @@ if ($existingArt -and $existingArt.Count -gt 0) {
                 "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"
                 "Accept" = "application/json"
             }
-            $mbQuery = if ($artist) { "release:`"$album`" AND artist:`"$artist`"" } else { "release:`"$album`"" }
+            $mbQuery = if ($artist) { "release:`"$artSearchAlbum`" AND artist:`"$artist`"" } else { "release:`"$artSearchAlbum`"" }
             $mbEncodedQuery = [System.Web.HttpUtility]::UrlEncode($mbQuery)
             $mbSearchUrl = "https://musicbrainz.org/ws/2/release?query=$mbEncodedQuery&limit=1&fmt=json"
             $mbSearchResponse = Invoke-MusicBrainzRequest -Uri $mbSearchUrl
@@ -3706,13 +3768,17 @@ if ($existingArt -and $existingArt.Count -gt 0) {
     if (-not $artDownloaded) {
         Write-Host "  Trying iTunes Search API..." -ForegroundColor Gray
         try {
-            $itunesQuery = if ($artist) { "$artist $album" } else { $album }
+            $itunesQuery = if ($artist) { "$artist $artSearchAlbum" } else { $artSearchAlbum }
             $itunesEncoded = [System.Web.HttpUtility]::UrlEncode($itunesQuery)
-            $itunesUrl = "https://itunes.apple.com/search?term=$itunesEncoded&media=music&entity=album&limit=1"
+            $itunesUrl = "https://itunes.apple.com/search?term=$itunesEncoded&media=music&entity=album&limit=10"
             $itunesResponse = Invoke-RestMethod -Uri $itunesUrl -TimeoutSec 10
 
             if ($itunesResponse.results -and $itunesResponse.results.Count -gt 0) {
-                $artworkUrl = $itunesResponse.results[0].artworkUrl100
+                # First hit whose album name matches, never just the first hit (that was
+                # "Acoustic Christmas" for The Essential Neil Diamond)
+                $itunesHit = @($itunesResponse.results) | Where-Object { Test-AlbumTitleMatch -Found $_.collectionName -Wanted $artSearchAlbum } | Select-Object -First 1
+                if (-not $itunesHit) { Write-Log "iTunes: no album named like '$artSearchAlbum' in $(@($itunesResponse.results).Count) result(s)" }
+                $artworkUrl = if ($itunesHit) { $itunesHit.artworkUrl100 } else { $null }
                 if ($artworkUrl) {
                     # Replace 100x100 with 600x600 for higher resolution
                     $artworkUrl = $artworkUrl -replace '100x100bb', '600x600bb'
@@ -3741,16 +3807,21 @@ if ($existingArt -and $existingArt.Count -gt 0) {
     if (-not $artDownloaded) {
         Write-Host "  Trying Deezer API..." -ForegroundColor Gray
         try {
-            $deezerQuery = if ($artist) { "$artist $album" } else { $album }
+            $deezerQuery = if ($artist) { "$artist $artSearchAlbum" } else { $artSearchAlbum }
             $deezerEncoded = [System.Web.HttpUtility]::UrlEncode($deezerQuery)
             $deezerUrl = "https://api.deezer.com/search/album?q=$deezerEncoded"
             $deezerResponse = Invoke-RestMethod -Uri $deezerUrl -TimeoutSec 10
 
             if ($deezerResponse.data -and $deezerResponse.data.Count -gt 0) {
                 # Use cover_big (500x500) or cover_xl (1000x1000) for best quality
-                $coverUrl = $deezerResponse.data[0].cover_xl
-                if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_big }
-                if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_medium }
+                $deezerHit = @($deezerResponse.data) | Where-Object { Test-AlbumTitleMatch -Found $_.title -Wanted $artSearchAlbum } | Select-Object -First 1
+                if (-not $deezerHit) { Write-Log "Deezer: no album named like '$artSearchAlbum' in $(@($deezerResponse.data).Count) result(s)" }
+                $coverUrl = $null
+                if ($deezerHit) {
+                    $coverUrl = $deezerHit.cover_xl
+                    if (-not $coverUrl) { $coverUrl = $deezerHit.cover_big }
+                    if (-not $coverUrl) { $coverUrl = $deezerHit.cover_medium }
+                }
 
                 if ($coverUrl) {
                     $outputFile = Join-Path $finalOutputDir "Front.jpg"

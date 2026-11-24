@@ -87,6 +87,25 @@ $script:AllSteps = @(
 $script:CompletedSteps = @()
 $script:CurrentStep = $null
 
+# Album name for cover searches: without the " Disc N" / " CD N" suffix rip-audio.ps1 adds
+# to multi-disc folders ("The Essential Neil Diamond Disc 2" -> "The Essential Neil Diamond").
+function Get-ArtSearchAlbum {
+    param([string]$Album)
+    return ("$Album" -replace '(?i)\s*[-,]?\s*\b(Disc|CD)\s*\d+\s*$', '').Trim()
+}
+
+# Does a search hit's album name match the album? (same as rip-audio.ps1) Stops a different
+# album's cover being taken just because it came first (2026-11-24: "Acoustic Christmas").
+function Test-AlbumTitleMatch {
+    param([string]$Found, [string]$Wanted)
+    $norm = { param($t) ((("$t" -replace '\([^)]*\)|\[[^\]]*\]', ' ').ToLowerInvariant()) -replace '[^a-z0-9]+', '') }
+    $f = & $norm $Found; $w = & $norm $Wanted
+    if (-not $f -or -not $w) { return $false }
+    if ($f -eq $w) { return $true }
+    $short = [Math]::Min($f.Length, $w.Length)
+    return ($short -ge 8 -and ($f.Contains($w) -or $w.Contains($f)))
+}
+
 function Get-Step {
     param([int]$Number)
     return $script:AllSteps | Where-Object { $_.Number -eq $Number }
@@ -962,6 +981,15 @@ if ($StartFromStepNumber -le 3) {
             $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
             if ($cueContent -match 'REM RELEASE_ID "([^"]+)"') { $releaseId = $Matches[1] }
         }
+        # A rip without MusicBrainz (-N) writes no RELEASE_ID into the cue; .discid keeps the
+        # release the disc lookup found (2026-11-24: Neil Diamond got another album's cover)
+        if (-not $releaseId) {
+            $discIdPath = Join-Path $finalOutputDir ".discid"
+            if (Test-Path -LiteralPath $discIdPath) {
+                $rel = Select-String -LiteralPath $discIdPath -Pattern '^RELEASEID=([0-9a-f-]{36})' | Select-Object -First 1
+                if ($rel) { $releaseId = $rel.Matches[0].Groups[1].Value }
+            }
+        }
         $artDownloaded = $false
 
         if ($releaseId) {
@@ -985,7 +1013,8 @@ if ($StartFromStepNumber -le 3) {
             Write-Host "  Searching MusicBrainz for release..." -ForegroundColor Gray
             try {
                 $mbSearchHeaders = @{ "User-Agent" = "RipAudio/1.0 (https://github.com/stephenbeale/ripaudio)"; "Accept" = "application/json" }
-                $mbQuery = if ($Artist) { "release:`"$Album`" AND artist:`"$Artist`"" } else { "release:`"$Album`"" }
+                $artSearchAlbum = Get-ArtSearchAlbum -Album $Album
+                $mbQuery = if ($Artist) { "release:`"$artSearchAlbum`" AND artist:`"$Artist`"" } else { "release:`"$artSearchAlbum`"" }
                 $mbSearchUrl = "https://musicbrainz.org/ws/2/release?query=$([System.Web.HttpUtility]::UrlEncode($mbQuery))&limit=1&fmt=json"
                 $mbSearchResponse = Invoke-RestMethod -Uri $mbSearchUrl -Headers $mbSearchHeaders -TimeoutSec 10
                 if ($mbSearchResponse.releases -and $mbSearchResponse.releases.Count -gt 0) {
@@ -1009,11 +1038,13 @@ if ($StartFromStepNumber -le 3) {
         if (-not $artDownloaded) {
             Write-Host "  Trying iTunes Search API..." -ForegroundColor Gray
             try {
-                $itunesQuery = if ($Artist) { "$Artist $Album" } else { $Album }
-                $itunesUrl = "https://itunes.apple.com/search?term=$([System.Web.HttpUtility]::UrlEncode($itunesQuery))&media=music&entity=album&limit=1"
+                $artSearchAlbum = Get-ArtSearchAlbum -Album $Album
+                $itunesQuery = if ($Artist) { "$Artist $artSearchAlbum" } else { $artSearchAlbum }
+                $itunesUrl = "https://itunes.apple.com/search?term=$([System.Web.HttpUtility]::UrlEncode($itunesQuery))&media=music&entity=album&limit=10"
                 $itunesResponse = Invoke-RestMethod -Uri $itunesUrl -TimeoutSec 10
-                if ($itunesResponse.results -and $itunesResponse.results.Count -gt 0 -and $itunesResponse.results[0].artworkUrl100) {
-                    $artworkUrl = $itunesResponse.results[0].artworkUrl100 -replace '100x100bb', '600x600bb'
+                $itunesHit = @($itunesResponse.results) | Where-Object { $_.artworkUrl100 -and (Test-AlbumTitleMatch -Found $_.collectionName -Wanted $artSearchAlbum) } | Select-Object -First 1
+                if ($itunesHit) {
+                    $artworkUrl = $itunesHit.artworkUrl100 -replace '100x100bb', '600x600bb'
                     $outputFile = Join-Path $finalOutputDir "Front.jpg"
                     Invoke-WebRequest -Uri $artworkUrl -OutFile $outputFile -TimeoutSec 30
                     if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
@@ -1027,13 +1058,15 @@ if ($StartFromStepNumber -le 3) {
         if (-not $artDownloaded) {
             Write-Host "  Trying Deezer API..." -ForegroundColor Gray
             try {
-                $deezerQuery = if ($Artist) { "$Artist $Album" } else { $Album }
+                $artSearchAlbum = Get-ArtSearchAlbum -Album $Album
+                $deezerQuery = if ($Artist) { "$Artist $artSearchAlbum" } else { $artSearchAlbum }
                 $deezerUrl = "https://api.deezer.com/search/album?q=$([System.Web.HttpUtility]::UrlEncode($deezerQuery))"
                 $deezerResponse = Invoke-RestMethod -Uri $deezerUrl -TimeoutSec 10
-                if ($deezerResponse.data -and $deezerResponse.data.Count -gt 0) {
-                    $coverUrl = $deezerResponse.data[0].cover_xl
-                    if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_big }
-                    if (-not $coverUrl) { $coverUrl = $deezerResponse.data[0].cover_medium }
+                $deezerHit = @($deezerResponse.data) | Where-Object { Test-AlbumTitleMatch -Found $_.title -Wanted $artSearchAlbum } | Select-Object -First 1
+                if ($deezerHit) {
+                    $coverUrl = $deezerHit.cover_xl
+                    if (-not $coverUrl) { $coverUrl = $deezerHit.cover_big }
+                    if (-not $coverUrl) { $coverUrl = $deezerHit.cover_medium }
                     if ($coverUrl) {
                         $outputFile = Join-Path $finalOutputDir "Front.jpg"
                         Invoke-WebRequest -Uri $coverUrl -OutFile $outputFile -TimeoutSec 30
