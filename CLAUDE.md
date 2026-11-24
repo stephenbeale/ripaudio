@@ -2107,3 +2107,23 @@ squash-merged with zero formal approvals, same as every prior session.
 2. Watch whether the discovery retry rescues a real MusicBrainz 503.
 3. Consider other `Show-QuestionHint` sites that may overpromise, e.g. when the release picker is the only question.
 4. Everything carried from earlier entries still stands (MusicBrainz 503 reliability backlog item, continue-rip-audio.ps1 hardware validation).
+
+---
+
+### 2026-11-24 - MusicBrainz picker speed, cover art fixes, single-digit track numbers (PRs #164, #165, #166)
+
+All three MERGED (master = e1fd11e). **Not yet run on real discs.**
+
+**#164 (db78743):** release picker fetches details in ONE MusicBrainz disc ID request instead of one per release (8 releases in 2 s vs about 1 min of 503 retries); shows this disc's medium; the picked release's track names are saved and used after a `-N` rip when cyanrip gets a 503. tests/Test-MbFallbackLookups.ps1 12/12. gnudb (CDDB) was tried and DROPPED: it now refuses reads without a real email in `hello=` and the user will not use any email. The old post-rip CDDB fallback therefore returns nothing (left as is).
+**#165 (c86982a):** cover art via the Cover Art Archive using the known release (`$script:KnownReleaseId` / `.discid` RELEASEID) when the cue has no RELEASE_ID (`-N` rips); " Disc N" dropped from searches; iTunes/Deezer only accept a name-matching hit (`Test-AlbumTitleMatch`), in rip-audio.ps1, continue-rip-audio.ps1 and get-metadata.ps1. Busy-MusicBrainz C/R/Q prompts auto-continue after 30 s (`Read-ChoiceWithTimeout`). tests/Test-CoverArtAndPrompts.ps1 15/15 (+1 with -Live).
+**#166 (e1fd11e):** cyanrip names `1 - Unknown track.flac` on discs with 9 tracks or fewer; rip-audio only read `^(\d{2})`, so every track was tagged 1/9 and search-metadata scrambled titles. Six patterns fixed, zero-padded names, numeric sort; search-metadata `Get-TrackOrder` ignores missing/repeated TRACKNUMBER tags. tests/Test-TrackNumbers.ps1 13/13.
+
+**Fixed by hand on F: (no code):**
+- `F:\Music\Neil Diamond\The Essential Neil Diamond Disc 1` and `Disc 2`: wrong iTunes cover ("Acoustic Christmas") replaced with the Cover Art Archive front of release 00376013 (Front.jpg + embedded picture in all 38 FLACs; flac --test OK). Disc 1 had used release ae5b83b6 (GB 2002, no CAA art), Disc 2 used 00376013 (XE 2001): different releases picked per disc.
+- `F:\Music\Dire Straits\Brothers in Arms`: titles were on the wrong files (the #166 bug); renamed and retagged from search-metadata UNDO lines + cue; lengths match the album; flac --test OK.
+
+**Priority for Next Session:**
+1. Real-disc checks, then tick the PR boxes: #164 picker speed while MusicBrainz is busy, and with a 503 at rip time rip-audio names files from the saved titles; #165 a `-N` rip gets CAA art via the known release and the busy prompt continues after 30 s; #166 a `-N` rip of a disc with 9 tracks or fewer gets 01..09.
+2. Musica Surfica (`F:\Music\Various\Musica Surfica`, 2026-10-29) had the all-tracks-tagged-1 bug; renamed later by another tool, order follows the cue; titles not verified against the album.
+3. Multi-disc albums: default Disc 2 to Disc 1's release.
+4. Optional idea (not chosen): barcode lookup via iTunes then Deezer (no key, no email) when MusicBrainz is down (38 logged barcodes: iTunes 20, Deezer 8; iTunes often returns deluxe editions, so use names only when the track count matches).
