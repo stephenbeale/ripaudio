@@ -81,6 +81,23 @@ MusicBrainz lookup is automatic - cyanrip will query MusicBrainz for disc metada
 
 ## Session Notes
 
+### 2026-11-25 - Logo, folder-name mismatch fix (PRs #168, #169; master = 94532a7)
+
+Both MERGED.
+
+**#168 (37c0324):** logo, a black eighth note on #ffd21f yellow (matches ripdisc/flyweight); assets/logo.svg/png/ico; README top.
+**#169 (94532a7):** folder-name mismatch fix. Real case: J.Lo "J to tha L‐O! The Remixes" (the MusicBrainz title uses U+2010). The folder name kept U+2010, but cyanrip receives its args in the ANSI code page, so it ripped into "J to tha L-O! The Remixes". The Step 1 check found the expected folder empty ("exited with code 0 but produced no audio files") before Step 2's sibling-folder fallback could run. New `ConvertTo-SafeFolderName` (album, artist, version suffix): Unicode dashes become "-", then an ANSI best-fit round trip, then the existing clean-up. Replaces 3 inline copies. tests/Test-FolderNames.ps1 17/17 under powershell and pwsh; all 4 test files pass. **Real-rip box on #169 still open.**
+
+**J.Lo album fixed by hand on F: (no code):** leftover U+2010 folder (only .discid) deleted. MusicBrainz was 503 at rip time, so the files were "Unknown track". search-metadata's dry run picked the 11-track US release (6ebd30c5), which would have named only 11 of 15 and has a different track 8 mix. The disc matches the 16-track XE edition `6ea874cb-efa9-4e77-94e9-71b2f2100084` (track 16 is a data track, a 0-byte .bin); all 15 lengths match to the second. Tagged with metaflac (TITLE/ARTIST/ALBUMARTIST/ALBUM/TRACKNUMBER/TRACKTOTAL=15/DATE=2002/MB ids), renamed `NN - Title.flac`. Undo list: `C:\Music\logs\jlo-retag-undo_20261125_073015.csv`. Cover: Cover Art Archive 404, so Deezer's 1000x1000 cover went into cover.jpg and is embedded in all 15. `flac --test` passes on all 15.
+
+### 2026-11-25 - NEXT SESSION items (search-metadata.ps1 bugs seen in a pwsh dry run; may be pwsh-only)
+
+1. It picks a release whose track count does not match the files (11 vs 15) with no warning. Prefer a release with matching track count / lengths, or at least warn.
+2. Discogs search fails: "The format of value '+https://github.com/stephenbeale/ripaudio' is invalid" (User-Agent header).
+3. iTunes search fails: "[System.DateTime] does not contain a method named 'Substring'" (pwsh auto-parses JSON dates).
+4. Real rip of an album with a Unicode hyphen/dash in its MB title, then tick #169's last box.
+5. Optional: no release-ID parameter on search-metadata.ps1 (one would have avoided the manual metaflac tagging).
+
 ### 2026-02-01 - Initial Creation
 
 **Work Completed:**
