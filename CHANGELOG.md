@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-25 - Album Titles With a Unicode Hyphen: Rip Went Into Another Folder
+
+### Fixed
+- **J.Lo - "J to tha L‐O! The Remixes" ripped fine, then stopped with "cyanrip exited with code 0 but produced no audio files".** MusicBrainz spells the title with U+2010 (Unicode hyphen). The folder name kept it, but cyanrip gets its arguments in the Windows ANSI code page, so it received "L-O!" and ripped all 15 tracks into `J to tha L-O! The Remixes`; the check looked in the U+2010 folder, found only `.discid`, and failed before Step 2's look-alike-folder fallback could run. New `ConvertTo-SafeFolderName` (album, artist and version suffix) maps every Unicode dash to "-" and round-trips the name through the ANSI code page with best fit before the existing clean-up, so the folder name is exactly what cyanrip sees. Replaces three inline copies that only knew en and em dashes. New tests/Test-FolderNames.ps1 17/17 (Windows PowerShell and pwsh).
+
 ## 2026-11-25 - Logo
 
 ### Added

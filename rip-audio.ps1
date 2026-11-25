@@ -1648,14 +1648,28 @@ if (-not $album -and -not $script:IsProcessingQueue) {
     }
 }
 
-# Sanitize album and artist for use as directory names.
-# First normalize Unicode dashes (en-dash, em-dash) to ASCII hyphen so cyanrip
-# and PowerShell produce the same directory name. Then remove illegal Windows path
-# characters, dots (trailing dots make NTFS silently rename the folder), and hyphens.
-# Collapses multiple spaces and trims.
-$safeAlbum = (($album -replace '[\u2013\u2014]', '-') -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' '
-$safeAlbum = $safeAlbum.Trim()
-$safeArtist = if ($artist) { ((($artist -replace '[\u2013\u2014]', '-') -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' ').Trim() } else { "" }
+# Sanitize a name (album, artist, version suffix) for use as a directory name.
+# 1. Round-trip it through the Windows ANSI code page, with best-fit. cyanrip gets its
+#    arguments in that code page, so any character outside it reaches cyanrip changed:
+#    seen live 2026-11-25, "J to tha L<U+2010>O!" (MusicBrainz's Unicode hyphen) reached
+#    cyanrip as "L-O!", cyanrip ripped into that folder, and the check found the folder we
+#    named empty. After the round trip both sides use the same name. This covers U+2013 /
+#    U+2014 dashes too (the earlier fix for those only); a character with no best fit
+#    becomes "?" and is removed below.
+# 2. Remove illegal Windows path characters, dots (trailing dots make NTFS silently rename
+#    the folder) and hyphens. Collapse multiple spaces and trim.
+function ConvertTo-SafeFolderName {
+    param([string]$Name)
+    if (-not $Name) { return "" }
+    $ansi = $Name -replace '[\u2010-\u2015\u2212]', '-'
+    try {
+        $enc = [System.Text.Encoding]::GetEncoding([System.Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
+        $ansi = $enc.GetString($enc.GetBytes($ansi))
+    } catch { }
+    return (($ansi -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' ').Trim()
+}
+$safeAlbum = ConvertTo-SafeFolderName $album
+$safeArtist = ConvertTo-SafeFolderName $artist
 
 # Build output directory path
 # Format: E:\Music\{Artist}\{Album}\ or E:\Music\{Album}\ if no artist
@@ -1709,8 +1723,7 @@ if ($DiscNum -eq 0 -and (Test-Path $finalOutputDir) -and -not $script:IsProcessi
                 }
             }
             # Sanitize the suffix the same way as album/artist names
-            $safeSuffix = (($suffix -replace '[\u2013\u2014]', '-') -replace '[\\/:*?"<>|.-]', '') -replace '\s+', ' '
-            $safeSuffix = $safeSuffix.Trim()
+            $safeSuffix = ConvertTo-SafeFolderName $suffix
 
             # Rebuild output directory with suffix appended to album name
             $safeAlbum = "$safeAlbum ($safeSuffix)"
