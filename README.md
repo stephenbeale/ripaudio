@@ -1,5 +1,7 @@
 # RipAudio
 
+<img src="assets/logo.svg" alt="RipAudio logo" width="128">
+
 PowerShell script for automated audio CD ripping using cyanrip.
 
 ## Overview

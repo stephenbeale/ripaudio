@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-25 - Logo
+
+### Added
+- Logo: a black eighth note on a yellow (#ffd21f) rounded square, the same yellow as the ripdisc and flyweight icons. `assets/logo.svg` (source), `assets/logo.png` (512 px, transparent corners) and `assets/logo.ico` (16, 32, 48, 256 px). Shown at the top of the README.
+
 ## 2026-11-24 - Discs With 9 or Fewer Tracks: Every Track Tagged 1, Then Titles Given to the Wrong Files
 
 ### Fixed
