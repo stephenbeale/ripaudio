@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-26 - End Screen: Clearer "More Free Tools" Links
+
+### Changed
+- The "More free tools by me" section of the end screen (`Show-CoffeeBadge` in all five scripts) was dim grey and easy to miss. Tool names are now bright green, the one-liners light grey, and each link is on its own line in bright cyan behind a `>>` marker, like the coffee link. No escape codes, so Windows PowerShell 5.1 and pwsh render the same; box width unchanged.
+- Descriptions say what each tool does: ripdisc "Rip DVDs and Blu-rays to MP4, titles looked up", Flyweight "Cut, annotate and export YouTube videos", Waffley "Language game: vocab, verbs, typing, speaking" (a vocabulary and verb game, not only colours). Same wording as ripdisc's end screen.
+
 ## 2026-11-25 - Album Titles With a Unicode Hyphen: Rip Went Into Another Folder
 
 ### Fixed

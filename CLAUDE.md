@@ -81,6 +81,12 @@ MusicBrainz lookup is automatic - cyanrip will query MusicBrainz for disc metada
 
 ## Session Notes
 
+### 2026-11-26 - End-screen links (PR #172, merged; matching ripdisc PR #203)
+
+The "More free tools by me" section of `Show-CoffeeBadge` (all five scripts) is brighter: green names, light grey one-liners, cyan `>>` URLs, "click a link to try one:". Waffley is now described as "Language game: vocab, verbs, typing, speaking" (was wrongly "through colours"). First entry is ripdisc "Rip DVDs and Blu-rays to MP4, titles looked up"; the user may want different wording. 4 test files pass; none cover the end screen. **Not seen on a real rip.**
+
+**Next:** see the end screen at the end of a real rip; optionally fix waffley.app's meta description (says 6 languages, README says 7).
+
 ### 2026-11-25 - Logo, folder-name mismatch fix (PRs #168, #169; master = 94532a7)
 
 Both MERGED.
