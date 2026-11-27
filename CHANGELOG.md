@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-27 - Compilations Without an Album Artist; Square Brackets in Names
+
+### Fixed
+- **Pure Guitar Moods Disc 1 ripped into `G:\Music\[unknown]\...` with a wall of "Add-Content: An object at the specified path ... does not exist" errors and "Push-Location: Cannot find path".** cyanrip prints `Album artist: [unknown]` when the MusicBrainz release has no album artist, and that was used as the artist. PowerShell reads `[...]` in `-Path` as a wildcard, so the log file and folder never matched. New `ConvertFrom-CyanripArtist` files `[unknown]` under **Various Artists** (the folder other compilations already use; `$script:CompilationArtist`).
+- Every file-system cmdlet in the six scripts now uses `-LiteralPath`, so album and folder names with brackets (e.g. `Pure Guitar Moods [FLAC]`) work in logging, Push-Location, listings, renames, cover art and the metadata tools. Recursive audio listings filter by extension instead of `-Include` (with `-LiteralPath`, Windows PowerShell 5.1 ignores `-Include` and would have counted cover art as stale audio). The three non-recursive cover-art checks used `-Include` without `-Recurse`, which never matched; they now filter by name.
+
+### Changed
+- No-match prompt: "Continue without metadata and fix after ripping? (Y/n)", and the follow-up line names search-metadata.ps1 and Mp3tag.
+- New tests/Test-BracketPaths.ps1 21/21 (Windows PowerShell and pwsh).
+
 ## 2026-11-26 - End Screen: Clearer "More Free Tools" Links
 
 ### Changed

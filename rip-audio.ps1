@@ -68,6 +68,18 @@ $script:AllSteps = @(
 $script:CompletedSteps = @()
 $script:CurrentStep = $null
 
+# cyanrip prints "Album artist: [unknown]" when the MusicBrainz release has no album
+# artist (compilations such as Pure Guitar Moods). File those under the same folder
+# MusicBrainz compilations already use, not a literal "[unknown]" folder.
+$script:CompilationArtist = "Various Artists"
+function ConvertFrom-CyanripArtist {
+    param([string]$Name)
+    $n = "$Name".Trim()
+    if (-not $n) { return $null }
+    if ($n -match '^\[?unknown\]?$') { return $script:CompilationArtist }
+    return $n
+}
+
 function Set-CurrentStep {
     param([int]$StepNumber)
     $script:CurrentStep = $script:AllSteps | Where-Object { $_.Number -eq $StepNumber }
@@ -161,7 +173,7 @@ function Test-TrackIntegrity {
         }
     }
     # For non-FLAC or no flac.exe: check file size > 10KB
-    return (Get-Item $FilePath).Length -gt 10240
+    return (Get-Item -LiteralPath $FilePath).Length -gt 10240
 }
 
 function Get-DiscTrackCount {
@@ -171,9 +183,9 @@ function Get-DiscTrackCount {
     # during a rip that later crashed can still carry a track count corrupted by the
     # same flaky connection that caused the crash, so callers recovering from a crash
     # should not trust it.
-    $cueFile = if (-not $Fresh) { Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    $cueFile = if (-not $Fresh) { Get-ChildItem -LiteralPath $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if ($cueFile) {
-        $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
+        $cueContent = Get-Content -LiteralPath $cueFile.FullName -Raw -ErrorAction SilentlyContinue
         if ($cueContent) {
             $trackMatches = [regex]::Matches($cueContent, 'TRACK (\d+) AUDIO')
             if ($trackMatches.Count -gt 0) {
@@ -584,8 +596,9 @@ function Get-DiscMetadata {
     if ($outputText -match '(?m)^Album:\s+(.+)$') {
         $result.Album = $Matches[1].Trim()
     }
+    # "[unknown]" (no album artist) becomes Various Artists; see ConvertFrom-CyanripArtist.
     if ($outputText -match '(?m)^Album artist:\s+(.+)$') {
-        $result.Artist = $Matches[1].Trim()
+        $result.Artist = ConvertFrom-CyanripArtist $Matches[1]
     }
     if ($outputText -match '(?m)^Release ID:\s+(\S+)') {
         $result.ReleaseId = $Matches[1]
@@ -747,7 +760,7 @@ function Test-DriveReady {
         $drive = Get-PSDrive -Name $driveDisplay.TrimEnd(':') -ErrorAction Stop
         if ($drive) {
             # Additional check: try to access the drive root
-            if (Test-Path $driveLetter -ErrorAction SilentlyContinue) {
+            if (Test-Path -LiteralPath $driveLetter -ErrorAction SilentlyContinue) {
                 return @{ Ready = $true; Drive = $driveDisplay; Message = "Drive is ready" }
             } else {
                 return @{ Ready = $false; Drive = $driveDisplay; Message = "Destination drive $driveDisplay is not ready - please ensure the drive is connected and mounted" }
@@ -765,7 +778,7 @@ function Write-Log {
     if ($script:LogFile) {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $entry = "[$timestamp] $Message"
-        Add-Content -Path $script:LogFile -Value $entry
+        Add-Content -LiteralPath $script:LogFile -Value $entry
     }
 }
 
@@ -1118,29 +1131,29 @@ function Add-ToQueue {
     }
 
     try {
-        if (Test-Path $script:QueueFilePath) {
-            $queue = Get-Content $script:QueueFilePath -Raw | ConvertFrom-Json
+        if (Test-Path -LiteralPath $script:QueueFilePath) {
+            $queue = Get-Content -LiteralPath $script:QueueFilePath -Raw | ConvertFrom-Json
             if ($queue -isnot [System.Array]) { $queue = @($queue) }
         } else {
             $queue = @()
         }
 
         $queue += $entry
-        $queue | ConvertTo-Json -Depth 10 | Set-Content $script:QueueFilePath -Encoding UTF8
+        $queue | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $script:QueueFilePath -Encoding UTF8
 
         return $queue.Count
     } finally {
         if ($lockStream) { $lockStream.Close() }
-        Remove-Item $script:QueueLockPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $script:QueueLockPath -Force -ErrorAction SilentlyContinue
     }
 }
 
 function Read-QueueFile {
-    if (-not (Test-Path $script:QueueFilePath)) {
+    if (-not (Test-Path -LiteralPath $script:QueueFilePath)) {
         return @()
     }
 
-    $queue = Get-Content $script:QueueFilePath -Raw | ConvertFrom-Json
+    $queue = Get-Content -LiteralPath $script:QueueFilePath -Raw | ConvertFrom-Json
     if ($null -eq $queue) { return @() }
     if ($queue -isnot [System.Array]) { $queue = @($queue) }
     return $queue
@@ -1168,8 +1181,8 @@ function Remove-FromQueue {
     }
 
     try {
-        if (Test-Path $script:QueueFilePath) {
-            $queue = Get-Content $script:QueueFilePath -Raw | ConvertFrom-Json
+        if (Test-Path -LiteralPath $script:QueueFilePath) {
+            $queue = Get-Content -LiteralPath $script:QueueFilePath -Raw | ConvertFrom-Json
             if ($null -eq $queue) { return }
             if ($queue -isnot [System.Array]) { $queue = @($queue) }
 
@@ -1179,14 +1192,14 @@ function Remove-FromQueue {
             })
 
             if ($queue.Count -eq 0) {
-                Remove-Item $script:QueueFilePath -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $script:QueueFilePath -Force -ErrorAction SilentlyContinue
             } else {
-                $queue | ConvertTo-Json -Depth 10 | Set-Content $script:QueueFilePath -Encoding UTF8
+                $queue | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $script:QueueFilePath -Encoding UTF8
             }
         }
     } finally {
         if ($lockStream) { $lockStream.Close() }
-        Remove-Item $script:QueueLockPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $script:QueueLockPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1207,7 +1220,7 @@ if ($Queue -and $ProcessQueue) {
 if (-not $Queue -and -not (Get-Command cyanrip -ErrorAction SilentlyContinue)) {
     Write-Host "ERROR: cyanrip was not found on PATH." -ForegroundColor Red
     $cyanripPkgDir = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages\cyanreg.cyanrip_Microsoft.Winget.Source_8wekyb3d8bbwe"
-    if ((Test-Path $cyanripPkgDir) -and -not (Test-Path (Join-Path $cyanripPkgDir "cyanrip.exe"))) {
+    if ((Test-Path -LiteralPath $cyanripPkgDir) -and -not (Test-Path -LiteralPath (Join-Path $cyanripPkgDir "cyanrip.exe"))) {
         Write-Host "  The winget package folder exists but has no cyanrip.exe:" -ForegroundColor Yellow
         Write-Host "    $cyanripPkgDir" -ForegroundColor Yellow
         Write-Host "  An interrupted upgrade/uninstall can leave the exe renamed to trz*.tmp there." -ForegroundColor Yellow
@@ -1288,7 +1301,7 @@ function Get-QuickDiscIdentity {
         $album = $null
         $artist = $null
         if ($combined -match '(?m)^Album:\s+(.+)$') { $album = $Matches[1].Trim() }
-        if ($combined -match '(?m)^Album artist:\s+(.+)$') { $artist = $Matches[1].Trim() }
+        if ($combined -match '(?m)^Album artist:\s+(.+)$') { $artist = ConvertFrom-CyanripArtist $Matches[1] }
         if ($album -and $artist) { return "$artist - $album" }
         if ($album) { return $album }
         return $null
@@ -1504,7 +1517,7 @@ if ($Queue) {
     }
 
     $queueDir = Split-Path $script:QueueFilePath -Parent
-    if (!(Test-Path $queueDir)) { New-Item -ItemType Directory -Path $queueDir -Force | Out-Null }
+    if (!(Test-Path -LiteralPath $queueDir)) { New-Item -ItemType Directory -Path $queueDir -Force | Out-Null }
 
     $totalJobs = Add-ToQueue -Album $album -Artist $artist -Format $format -Bitrate $Quality
 
@@ -1695,12 +1708,12 @@ if ($safeArtist) {
 # Skipped entirely under -DiscNum: the shared multi-disc folder already containing an
 # earlier disc's (disc-prefixed) tracks is the expected, intended state, not a
 # different-edition conflict to prompt about.
-if ($DiscNum -eq 0 -and (Test-Path $finalOutputDir) -and -not $script:IsProcessingQueue) {
+if ($DiscNum -eq 0 -and (Test-Path -LiteralPath $finalOutputDir) -and -not $script:IsProcessingQueue) {
     $formatExtMap = @{ "flac" = "*.flac"; "mp3" = "*.mp3"; "opus" = "*.opus"; "aac" = "*.m4a"; "wav" = "*.wav"; "alac" = "*.m4a" }
     $hasAudioFiles = $false
     foreach ($fmt in $formatList) {
         $ext = $formatExtMap[$fmt]
-        if ($ext -and (Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+        if ($ext -and (Get-ChildItem -LiteralPath $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue | Select-Object -First 1)) {
             $hasAudioFiles = $true
             break
         }
@@ -1872,7 +1885,7 @@ $host.UI.RawUI.WindowTitle = $windowTitle
 
 # ========== LOGGING SETUP ==========
 $logDir = "C:\Music\logs"
-if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+if (!(Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 # Sanitize album name for log file (remove invalid filename characters)
 $logAlbumName = $album -replace '[\\/:*?"<>|]', '_'
@@ -1945,7 +1958,7 @@ function Stop-WithError {
     }
 
     # Open the relevant directory if it exists (skip in ProcessQueue mode)
-    if (-not $script:IsProcessingQueue -and (Test-Path $finalOutputDir)) {
+    if (-not $script:IsProcessingQueue -and (Test-Path -LiteralPath $finalOutputDir)) {
         Write-Host "`n--- OPENING DIRECTORY ---" -ForegroundColor Cyan
         Write-Host "Opening: $finalOutputDir" -ForegroundColor Yellow
         Start-Process explorer.exe -ArgumentList "`"$($finalOutputDir.TrimEnd('\'))`""
@@ -1999,12 +2012,12 @@ Write-Host "Destination drive $($driveCheck.Drive) is ready" -ForegroundColor Gr
 
 # Create output directory if it doesn't exist
 Write-Host "Creating directory: $finalOutputDir" -ForegroundColor Yellow
-if (!(Test-Path $finalOutputDir)) {
+if (!(Test-Path -LiteralPath $finalOutputDir)) {
     New-Item -ItemType Directory -Path $finalOutputDir -Force | Out-Null
     Write-Host "Directory created successfully" -ForegroundColor Green
 } else {
     # Check for existing files
-    $existingFiles = Get-ChildItem -Path $finalOutputDir -File -ErrorAction SilentlyContinue
+    $existingFiles = Get-ChildItem -LiteralPath $finalOutputDir -File -ErrorAction SilentlyContinue
     if ($existingFiles -and $existingFiles.Count -gt 0) {
         if ($DiscNum -gt 0) {
             # Expected, not a warning: this is the shared multi-disc folder already
@@ -2026,14 +2039,14 @@ if (!(Test-Path $finalOutputDir)) {
         $existingAudioFiles = @()
         $primaryExt = $formatExtMap[$primaryFormat]
         if ($primaryExt) {
-            $existingAudioFiles = @(Get-ChildItem -Path $finalOutputDir -Filter $primaryExt -ErrorAction SilentlyContinue)
+            $existingAudioFiles = @(Get-ChildItem -LiteralPath $finalOutputDir -Filter $primaryExt -ErrorAction SilentlyContinue)
         }
         # If no files in primary format, check all audio formats
         if ($existingAudioFiles.Count -eq 0) {
             foreach ($fmt in $formatList) {
                 $ext = $formatExtMap[$fmt]
                 if ($ext) {
-                    $existingAudioFiles = @(Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue)
+                    $existingAudioFiles = @(Get-ChildItem -LiteralPath $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue)
                     if ($existingAudioFiles.Count -gt 0) { break }
                 }
             }
@@ -2173,7 +2186,7 @@ if (!(Test-Path $finalOutputDir)) {
                 # Under -DiscNum (shared multi-disc folder), this must NOT touch another
                 # disc's already-ripped, disc-prefixed tracks sitting in the same folder -
                 # only bare-named or THIS disc's own "$DiscNum.NN" files are stale here.
-                $staleAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+                $staleAudio = Get-ChildItem -LiteralPath $finalOutputDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav",".aac") }
                 if ($DiscNum -gt 0) {
                     $staleAudio = @($staleAudio | Where-Object {
                         if ($_.BaseName -match '^(\d+)\.(\d+)\s*-') { [int]$Matches[1] -eq $DiscNum }
@@ -2275,7 +2288,7 @@ if (!(Test-Path $finalOutputDir)) {
             # incident: a stale, mistagged leftover file from an earlier crashed attempt
             # collided with the post-rip rename step for the genuinely fresh track 1,
             # leaving both a bogus 0.15MB file AND an unrenamed real one side by side.
-            $staleAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+            $staleAudio = Get-ChildItem -LiteralPath $finalOutputDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav",".aac") }
             if ($DiscNum -gt 0) {
                 $staleAudio = @($staleAudio | Where-Object {
                     if ($_.BaseName -match '^(\d+)\.(\d+)\s*-') { [int]$Matches[1] -eq $DiscNum }
@@ -2774,7 +2787,7 @@ function Invoke-CyanripWithAutoResume {
 # good tracks from a prior successful rip. Backing them up lets us
 # restore on failure so the user does not lose work.
 $script:PreRipBackupDir = $null
-$preRipAudio = @(Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 })
+$preRipAudio = @(Get-ChildItem -LiteralPath $finalOutputDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav",".aac") } | Where-Object { $_.Length -gt 0 })
 if ($preRipAudio.Count -gt 0) {
     $script:PreRipBackupDir = Join-Path $env:TEMP ("ripaudio-backup-" + [guid]::NewGuid().ToString('N').Substring(0,8))
     try {
@@ -2790,7 +2803,7 @@ if ($preRipAudio.Count -gt 0) {
     }
 }
 
-Push-Location $parentDir
+Push-Location -LiteralPath $parentDir
 try {
     $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
 
@@ -2888,7 +2901,7 @@ if ($cyanripOutputText -match "Multiple releases found" -and $cyanripOutputText 
         Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
         Write-Log "cyanrip command (with release): $cmdDisplay"
 
-        Push-Location $parentDir
+        Push-Location -LiteralPath $parentDir
         try {
             $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
             $cyanripExitCode = $result.ExitCode
@@ -2921,7 +2934,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             Write-Host "`nRetrying MusicBrainz connection..." -ForegroundColor Green
             Write-Log "User chose to retry MusicBrainz connection"
 
-            Push-Location $parentDir
+            Push-Location -LiteralPath $parentDir
             try {
                 $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
@@ -2941,13 +2954,13 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "MusicBrainz query fa
             }
         } elseif ($retryChoice -eq "" -or $retryChoice -match "^[Cc]") {
             $validChoice = $true
-            Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
+            Write-Host "`nContinuing without MusicBrainz metadata - fix the track names after ripping (search-metadata.ps1, Mp3tag)." -ForegroundColor Green
             Write-Log "User chose to continue without MusicBrainz metadata (connection failed)"
             $skipMusicBrainz = $true
             $script:MetadataSource = "Generic"
 
             $cyanripArgs += @("-N")
-            Push-Location $parentDir
+            Push-Location -LiteralPath $parentDir
             try {
                 $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
@@ -3002,7 +3015,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
         Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
         Write-Log "cyanrip command (CDDB fallback, no MB): $cmdDisplay"
 
-        Push-Location $parentDir
+        Push-Location -LiteralPath $parentDir
         try {
             $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
             $cyanripExitCode = $result.ExitCode
@@ -3024,10 +3037,10 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
             # Auto-continue in ProcessQueue mode
             $continueChoice = "y"
         } else {
-            $continueChoice = Read-Host "Continue without metadata? (Y/n)"
+            $continueChoice = Read-Host "Continue without metadata and fix after ripping? (Y/n)"
         }
         if ($continueChoice -eq "" -or $continueChoice -match "^[Yy]") {
-            Write-Host "`nContinuing without MusicBrainz metadata..." -ForegroundColor Green
+            Write-Host "`nContinuing without MusicBrainz metadata - fix the track names after ripping (search-metadata.ps1, Mp3tag)." -ForegroundColor Green
             Write-Log "User chose to continue without MusicBrainz metadata"
             $skipMusicBrainz = $true
             $script:MetadataSource = "Generic"
@@ -3038,7 +3051,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
             Write-Host "Command: $cmdDisplay" -ForegroundColor Gray
             Write-Log "cyanrip command (no metadata): $cmdDisplay"
 
-            Push-Location $parentDir
+            Push-Location -LiteralPath $parentDir
             try {
                 $result = Invoke-CyanripWithAutoResume -CyanripArgs $cyanripArgs -WorkDir $parentDir
                 $cyanripExitCode = $result.ExitCode
@@ -3060,7 +3073,7 @@ if ($cyanripExitCode -ne 0 -and ($cyanripOutputText -match "Unable to find relea
 # "did any audio actually land on disk" over the exit code -- if we have
 # at least one non-empty audio file we proceed with the partial rip and
 # only warn. We hard-abort only when nothing was ripped at all.
-$postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+$postRipAudio = Get-ChildItem -LiteralPath $finalOutputDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav",".aac") }
 $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
 # Size alone isn't enough either -- a mid-write USB disconnect can leave a file with
 # nonzero size that still isn't valid audio (e.g. FLAC__METADATA_CHAIN_STATUS_NOT_A_
@@ -3077,11 +3090,11 @@ $postRipCorrupt = @($postRipAudio | Where-Object { $_.FullName -notin @($postRip
 # bytes) before failing. For each backed-up file, if the corresponding
 # file in the output directory is missing or 0 bytes, copy the backup
 # back. Tracks cyanrip successfully re-ripped are left alone.
-if ($script:PreRipBackupDir -and (Test-Path $script:PreRipBackupDir)) {
+if ($script:PreRipBackupDir -and (Test-Path -LiteralPath $script:PreRipBackupDir)) {
     $restored = 0
-    foreach ($bk in Get-ChildItem -Path $script:PreRipBackupDir -File) {
+    foreach ($bk in Get-ChildItem -LiteralPath $script:PreRipBackupDir -File) {
         $target = Join-Path $finalOutputDir $bk.Name
-        $currentSize = if (Test-Path $target) { (Get-Item -LiteralPath $target).Length } else { -1 }
+        $currentSize = if (Test-Path -LiteralPath $target) { (Get-Item -LiteralPath $target).Length } else { -1 }
         if ($currentSize -le 0) {
             try {
                 Copy-Item -LiteralPath $bk.FullName -Destination $target -Force
@@ -3095,7 +3108,7 @@ if ($script:PreRipBackupDir -and (Test-Path $script:PreRipBackupDir)) {
         Write-Host "Restored $restored existing audio file(s) that were destroyed by the failed rip attempt." -ForegroundColor Yellow
         Write-Log "Restored $restored audio file(s) from pre-rip backup"
         # Refresh the post-rip state now that files have been restored
-        $postRipAudio = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -File -ErrorAction SilentlyContinue
+        $postRipAudio = Get-ChildItem -LiteralPath $finalOutputDir -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav",".aac") }
         $postRipNonEmpty = @($postRipAudio | Where-Object { $_.Length -gt 0 })
         $postRipValid = @($postRipNonEmpty | Where-Object { Test-TrackIntegrity -FilePath $_.FullName })
         $postRipCorrupt = @($postRipAudio | Where-Object { $_.FullName -notin @($postRipValid | ForEach-Object { $_.FullName }) })
@@ -3260,7 +3273,7 @@ if ($dataErrorTracks.Count -gt 0) {
                     $driveReady = $false
                     for ($w = 0; $w -lt 30; $w++) {
                         Start-Sleep -Seconds 1
-                        if (Test-Path $driveLetter) {
+                        if (Test-Path -LiteralPath $driveLetter) {
                             $driveReady = $true
                             break
                         }
@@ -3285,7 +3298,7 @@ if ($dataErrorTracks.Count -gt 0) {
 
                     Write-Log "Retrying track ${trackPadded}: cyanrip -l $errorTrack"
 
-                    Push-Location $parentDir
+                    Push-Location -LiteralPath $parentDir
                     try {
                         $retryResult = Start-CyanripWithErrorDetection -CyanripArgs $retryArgs -WorkDir $parentDir
                         $retryExitCode = $retryResult.ExitCode
@@ -3328,7 +3341,7 @@ if ($dataErrorTracks.Count -gt 0) {
 $audioExtensions = @("*.flac", "*.mp3", "*.opus", "*.m4a", "*.wav")
 $rippedTracks = @()
 foreach ($ext in $audioExtensions) {
-    $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
+    $files = Get-ChildItem -LiteralPath $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
     if ($files -and $files.Count -gt 0) {
         $rippedTracks = $files
         break
@@ -3391,7 +3404,7 @@ if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
 
                 if ($track.FullName -ne $newPath) {
                     try {
-                        Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
+                        Rename-Item -LiteralPath $track.FullName -NewName $newName -ErrorAction Stop
                         Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
                         Write-Log "Renamed ($($script:TitleSource)): $($track.Name) -> $newName"
                     } catch {
@@ -3422,7 +3435,7 @@ if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
 
                 if ($track.FullName -ne $newPath) {
                     try {
-                        Rename-Item -Path $track.FullName -NewName $newName -ErrorAction Stop
+                        Rename-Item -LiteralPath $track.FullName -NewName $newName -ErrorAction Stop
                         Write-Host "  Renamed: $($track.Name) -> $newName" -ForegroundColor Gray
                         Write-Log "Renamed: $($track.Name) -> $newName"
                     } catch {
@@ -3442,7 +3455,7 @@ if ($script:DataErrorTracks.Count -gt 0) {
     # Re-scan for current files
     $currentFiles = @()
     foreach ($ext in $audioExtensions) {
-        $f = Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
+        $f = Get-ChildItem -LiteralPath $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
         if ($f) { $currentFiles += $f }
     }
 
@@ -3452,7 +3465,7 @@ if ($script:DataErrorTracks.Count -gt 0) {
         if ($matchingFile) {
             $newName = "$($matchingFile.BaseName)_DATA_ERROR$($matchingFile.Extension)"
             try {
-                Rename-Item -Path $matchingFile.FullName -NewName $newName -ErrorAction Stop
+                Rename-Item -LiteralPath $matchingFile.FullName -NewName $newName -ErrorAction Stop
                 Write-Host "  $($matchingFile.Name) -> $newName" -ForegroundColor Yellow
                 Write-Log "Data error rename: $($matchingFile.Name) -> $newName"
             } catch {
@@ -3470,7 +3483,7 @@ Write-Host "`nEnsuring metadata tags from disc details..." -ForegroundColor Yell
 # Re-scan for tracks (in case they were renamed)
 $rippedTracks = @()
 foreach ($ext in $audioExtensions) {
-    $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
+    $files = Get-ChildItem -LiteralPath $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue
     if ($files -and $files.Count -gt 0) {
         $rippedTracks = $files | Sort-Object Name
         $detectedFormat = $ext.TrimStart("*.")
@@ -3563,7 +3576,7 @@ Complete-CurrentStep
 # touched - anything already prefixed "N.NN - Title.ext" (this disc's own files from
 # an earlier partial run, or another disc's files already renamed) is left alone.
 if ($DiscNum -gt 0) {
-    $filesToPrefix = Get-ChildItem -Path $finalOutputDir -File -ErrorAction SilentlyContinue |
+    $filesToPrefix = Get-ChildItem -LiteralPath $finalOutputDir -File -ErrorAction SilentlyContinue |
         Where-Object { $_.BaseName -match '^\d+\s*-' -and $_.BaseName -notmatch '^\d+\.\d+\s*-' }
     if ($filesToPrefix.Count -gt 0) {
         Write-Host "`nPrefixing $($filesToPrefix.Count) track file(s) with disc number $DiscNum..." -ForegroundColor Yellow
@@ -3611,14 +3624,14 @@ $rippedFiles = @()
 foreach ($f in $formatList) {
     $ext = $formatExtMap[$f]
     if ($ext) {
-        $files = Get-ChildItem -Path $finalOutputDir -Filter $ext -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 -and (Test-TrackIntegrity -FilePath $_.FullName) }
+        $files = Get-ChildItem -LiteralPath $finalOutputDir -Filter $ext -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -gt 0 -and (Test-TrackIntegrity -FilePath $_.FullName) }
         if ($files) { $rippedFiles += $files }
     }
 }
 
 if ($rippedFiles.Count -eq 0) {
     # Try to find any audio files
-    $anyAudioFiles = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav" -Recurse -ErrorAction SilentlyContinue
+    $anyAudioFiles = Get-ChildItem -LiteralPath $finalOutputDir -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav") }
     if ($anyAudioFiles -and $anyAudioFiles.Count -gt 0) {
         Write-Host "Found $($anyAudioFiles.Count) audio file(s) (different format than expected)" -ForegroundColor Yellow
         $rippedFiles = $anyAudioFiles
@@ -3630,18 +3643,18 @@ if ($rippedFiles.Count -eq 0) {
         # Use first 10 chars as prefix to find cyanrip's actual output
         $prefixLen = [Math]::Min(10, $albumLeaf.Length)
         $prefix = $albumLeaf.Substring(0, $prefixLen)
-        $siblingDirs = Get-ChildItem -Path $parentDir -Directory -ErrorAction SilentlyContinue |
+        $siblingDirs = Get-ChildItem -LiteralPath $parentDir -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -ne $albumLeaf -and $_.Name.StartsWith($prefix) }
         $foundInSibling = $false
         foreach ($dir in $siblingDirs) {
-            $siblingAudio = Get-ChildItem -Path $dir.FullName -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav" -Recurse -ErrorAction SilentlyContinue
+            $siblingAudio = Get-ChildItem -LiteralPath $dir.FullName -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav") }
             if ($siblingAudio -and $siblingAudio.Count -gt 0) {
                 Write-Host "Found audio files in '$($dir.Name)' instead of '$albumLeaf' (cyanrip directory name mismatch)" -ForegroundColor Yellow
                 Write-Host "Moving files to expected directory..." -ForegroundColor Yellow
                 # Move contents from cyanrip's directory to the expected directory
-                Get-ChildItem -Path $dir.FullName | Move-Item -Destination $finalOutputDir -Force
-                Remove-Item -Path $dir.FullName -Force -ErrorAction SilentlyContinue
-                $rippedFiles = Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav" -Recurse -ErrorAction SilentlyContinue
+                Get-ChildItem -LiteralPath $dir.FullName | Move-Item -Destination $finalOutputDir -Force
+                Remove-Item -LiteralPath $dir.FullName -Force -ErrorAction SilentlyContinue
+                $rippedFiles = Get-ChildItem -LiteralPath $finalOutputDir -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav") }
                 $foundInSibling = $true
                 break
             }
@@ -3677,7 +3690,7 @@ Write-Timestamp "Step 3 started"
 $script:CoverArtDownloaded = $false
 
 # Check if cover art already exists (cyanrip may have downloaded it)
-$existingArt = Get-ChildItem -Path $finalOutputDir -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+$existingArt = Get-ChildItem -LiteralPath $finalOutputDir -File -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -in @("Front", "Cover", "Folder") }
 if ($existingArt -and $existingArt.Count -gt 0) {
     Write-Host "  Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Green
     Write-Log "Cover art already exists: $($existingArt[0].Name)"
@@ -3686,9 +3699,9 @@ if ($existingArt -and $existingArt.Count -gt 0) {
 } else {
     # Try to get release ID from cue file for Cover Art Archive lookup
     $releaseId = $null
-    $cueFile = Get-ChildItem -Path $finalOutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
+    $cueFile = Get-ChildItem -LiteralPath $finalOutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cueFile) {
-        $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
+        $cueContent = Get-Content -LiteralPath $cueFile.FullName -Raw -ErrorAction SilentlyContinue
         if ($cueContent -match 'REM RELEASE_ID "([^"]+)"') {
             $releaseId = $Matches[1]
             Write-Host "  Found Release ID: $releaseId" -ForegroundColor Gray
@@ -3770,14 +3783,14 @@ if ($existingArt -and $existingArt.Count -gt 0) {
                     $outputFile = Join-Path $finalOutputDir "Front.$extension"
 
                     Invoke-WebRequest -Uri $imageUrl -OutFile $outputFile -Headers $mbSearchHeaders -TimeoutSec 30
-                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                         Write-Host "  Downloaded: Front.$extension (from MusicBrainz/CAA search)" -ForegroundColor Green
                         Write-Log "Downloaded cover art from MusicBrainz/CAA search: Front.$extension"
                         $artDownloaded = $true
                         $script:CoverArtDownloaded = $true
                         $script:CoverArtSource = "MusicBrainz/CAA"
                     } else {
-                        Remove-Item $outputFile -ErrorAction SilentlyContinue
+                        Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue
                     }
                 }
             }
@@ -3809,14 +3822,14 @@ if ($existingArt -and $existingArt.Count -gt 0) {
                     $outputFile = Join-Path $finalOutputDir "Front.jpg"
                     Invoke-WebRequest -Uri $artworkUrl -OutFile $outputFile -TimeoutSec 30
 
-                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                         Write-Host "  Downloaded: Front.jpg (from iTunes)" -ForegroundColor Green
                         Write-Log "Downloaded cover art from iTunes: Front.jpg"
                         $artDownloaded = $true
                         $script:CoverArtDownloaded = $true
                         $script:CoverArtSource = "iTunes"
                     } else {
-                        Remove-Item $outputFile -ErrorAction SilentlyContinue
+                        Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue
                     }
                 }
             }
@@ -3850,14 +3863,14 @@ if ($existingArt -and $existingArt.Count -gt 0) {
                     $outputFile = Join-Path $finalOutputDir "Front.jpg"
                     Invoke-WebRequest -Uri $coverUrl -OutFile $outputFile -TimeoutSec 30
 
-                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                         Write-Host "  Downloaded: Front.jpg (from Deezer)" -ForegroundColor Green
                         Write-Log "Downloaded cover art from Deezer: Front.jpg"
                         $artDownloaded = $true
                         $script:CoverArtDownloaded = $true
                         $script:CoverArtSource = "Deezer"
                     } else {
-                        Remove-Item $outputFile -ErrorAction SilentlyContinue
+                        Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue
                     }
                 }
             }
@@ -3875,12 +3888,12 @@ if ($existingArt -and $existingArt.Count -gt 0) {
 
 # Embed cover art into FLAC files if art is present
 $script:CoverArtEmbedded = 0
-$artFile = Get-ChildItem -Path $finalOutputDir -File -ErrorAction SilentlyContinue |
+$artFile = Get-ChildItem -LiteralPath $finalOutputDir -File -ErrorAction SilentlyContinue |
     Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') } |
     Select-Object -First 1
 if ($artFile -and (Get-Command metaflac -ErrorAction SilentlyContinue)) {
     Write-Host "  Embedding cover art into FLAC files..." -ForegroundColor Gray
-    $flacFiles = Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue
+    $flacFiles = Get-ChildItem -LiteralPath $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue
     foreach ($flac in $flacFiles) {
         try {
             $tempArt = Join-Path $env:TEMP "ripaudio_embed_$([System.IO.Path]::GetRandomFileName())"
@@ -3956,7 +3969,7 @@ Write-Host "  Metadata: $($script:MetadataSource)" -ForegroundColor $mdColor
 $coverArtStatus = if ($script:CoverArtDownloaded) { "Yes ($($script:CoverArtSource))" } else { "No" }
 Write-Host "  Cover art: $coverArtStatus" -ForegroundColor White
 if ($script:CoverArtDownloaded) {
-    $totalFlacCount = (Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue).Count
+    $totalFlacCount = (Get-ChildItem -LiteralPath $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue).Count
     if ($script:CoverArtEmbedded -gt 0) {
         Write-Host "  Cover art embedded: $($script:CoverArtEmbedded)/$totalFlacCount file(s)" -ForegroundColor $(if ($script:CoverArtEmbedded -ge $totalFlacCount) { "Green" } else { "Yellow" })
     } elseif (Get-Command metaflac -ErrorAction SilentlyContinue) {
@@ -4193,15 +4206,15 @@ public class Win32Mp3tagAuto {
     $audioExtensions = $formatList | ForEach-Object { $formatExtMap[$_] } | Where-Object { $_ }
     if (-not $audioExtensions) { $audioExtensions = @("*.flac") }
     $stillUntagged = @(foreach ($ext in $audioExtensions) {
-        Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue |
+        Get-ChildItem -LiteralPath $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match 'Unknown track|Unknown disc' -or $_.Name -match '^\d{1,2} - .+ - .+\.\w+$' }
     })
     if ($stillUntagged.Count -gt 0) {
         $mp3tagPath = "${env:ProgramFiles}\Mp3tag\Mp3tag.exe"
-        if (-not (Test-Path $mp3tagPath)) {
+        if (-not (Test-Path -LiteralPath $mp3tagPath)) {
             $mp3tagPath = "${env:ProgramFiles(x86)}\Mp3tag\Mp3tag.exe"
         }
-        if (Test-Path $mp3tagPath) {
+        if (Test-Path -LiteralPath $mp3tagPath) {
             Write-Host "`n  Tracks still need metadata. Open Mp3tag to tag manually? [Y/n] (auto-Yes in 30s): " -NoNewline -ForegroundColor Yellow
             $mp3Key = $null
             $mp3Sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -4283,8 +4296,8 @@ if ($script:IsProcessingQueue) {
 
     # Delete queue file if empty
     $remainingQueue = Read-QueueFile
-    if ($remainingQueue.Count -eq 0 -and (Test-Path $script:QueueFilePath)) {
-        Remove-Item $script:QueueFilePath -Force -ErrorAction SilentlyContinue
+    if ($remainingQueue.Count -eq 0 -and (Test-Path -LiteralPath $script:QueueFilePath)) {
+        Remove-Item -LiteralPath $script:QueueFilePath -Force -ErrorAction SilentlyContinue
     }
 
     Enable-ConsoleClose

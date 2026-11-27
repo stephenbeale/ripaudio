@@ -82,7 +82,7 @@ function Write-Log {
     if ($script:UndoLogFile) {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $entry = "[$timestamp] $Message"
-        Add-Content -Path $script:UndoLogFile -Value $entry
+        Add-Content -LiteralPath $script:UndoLogFile -Value $entry
     }
 }
 
@@ -149,7 +149,7 @@ Assert-MetaflacInstalled
 
 # Setup undo log
 $logDir = "C:\Music\logs"
-if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+if (!(Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $script:UndoLogFile = Join-Path $logDir "undo-metadata_${logTimestamp}.log"
 
@@ -167,7 +167,7 @@ $baselines = @()
 $renames = @()
 $coverArts = @()
 
-$logLines = Get-Content -Path $LogFile -Encoding UTF8
+$logLines = Get-Content -LiteralPath $LogFile -Encoding UTF8
 foreach ($line in $logLines) {
     # Strip timestamp prefix: [2026-02-24 12:34:56] UNDO_...
     if ($line -match '^\[[\d\-\s:]+\]\s*(.+)$') {
@@ -295,10 +295,10 @@ if ($renames.Count -gt 0) {
             $renameSuccess++
             continue
         }
-        if (Test-Path $r.NewPath) {
+        if (Test-Path -LiteralPath $r.NewPath) {
             try {
                 $oldName = Split-Path -Leaf $r.OldPath
-                Rename-Item -Path $r.NewPath -NewName $oldName -ErrorAction Stop
+                Rename-Item -LiteralPath $r.NewPath -NewName $oldName -ErrorAction Stop
                 Write-Host "    $(Split-Path -Leaf $r.NewPath) -> $oldName" -ForegroundColor Gray
                 Write-Log "  Reversed rename: $(Split-Path -Leaf $r.NewPath) -> $oldName"
                 $renameSuccess++
@@ -325,7 +325,7 @@ if ($baselines.Count -gt 0) {
             $tagSuccess++
             continue
         }
-        if (-not (Test-Path $filePath)) {
+        if (-not (Test-Path -LiteralPath $filePath)) {
             Write-Host "    File not found: $filePath" -ForegroundColor Yellow
             Write-Log "  SKIP: file not found: $filePath"
             $tagFailed++
@@ -383,9 +383,9 @@ if ($coverArts.Count -gt 0) {
             $artRemoved++
             continue
         }
-        if (Test-Path $c.DownloadedFile) {
+        if (Test-Path -LiteralPath $c.DownloadedFile) {
             try {
-                Remove-Item -Path $c.DownloadedFile -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $c.DownloadedFile -Force -ErrorAction Stop
                 Write-Host "    Deleted: $(Split-Path -Leaf $c.DownloadedFile)" -ForegroundColor Gray
                 Write-Log "  Deleted cover art: $($c.DownloadedFile)"
                 $artRemoved++

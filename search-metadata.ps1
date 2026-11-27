@@ -200,7 +200,7 @@ function Write-Log {
     if ($script:LogFile) {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $entry = "[$timestamp] $Message"
-        Add-Content -Path $script:LogFile -Value $entry
+        Add-Content -LiteralPath $script:LogFile -Value $entry
     }
 }
 
@@ -245,13 +245,13 @@ function Test-TrackIntegrity {
             return $LASTEXITCODE -eq 0
         }
     }
-    return (Get-Item $FilePath).Length -gt 10240
+    return (Get-Item -LiteralPath $FilePath).Length -gt 10240
 }
 
 function Read-ExistingTags {
     param([string]$FolderPath)
 
-    $audioFiles = Get-ChildItem -Path $FolderPath -Filter "*.flac" -ErrorAction SilentlyContinue | Sort-Object Name
+    $audioFiles = Get-ChildItem -LiteralPath $FolderPath -Filter "*.flac" -ErrorAction SilentlyContinue | Sort-Object Name
     if (-not $audioFiles -or $audioFiles.Count -eq 0) {
         return $null
     }
@@ -1207,7 +1207,7 @@ function Get-CoverArt {
             $outputFile = Join-Path $OutputPath "Front.jpg"
             Invoke-WebRequest -Uri $ArtworkUrl -OutFile $outputFile -Headers $headers -TimeoutSec 30
 
-            if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+            if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                 # Validate magic bytes -- reject HTML/redirect responses masquerading as images
                 try {
                     $stream = [System.IO.File]::OpenRead($outputFile)
@@ -1227,7 +1227,7 @@ function Get-CoverArt {
                     Write-Log "  ${ArtworkSource} download invalid (not JPEG/PNG) -- removed"
                 }
             }
-            Remove-Item $outputFile -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue
         } catch {
             Write-Host "    $ArtworkSource artwork failed: $_" -ForegroundColor Yellow
         }
@@ -1248,12 +1248,12 @@ function Get-CoverArt {
                 $outputFile = Join-Path $OutputPath "Front.$extension"
 
                 Invoke-WebRequest -Uri $imageUrl -OutFile $outputFile -Headers $headers -TimeoutSec 30
-                if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                     Write-Host "    Downloaded: Front.$extension (from Cover Art Archive)" -ForegroundColor Green
                     Write-Log "  Downloaded cover art from Cover Art Archive"
                     return $outputFile
                 }
-                Remove-Item $outputFile -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue
             }
         } catch {
             Write-Host "    Cover Art Archive: not available" -ForegroundColor Yellow
@@ -1285,7 +1285,7 @@ function Rename-AudioFiles {
             $newPath = Join-Path $file.DirectoryName $newName
             try {
                 Write-Log "UNDO_RENAME|$newPath|$($file.FullName)"
-                Rename-Item -Path $file.FullName -NewName $newName -ErrorAction Stop
+                Rename-Item -LiteralPath $file.FullName -NewName $newName -ErrorAction Stop
                 Write-Host "    $($file.Name) -> $newName" -ForegroundColor Gray
                 Write-Log "  Renamed: $($file.Name) -> $newName"
                 $renamedCount++
@@ -1582,7 +1582,7 @@ function Process-AlbumFolder {
                     $newPath = Join-Path $track.File.DirectoryName $newName
                     Write-Log "UNDO_RENAME|$newPath|$filePath"
                     try {
-                        Rename-Item -Path $filePath -NewName $newName -ErrorAction Stop
+                        Rename-Item -LiteralPath $filePath -NewName $newName -ErrorAction Stop
                         $renamedCount++
                     } catch {
                         Write-Host "    Failed to rename $($track.FileName): $_" -ForegroundColor Red
@@ -1613,7 +1613,7 @@ function Process-AlbumFolder {
         Write-Log "STEP 2/$($script:TotalSteps): Cover art (embed only)"
 
         # Check for existing art files
-        $existingArt = Get-ChildItem -Path $FolderPath -File -ErrorAction SilentlyContinue |
+        $existingArt = Get-ChildItem -LiteralPath $FolderPath -File -ErrorAction SilentlyContinue |
             Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
         $imageFile = $null
 
@@ -1816,8 +1816,8 @@ function Process-AlbumFolder {
     # Check for .discid file first (single source of truth from rip-audio.ps1)
     $merged = $null
     $discIdFile = Join-Path $FolderPath ".discid"
-    if (Test-Path $discIdFile) {
-        $discIdContent = Get-Content -Path $discIdFile -Encoding UTF8
+    if (Test-Path -LiteralPath $discIdFile) {
+        $discIdContent = Get-Content -LiteralPath $discIdFile -Encoding UTF8
         $fileDiscId = $null
         $fileReleaseId = $null
         foreach ($line in $discIdContent) {
@@ -2064,7 +2064,7 @@ function Process-AlbumFolder {
         Write-Host "`n[STEP 5/$script:TotalSteps] Cover art (dry run)..." -ForegroundColor Green
         Write-Log "STEP 5/$($script:TotalSteps): Cover art (dry run)"
 
-        $existingArt = Get-ChildItem -Path $FolderPath -File -ErrorAction SilentlyContinue |
+        $existingArt = Get-ChildItem -LiteralPath $FolderPath -File -ErrorAction SilentlyContinue |
             Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
         if ($existingArt) {
             Write-Host "  [DRY RUN] Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Cyan
@@ -2085,7 +2085,7 @@ function Process-AlbumFolder {
         Write-Log "STEP 5/$($script:TotalSteps): Downloading cover art"
 
         # Check if art already exists
-        $existingArt = Get-ChildItem -Path $FolderPath -File -ErrorAction SilentlyContinue |
+        $existingArt = Get-ChildItem -LiteralPath $FolderPath -File -ErrorAction SilentlyContinue |
             Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
         if ($existingArt -and -not $ForceMode) {
             Write-Host "    Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Gray
@@ -2104,7 +2104,7 @@ function Process-AlbumFolder {
         # Embed cover art into FLAC files
         $imageFile = $artFile
         if (-not $imageFile) {
-            $existingArt = Get-ChildItem -Path $FolderPath -File -ErrorAction SilentlyContinue |
+            $existingArt = Get-ChildItem -LiteralPath $FolderPath -File -ErrorAction SilentlyContinue |
             Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
             if ($existingArt) { $imageFile = $existingArt[0].FullName }
         }
@@ -2199,7 +2199,7 @@ Write-Host $bannerText -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Validate path
-if (-not (Test-Path $Path)) {
+if (-not (Test-Path -LiteralPath $Path)) {
     Write-Host "`nError: Path not found: $Path" -ForegroundColor Red
     exit 1
 }
@@ -2214,7 +2214,7 @@ if ($Recurse -and ($Artist -or $Album)) {
 
 # Setup logging
 $logDir = "C:\Music\logs"
-if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+if (!(Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $script:LogFile = Join-Path $logDir "search-metadata_${logTimestamp}.log"
 
@@ -2240,7 +2240,7 @@ if ($Recurse) {
 
     # Find all directories containing at least one FLAC file
     $albumFolders = @()
-    $allFlacFiles = Get-ChildItem -Path $Path -Filter "*.flac" -Recurse -ErrorAction SilentlyContinue
+    $allFlacFiles = Get-ChildItem -LiteralPath $Path -Filter "*.flac" -Recurse -ErrorAction SilentlyContinue
     if ($allFlacFiles) {
         $albumFolders = $allFlacFiles | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique
     }
@@ -2255,7 +2255,7 @@ if ($Recurse) {
     foreach ($folder in $albumFolders) {
         $relPath = $folder.Substring($Path.Length).TrimStart('\', '/')
         if (-not $relPath) { $relPath = "." }
-        $flacCount = (Get-ChildItem -Path $folder -Filter "*.flac" -ErrorAction SilentlyContinue).Count
+        $flacCount = (Get-ChildItem -LiteralPath $folder -Filter "*.flac" -ErrorAction SilentlyContinue).Count
         Write-Host "    $relPath ($flacCount files)" -ForegroundColor Gray
     }
     Write-Log "Found $($albumFolders.Count) album folders"

@@ -77,7 +77,7 @@ function Write-Log {
     if ($script:LogFile) {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $entry = "[$timestamp] $Message"
-        Add-Content -Path $script:LogFile -Value $entry
+        Add-Content -LiteralPath $script:LogFile -Value $entry
     }
 }
 
@@ -171,7 +171,7 @@ function Read-TimedConfirmation {
 function Read-ExistingTags {
     param([string]$FolderPath)
 
-    $audioFiles = Get-ChildItem -Path $FolderPath -Filter "*.flac" -ErrorAction SilentlyContinue | Sort-Object Name
+    $audioFiles = Get-ChildItem -LiteralPath $FolderPath -Filter "*.flac" -ErrorAction SilentlyContinue | Sort-Object Name
     if (-not $audioFiles -or $audioFiles.Count -eq 0) {
         return $null
     }
@@ -217,7 +217,7 @@ Write-Host "Audit Audio Metadata" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 
 # Validate path
-if (-not (Test-Path $Path)) {
+if (-not (Test-Path -LiteralPath $Path)) {
     Write-Host "`nError: Path not found: $Path" -ForegroundColor Red
     exit 1
 }
@@ -227,7 +227,7 @@ Assert-MetaflacInstalled
 
 # Setup logging
 $logDir = "C:\Music\logs"
-if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+if (!(Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $script:LogFile = Join-Path $logDir "audit-metadata_${logTimestamp}.log"
 
@@ -243,7 +243,7 @@ $host.UI.RawUI.WindowTitle = "audit-metadata - $Path"
 Write-Host "`n[STEP 1/4] Discovering album folders..." -ForegroundColor Green
 Write-Log "STEP 1/4: Discovering album folders"
 
-$allFlacFiles = Get-ChildItem -Path $Path -Filter "*.flac" -Recurse -ErrorAction SilentlyContinue
+$allFlacFiles = Get-ChildItem -LiteralPath $Path -Filter "*.flac" -Recurse -ErrorAction SilentlyContinue
 $albumFolders = @()
 if ($allFlacFiles) {
     $albumFolders = $allFlacFiles | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique
@@ -272,7 +272,7 @@ Write-Log "Found $($albumFolders.Count) album folders"
 foreach ($folder in $albumFolders) {
     $relPath = $folder.Substring($Path.Length).TrimStart('\', '/')
     if (-not $relPath) { $relPath = "." }
-    $flacCount = (Get-ChildItem -Path $folder -Filter "*.flac" -ErrorAction SilentlyContinue).Count
+    $flacCount = (Get-ChildItem -LiteralPath $folder -Filter "*.flac" -ErrorAction SilentlyContinue).Count
     Write-Host "    $relPath ($flacCount files)" -ForegroundColor Gray
 }
 
@@ -318,7 +318,7 @@ foreach ($folder in $albumFolders) {
     if (-not $hasGenre) { $issues += "Missing genre" }
 
     # Check 3: Cover art - flag if no Front.*, Cover.*, or Folder.* exists
-    $coverArt = Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue |
+    $coverArt = Get-ChildItem -LiteralPath $folder -File -ErrorAction SilentlyContinue |
         Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') }
     if (-not $coverArt -or $coverArt.Count -eq 0) {
         $issues += "No cover art"
@@ -382,7 +382,7 @@ if ($ReportOnly) {
             Write-Host "`n[STEP 3/4] Copying flagged albums to staging..." -ForegroundColor Green
             Write-Log "STEP 3/4: Copying flagged albums"
 
-            if (!(Test-Path $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
+            if (!(Test-Path -LiteralPath $OutputPath)) { New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null }
 
             $copiedCount = 0
             foreach ($r in $flaggedResults) {
@@ -390,13 +390,13 @@ if ($ReportOnly) {
                 $destPath = Join-Path $OutputPath $r.RelPath
 
                 try {
-                    if (Test-Path $destPath) {
+                    if (Test-Path -LiteralPath $destPath) {
                         Write-Host "  [--] $($r.RelPath) (already in staging)" -ForegroundColor Gray
                         Write-Log "Skipped copy (already exists): $($r.RelPath)"
                     } else {
                         $destParent = Split-Path -Parent $destPath
-                        if (!(Test-Path $destParent)) { New-Item -ItemType Directory -Path $destParent -Force | Out-Null }
-                        Copy-Item -Path $r.Path -Destination $destPath -Recurse -ErrorAction Stop
+                        if (!(Test-Path -LiteralPath $destParent)) { New-Item -ItemType Directory -Path $destParent -Force | Out-Null }
+                        Copy-Item -LiteralPath $r.Path -Destination $destPath -Recurse -ErrorAction Stop
                         Write-Host "  [>>] $($r.RelPath)" -ForegroundColor Cyan
                         Write-Log "Copied: $($r.RelPath) -> $destPath"
                         $copiedCount++
@@ -423,7 +423,7 @@ if ($ReportOnly) {
                 Write-Log "STEP 4/4: Processing flagged albums"
 
                 $searchScript = Join-Path $PSScriptRoot "search-metadata.ps1"
-                if (-not (Test-Path $searchScript)) {
+                if (-not (Test-Path -LiteralPath $searchScript)) {
                     Write-Host "  ERROR: search-metadata.ps1 not found at $searchScript" -ForegroundColor Red
                     Write-Log "ERROR: search-metadata.ps1 not found at $searchScript"
                     $processExitCode = 1
