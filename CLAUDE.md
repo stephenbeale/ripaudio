@@ -81,9 +81,9 @@ MusicBrainz lookup is automatic - cyanrip will query MusicBrainz for disc metada
 
 ## Session Notes
 
-### 2026-11-27 - Pure Guitar Moods: [unknown] artist, Various folder, sibling-disc lookup (PRs #173, #174, #175; master = 86108ff)
+### 2026-11-27 - Pure Guitar Moods: [unknown] artist, Various folder, sibling-disc lookup (PRs #173-#178; master = 7b16ab2)
 
-All three MERGED. **None run on a real rip yet** (Discs 3 and 4 were already ripping on older code).
+All MERGED (#173-#175 earlier, #177 end screen and #178 drive claims later the same day). **None run on a real rip yet** (Discs 3 and 4 were already ripping on older code).
 
 Trigger: real rip of Pure Guitar Moods (4-disc compilation, 2004 GB, MusicBrainz release 59ebd7f1-f3e7-42f7-9bbd-7b8d99b4f4e3, barcode 876492000923) to G:\Music.
 
@@ -93,19 +93,25 @@ Trigger: real rip of Pure Guitar Moods (4-disc compilation, 2004 GB, MusicBrainz
 
 **Fixed by hand on G: (no code):** Disc 1 moved to `G:\Music\Various\Pure Guitar Moods Disc 1`, ARTIST/ALBUMARTIST [unknown] -> Various (backup C:\Music\logs\retag-backup_Pure Guitar Moods Disc 1_artist.txt); get-metadata.ps1 -DownloadArt added Front.png and an extra `Pure Guitar Moods Disc 1.cue` beside cyanrip's `Pure Guitar Moods CD1.cue` (undecided whether to delete). Disc 2 renamed/retagged from medium 2 (track lengths all equal), DATE 2011 and GENRE Pop removed, wrong Front.jpg backed up to C:\Music\logs, Disc 1's Front.png copied in. The Disc 1 session log was never written (bracket bug).
 
-**Discs 3 and 4 at session close:** still ripping (started 08:01/08:03, old code, generic "Unknown track" names). Background jobs in the session were to retag them from media 3/4 (length-checked) and open the attach links; unknown whether they finished. One-off helper `fix-sibling.ps1 -Dir <folder> [-Apply]` (imports Get-SiblingDiscTitles from rip-audio.ps1) was in the session scratchpad, which may be cleared.
+**Pure Guitar Moods Discs 3 and 4 DONE (G:\Music\Various):** both rips finished on pre-#175 code; the old search-metadata.ps1 applied the same WRONG same-named album to Disc 3 and Disc 4 (as it had to Disc 2). Fixed by hand with Get-SiblingDiscTitles (all 10 lengths matched media 3 and 4): Disc 3 "Love Don't Live Here Anymore" ... "Smooth Operator", Disc 4 "Every Breath You Take" ... "Yesterday"; ARTIST/ALBUMARTIST=Various, ALBUM=Pure Guitar Moods, DISCNUMBER 3/4, DATE 2004, RELEASE_ID. Wrong Front.jpg files moved to `C:\Music\logsetag-backup_Pure Guitar Moods Disc 3_old-Front.jpg` / `Disc 4_old-Front.jpg`; Disc 1's Front.png copied in; old tags in `C:\Music\logsetag-backup_Pure Guitar Moods Disc 3_20261127_082639.txt` and `Disc 4_20261127_082713.txt`. All four discs verified: same ALBUM, ALBUMARTIST=Various, DISCNUMBER 1-4, 2004.
 
-**MusicBrainz disc-ID submission (user, browser, login):** Disc 2 attach URL (verified, attach to CD 2): https://musicbrainz.org/cdtoc/attach?id=SsOYIJMr_uFO1VRQS90fpPiMUA8-&tracks=10&toc=1+10+175225+150+13642+32960+52726+72171+87932+103939+122892+139201+159707 . Disc 3 ID mATu6L1sIV8rdLNyDyy7TUpEPhI-; Disc 4 ID is in `Unknown disc (_VNB).log`.
+**MusicBrainz attach links (user submits in browser, login needed; attach to CD 2/3/4 of release 59ebd7f1-f3e7-42f7-9bbd-7b8d99b4f4e3; all verified by recomputing the disc ID).** Unknown whether submitted yet. The "No discs associated" page message is expected; then search release "Pure Guitar Moods" and pick the medium.
+- Disc 2: https://musicbrainz.org/cdtoc/attach?id=SsOYIJMr_uFO1VRQS90fpPiMUA8-&tracks=10&toc=1+10+175225+150+13642+32960+52726+72171+87932+103939+122892+139201+159707
+- Disc 3: https://musicbrainz.org/cdtoc/attach?id=mATu6L1sIV8rdLNyDyy7TUpEPhI-&tracks=10&toc=1+10+174261+150+17688+35235+48709+63489+78045+97588+118188+136232+155144
+- Disc 4: https://musicbrainz.org/cdtoc/attach?id=_VnBKCaW_xyzbkw6YRWaClIS5Xw-&tracks=10&toc=1+10+167983+150+18618+36228+60778+74359+93026+109808+121908+138397+153648
+
+**#177 (9c9a493) end screen (online-marketer agent; ripdisc twin #205 ae99475):** `Show-CoffeeBadge` redesigned: 72 columns, a 4-line ASCII icon per section in a fixed left column (cup, SiteGround building, disc for ripdisc, notes for ripaudio, film strip for Flyweight, speech bubble for Waffley), link on its own line behind `>>`, one blank row between sections, closed frame, coffee repeated at the bottom ("Enjoyed this? A coffee keeps the tools coming!"). In rip-audio, continue-rip-audio, search-metadata, audit-metadata, undo-metadata (get-metadata.ps1 has no Show-CoffeeBadge). Rendered in 5.1 and pwsh; **not seen at the end of a real run** (PR box unticked).
+
+**#178 (7b16ab2) drive claims (ripdisc twin #206 f6ac028):** user: "often I have to wait for the next one to start to avoid it picking one I've just started". Cause: a drive counted as busy only while a cyanrip process had `-d X:`, i.e. after prompts/lookup/countdown. Now rip-audio.ps1 claims the drive right after selection: `%LOCALAPPDATA%\RipTools\drive-claims\<letter>.claim` (Pid, ProcessStart, Claimed HH:mm, Tool=ripaudio, Album updated at "Ready to rip"). `Get-DriveClaims` adds other processes' live claims to `$busyDriveLetters`; the listing shows "(BUSY - ripaudio in another window since HH:mm: <album or starting>)"; busy messages say "another rip is already using it (or has just claimed it)". Released by a top-level try/finally from drive selection to end of script (checked: runs on exit, function exit, throw, exit in a loop). Stale claims (owner gone, or pid reused: compared by process start time) are deleted; -Queue does not claim. tests/Test-DriveClaims.ps1 17/17; 7 test files pass. ripdisc #206: `Get-RipDriveClaimLetters` reads the same files; the music-library offer's busy list = cyanrip -d drives + claims (Test-AutoVideoDrive 88/88, ripdisc suite 25 files). **Not run live** (the listing probes non-busy drives with `cyanrip -I` and the user may be ripping). Known limit: if a rip-audio run relaunches itself in the same process with a different drive, the first claim stays until that process's script ends. ripdisc's own video rips do not write claims (not requested).
 
 **Process note:** sign-off recorded as a PR comment, squash-merged.
 
 **NEXT SESSION:**
-1. Check Discs 3 and 4 in G:\Music\Various: titles from MB media 3/4 (Disc 3 starts "Love Don't Live Here Anymore", Disc 4 "Every Breath You Take"), DISCNUMBER, ARTIST=Various, Front.png. If the background job did not run, redo with the same length check (new rips now do this post-rip).
-2. User submits disc IDs for Discs 2, 3, 4 to MusicBrainz (CD 2/3/4 of release 59ebd7f1...). New-account edits go to vote (~1 week).
-3. If search-metadata.ps1 was offered and accepted at the end of Disc 3/4, check for a wrong album again.
-4. Decide whether to delete the extra `Pure Guitar Moods Disc 1.cue`.
-5. Real-rip checks, then tick PR boxes: #175 (Disc N names itself from the sibling and prints the attach link); #173 (compilation lands in Music\Various with a working log).
-6. Idea not done: search-metadata.ps1 should prefer a sibling disc's release / check track lengths before applying a name-search match.
+1. User submits disc IDs for Pure Guitar Moods Discs 2, 3, 4 via the attach links above (new-account edits go to vote ~1 week).
+2. Real checks, then tick PR boxes: #178 (start a rip on F:, immediately start a second: F: shows BUSY and is refused; claim file gone after the rip ends and after Ctrl+C), ripdisc #206 (music offer skips a just-claimed drive), #177/#205 end screen at the end of a real rip in Windows Terminal, #175 (a Disc N of a set names itself from its sibling and prints the attach link), #173/#174 (compilation lands in Music\Various with a working log).
+3. search-metadata.ps1 picked a same-named wrong album three times (Discs 2-4): make it check track lengths / prefer a sibling disc's release before applying a name-search match. rip-audio's end-of-rip auto-launch of search-metadata should not apply without that check.
+4. Decide whether to delete the extra `Pure Guitar Moods Disc 1.cue` written by get-metadata.ps1.
+5. Optional: ripdisc could write the same drive claims for its own video rips.
 
 ### 2026-11-26 - End-screen links (PR #172, merged; matching ripdisc PR #203)
 
@@ -2100,7 +2106,8 @@ squash-merged with zero formal approvals, same as every prior session.
 
 ### 2026-10-04 - Clearer "Unable to open device" Error (PR #156)
 
-**Trigger:** `.ip-audio.ps1 -artist "Jethro Tull" -album "This Was" -OutputDrive F -Drive E` with a DVD (`SILICON VALLEY S2 D2`) in `E:` - the audio CD was actually in `G:`. cyanrip printed `Unable to open device!` and the script fell through to the generic "cyanrip exited with code 1 and produced no audio files" message, which the user found confusing.
+**Trigger:** `.
+ip-audio.ps1 -artist "Jethro Tull" -album "This Was" -OutputDrive F -Drive E` with a DVD (`SILICON VALLEY S2 D2`) in `E:` - the audio CD was actually in `G:`. cyanrip printed `Unable to open device!` and the script fell through to the generic "cyanrip exited with code 1 and produced no audio files" message, which the user found confusing.
 
 **PR #156 (`7d0af8b`) - `fix/unable-to-open-device-message`:** new branch in the silent-failure message chain mapping `Unable to open device` to `Drive X: is either busy or doesn't contain an audio CD`. Placed before the existing `cannot open` check (which never matched this wording). README now has a "Common rip failure messages" table.
 
