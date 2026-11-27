@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-27 - Disc N of a Set Found From Its Sibling Disc
+
+### Fixed
+- **Pure Guitar Moods Discs 2-4 were "not found in MusicBrainz", and Disc 2 was then tagged with a different album of the same name.** MusicBrainz had the 4-disc release, but only Disc 1's disc ID was attached. New `Get-SiblingDiscTitles`: for a `<Album> Disc N` folder whose disc ID is unknown, a sibling `<Album> Disc M` folder's `.discid` RELEASEID gives the release, and medium N's titles are used only when the track count and every track length (within 2 s; `Get-AudioFileSeconds`, metaflac or ffprobe) match. Runs after the existing post-rip title recovery and before any name search. Tags get `DISCNUMBER` and `RELEASE_ID`; the folder's `.discid` gets the RELEASEID.
+
+### Added
+- When a disc is matched that way, the end of the rip prints MusicBrainz's attach link (`Get-MusicBrainzAttachUrl`, TOC from cyanrip's log, checked by recomputing the disc ID), so the disc ID can be added to the release for future rips.
+- tests/Test-SiblingDisc.ps1 17/17 (Windows PowerShell and pwsh).
+
 ## 2026-11-27 - Compilations Without an Album Artist; Square Brackets in Names
 
 ### Fixed
