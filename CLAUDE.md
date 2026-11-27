@@ -81,6 +81,32 @@ MusicBrainz lookup is automatic - cyanrip will query MusicBrainz for disc metada
 
 ## Session Notes
 
+### 2026-11-27 - Pure Guitar Moods: [unknown] artist, Various folder, sibling-disc lookup (PRs #173, #174, #175; master = 86108ff)
+
+All three MERGED. **None run on a real rip yet** (Discs 3 and 4 were already ripping on older code).
+
+Trigger: real rip of Pure Guitar Moods (4-disc compilation, 2004 GB, MusicBrainz release 59ebd7f1-f3e7-42f7-9bbd-7b8d99b4f4e3, barcode 876492000923) to G:\Music.
+
+**#173 (87217f4):** cyanrip printed `Album artist: [unknown]` (release has no album artist), so the rip went to `G:\Music\[unknown]\...`. `[..]` is a wildcard in `-Path`: every Write-Log failed, Push-Location failed, and Step 1 falsely said "cyanrip exited with code 0 but produced no audio files" (audio was fine, 10 tracks, 0 errors). Fix: `ConvertFrom-CyanripArtist` maps [unknown] to a compilation artist; all file-system cmdlets in the six scripts use `-LiteralPath`; recursive audio listings filter by Extension (Windows PowerShell 5.1 ignores `-Include` with `-LiteralPath -Recurse`); three cover-art checks that used `-Include` without `-Recurse` (never matched) now filter by BaseName; no-match prompt reads "Continue without metadata and fix after ripping? (Y/n)". tests/Test-BracketPaths.ps1 21/21 (5.1 + pwsh).
+**#174 (76c1631):** `$script:CompilationArtist` = "Various" (user's choice; G:\Music has both `Various` (8) and `Various Artists` (39); user wants `Various`).
+**#175 (86108ff):** MusicBrainz has the release with all 4 media but only Disc 1's disc ID attached (Discs 2-4: 404; CDDB no match). search-metadata.ps1 then tagged Disc 2 with a different album also called "Pure Guitar Moods" (DATE 2011, wrong Front.jpg). New `Get-SiblingDiscTitles`: for `<Album> Disc N`, a sibling `<Album> Disc M` folder's `.discid` RELEASEID gives the release; medium N is used only when track count and every length match within 2 s (`Get-AudioFileSeconds` via metaflac/ffprobe). Runs post-rip after the known-release recovery, before any name search; tags DISCNUMBER + RELEASE_ID; appends RELEASEID to `.discid`. `Get-MusicBrainzAttachUrl` builds the cdtoc attach link from cyanrip's log (LSN +150, lead-out = last End LSN+1+150), verified by recomputing the disc ID, and prints it at the end of such rips. tests/Test-SiblingDisc.ps1 17/17; full suite 6 files pass.
+
+**Fixed by hand on G: (no code):** Disc 1 moved to `G:\Music\Various\Pure Guitar Moods Disc 1`, ARTIST/ALBUMARTIST [unknown] -> Various (backup C:\Music\logs\retag-backup_Pure Guitar Moods Disc 1_artist.txt); get-metadata.ps1 -DownloadArt added Front.png and an extra `Pure Guitar Moods Disc 1.cue` beside cyanrip's `Pure Guitar Moods CD1.cue` (undecided whether to delete). Disc 2 renamed/retagged from medium 2 (track lengths all equal), DATE 2011 and GENRE Pop removed, wrong Front.jpg backed up to C:\Music\logs, Disc 1's Front.png copied in. The Disc 1 session log was never written (bracket bug).
+
+**Discs 3 and 4 at session close:** still ripping (started 08:01/08:03, old code, generic "Unknown track" names). Background jobs in the session were to retag them from media 3/4 (length-checked) and open the attach links; unknown whether they finished. One-off helper `fix-sibling.ps1 -Dir <folder> [-Apply]` (imports Get-SiblingDiscTitles from rip-audio.ps1) was in the session scratchpad, which may be cleared.
+
+**MusicBrainz disc-ID submission (user, browser, login):** Disc 2 attach URL (verified, attach to CD 2): https://musicbrainz.org/cdtoc/attach?id=SsOYIJMr_uFO1VRQS90fpPiMUA8-&tracks=10&toc=1+10+175225+150+13642+32960+52726+72171+87932+103939+122892+139201+159707 . Disc 3 ID mATu6L1sIV8rdLNyDyy7TUpEPhI-; Disc 4 ID is in `Unknown disc (_VNB).log`.
+
+**Process note:** sign-off recorded as a PR comment, squash-merged.
+
+**NEXT SESSION:**
+1. Check Discs 3 and 4 in G:\Music\Various: titles from MB media 3/4 (Disc 3 starts "Love Don't Live Here Anymore", Disc 4 "Every Breath You Take"), DISCNUMBER, ARTIST=Various, Front.png. If the background job did not run, redo with the same length check (new rips now do this post-rip).
+2. User submits disc IDs for Discs 2, 3, 4 to MusicBrainz (CD 2/3/4 of release 59ebd7f1...). New-account edits go to vote (~1 week).
+3. If search-metadata.ps1 was offered and accepted at the end of Disc 3/4, check for a wrong album again.
+4. Decide whether to delete the extra `Pure Guitar Moods Disc 1.cue`.
+5. Real-rip checks, then tick PR boxes: #175 (Disc N names itself from the sibling and prints the attach link); #173 (compilation lands in Music\Various with a working log).
+6. Idea not done: search-metadata.ps1 should prefer a sibling disc's release / check track lengths before applying a name-search match.
+
 ### 2026-11-26 - End-screen links (PR #172, merged; matching ripdisc PR #203)
 
 The "More free tools by me" section of `Show-CoffeeBadge` (all five scripts) is brighter: green names, light grey one-liners, cyan `>>` URLs, "click a link to try one:". Waffley is now described as "Language game: vocab, verbs, typing, speaking" (was wrongly "through colours"). First entry is ripdisc "Rip DVDs and Blu-rays to MP4, titles looked up"; the user may want different wording. 4 test files pass; none cover the end screen. **Not seen on a real rip.**
