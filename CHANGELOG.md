@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-27 - Tracks Survive a Shutdown Mid-Rip; Continue Offered After a Failure
+
+### Fixed
+- **Turning the PC off mid-rip lost every track, so nothing could be resumed.** Real case: The Chieftains, The Long Black Veil, ripping to G: (WD Elements, USB). cyanrip had read and logged tracks 1-8, but all 9 FLACs on G: were 0 bytes because the audio was still in Windows' write cache. cyanrip now writes to a local staging folder (`%LOCALAPPDATA%\RipTools\ripaudio-staging\<key per output folder>`). When cyanrip reports a track done, it is checked (`flac --test`), copied to the output under a `.partial` name, flushed to the drive, renamed, and removed from staging. A shutdown now loses at most the track being ripped, and the next run resumes after it. Older empty or broken files for the same track are replaced. At the end of each cyanrip run, checked tracks not yet saved and the cue, log and cover are moved across. Half-written tracks (watchdog kill, crash) are dropped, never left in the output. A re-run clears whatever a stopped run left in staging. Same change in `continue-rip-audio.ps1` (helpers copied; a test keeps the copies identical).
+- **"9 file(s) found but failed integrity check" for files that were simply empty.** The resume scan now says "N file(s) are empty (0 bytes): the rip was stopped before they were saved" and lists damaged files ("fail the FLAC check") separately. When no track is usable, it says option 1 deletes them first.
+
+### Added
+- **After a failure, rip-audio.ps1 offers `[C] Continue now with continue-rip-audio.ps1`**, filled in with the album, artist, failed step, drives, format and quality settings, and prints the same command for later. Like rip-disc.ps1's `[R]` hand-off to rip-audio.ps1. Enter stops as before. Not offered in `-ProcessQueue` mode or when the album folder does not exist yet.
+- tests/Test-Staging.ps1 38/38 (Windows PowerShell and pwsh). The cyanrip runner was also checked against a fake cyanrip: tracks saved during the run, the half-written last track dropped, staging removed.
+
 ## 2026-11-27 - A Drive Is Busy the Moment a Rip Picks It
 
 ### Fixed

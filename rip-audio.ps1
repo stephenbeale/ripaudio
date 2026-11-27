@@ -176,6 +176,149 @@ function Test-TrackIntegrity {
     return (Get-Item -LiteralPath $FilePath).Length -gt 10240
 }
 
+# ========== LOCAL STAGING (survive a shutdown mid-rip) ==========
+# 2026-11-27: the PC was turned off mid-rip with tracks 1-8 read and logged, but every
+# FLAC on the USB output drive (G:, WD Elements) was 0 bytes: the audio was still in
+# Windows' write cache, so nothing was left to resume from. cyanrip now writes into a
+# local staging folder and each finished track is copied to the output folder, flushed
+# to the drive, and only then removed from staging. A shutdown loses at most the track
+# being ripped, and the next run resumes after the last saved one.
+$script:AudioExtensions = @(".flac", ".mp3", ".opus", ".m4a", ".wav", ".aac")
+
+# One staging root per output folder (stable, so a re-run cleans up what a shutdown left).
+function Get-RipStagingRoot {
+    param([string]$FinalOutputDir, [string]$BaseDir = (Join-Path $env:LOCALAPPDATA 'RipTools\ripaudio-staging'))
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    try {
+        $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($FinalOutputDir.TrimEnd('\').ToLowerInvariant()))
+    } finally { $md5.Dispose() }
+    $key = (($bytes | Select-Object -First 6 | ForEach-Object { $_.ToString('x2') }) -join '')
+    return (Join-Path $BaseDir $key)
+}
+
+# Track number from "07 - Title.flac" or "1.07 - Title.flac" (multi-disc); $null otherwise.
+function Get-AudioFileTrackNumber {
+    param([string]$Name, [int]$DiscNum = 0)
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    if ($base -match '^(\d+)\.(\d+)\s*-') {
+        if ($DiscNum -gt 0 -and [int]$Matches[1] -ne $DiscNum) { return $null }
+        return [int]$Matches[2]
+    }
+    if ($base -match '^(\d+)\s*-') {
+        if ($DiscNum -gt 0) { return $null }
+        return [int]$Matches[1]
+    }
+    return $null
+}
+
+# Copy a file to its destination and force it onto the disk before the source goes.
+# Written under a ".partial" name first so a shutdown mid-copy never leaves a file that
+# looks like a finished track.
+function Save-FileDurably {
+    param([string]$Source, [string]$Destination)
+    $destDir = Split-Path -Parent $Destination
+    if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+    $partial = "$Destination.partial"
+    Copy-Item -LiteralPath $Source -Destination $partial -Force
+    $fs = [System.IO.File]::Open($partial, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try { $fs.Flush($true) } finally { $fs.Dispose() }
+    if ((Get-Item -LiteralPath $partial).Length -ne (Get-Item -LiteralPath $Source).Length) {
+        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        throw "copy of $(Split-Path -Leaf $Source) is incomplete"
+    }
+    if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force }
+    Move-Item -LiteralPath $partial -Destination $Destination
+    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+}
+
+# Move one finished track (every format) from staging to the output. A file that fails
+# the integrity check stays in staging for the end-of-run sweep. Older empty or broken
+# files for the same track in the output (from a stopped run, maybe under another title)
+# are removed so the track is not there twice. Returns the names saved.
+function Move-StagedTrack {
+    param([string]$StagingRoot, [string]$FinalRoot, [int]$TrackNum, [int]$DiscNum = 0)
+    $saved = @()
+    if (-not (Test-Path -LiteralPath $StagingRoot)) { return $saved }
+    $staged = @(Get-ChildItem -LiteralPath $StagingRoot -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in $script:AudioExtensions -and (Get-AudioFileTrackNumber -Name $_.Name -DiscNum $DiscNum) -eq $TrackNum })
+    foreach ($f in $staged) {
+        if (-not (Test-TrackIntegrity -FilePath $f.FullName)) { continue }
+        $rel = $f.FullName.Substring($StagingRoot.TrimEnd('\').Length).TrimStart('\')
+        $dest = Join-Path $FinalRoot $rel
+        $destDir = Split-Path -Parent $dest
+        if (Test-Path -LiteralPath $destDir) {
+            Get-ChildItem -LiteralPath $destDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -eq $f.Extension -and $_.Name -ne $f.Name -and
+                    (Get-AudioFileTrackNumber -Name $_.Name -DiscNum $DiscNum) -eq $TrackNum -and
+                    ($_.Length -eq 0 -or -not (Test-TrackIntegrity -FilePath $_.FullName)) } |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+        }
+        Save-FileDurably -Source $f.FullName -Destination $dest
+        $saved += $rel
+    }
+    return $saved
+}
+
+# Move everything left in staging (cue, log, cover, tracks not yet moved) to the output,
+# keeping relative paths, then remove the staging root. Returns the number of files moved.
+function Move-AllStagedFiles {
+    param([string]$StagingRoot, [string]$FinalRoot)
+    if (-not (Test-Path -LiteralPath $StagingRoot)) { return 0 }
+    $count = 0
+    foreach ($f in @(Get-ChildItem -LiteralPath $StagingRoot -Recurse -File -ErrorAction SilentlyContinue)) {
+        $rel = $f.FullName.Substring($StagingRoot.TrimEnd('\').Length).TrimStart('\')
+        Save-FileDurably -Source $f.FullName -Destination (Join-Path $FinalRoot $rel)
+        $count++
+    }
+    Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    return $count
+}
+
+# Splat for continue-rip-audio.ps1 after a failure. The album and artist passed are the
+# folder-safe names: continue-rip-audio.ps1 sanitises them the same way, so it lands on
+# this run's exact folder (version suffix included).
+function Get-ContinueRipAudioArgs {
+    param([string]$SafeAlbum, [string]$SafeArtist, [int]$FromStep = 1, [string]$DriveLetter,
+          [string]$OutputDriveLetter, [string]$Format = 'flac', [int]$Quality = 0,
+          [int]$ParanoiaLevel = -1, [int]$Retries = -1)
+    if (-not $SafeAlbum) { return $null }
+    $a = [ordered]@{ Album = $SafeAlbum }
+    if ($SafeArtist) { $a.Artist = $SafeArtist }
+    $a.FromStep = "$FromStep"
+    if ($DriveLetter) { $a.Drive = $DriveLetter.TrimEnd('\') }
+    if ($OutputDriveLetter) { $a.OutputDrive = $OutputDriveLetter.TrimEnd('\') }
+    if ($Format) { $a.format = $Format }
+    if ($Quality -gt 0) { $a.Quality = $Quality }
+    if ($ParanoiaLevel -ge 0) { $a.ParanoiaLevel = $ParanoiaLevel }
+    if ($Retries -ge 1) { $a.Retries = $Retries }
+    return $a
+}
+
+function Format-ContinueRipAudioCommand {
+    param([string]$ScriptPath, $ArgList)
+    $parts = @(".\" + (Split-Path -Leaf $ScriptPath))
+    foreach ($k in $ArgList.Keys) {
+        $v = "$($ArgList[$k])"
+        $parts += "-$k"
+        $parts += $(if ($v -match '[\s''"`$;&()]' -or $v -eq '') { "'" + ($v -replace "'", "''") + "'" } else { $v })
+    }
+    return ($parts -join ' ')
+}
+
+# Summary of the files a resume scan rejected: empty ones (a stopped rip) are told apart
+# from ones that are there but fail the FLAC check (damaged).
+function Get-InvalidTrackNote {
+    param([int]$EmptyCount, [int]$BrokenCount)
+    $lines = @()
+    if ($EmptyCount -gt 0) {
+        $lines += "  $EmptyCount file(s) are empty (0 bytes): the rip was stopped before they were saved (PC turned off, drive unplugged or window closed)."
+    }
+    if ($BrokenCount -gt 0) {
+        $lines += "  $BrokenCount file(s) are there but fail the FLAC check (damaged or cut short)."
+    }
+    return $lines
+}
+
 function Get-DiscTrackCount {
     param([string]$OutputDir, [string]$DriveLetter, [switch]$Fresh)
     # Try cue file first (avoids disc query and multiple-release prompts) -- unless
@@ -2202,6 +2345,36 @@ function Stop-WithError {
     }
 
     Write-Host "`nLog file: $($script:LogFile)" -ForegroundColor Yellow
+
+    # Offer continue-rip-audio.ps1 straight away, filled in for this album (the way
+    # rip-disc.ps1 offers [R] to start rip-audio.ps1 for an audio CD).
+    $continueScript = Join-Path $PSScriptRoot 'continue-rip-audio.ps1'
+    $continueArgs = $null
+    if (-not $script:IsProcessingQueue -and $finalOutputDir -and (Test-Path -LiteralPath $finalOutputDir) -and (Test-Path -LiteralPath $continueScript)) {
+        $failedStepNumber = if ($script:CurrentStep) { $script:CurrentStep.Number } else { 1 }
+        $continueArgs = Get-ContinueRipAudioArgs -SafeAlbum $safeAlbum -SafeArtist $safeArtist -FromStep $failedStepNumber `
+            -DriveLetter $driveLetter -OutputDriveLetter $outputDriveLetter -Format $format `
+            -Quality $Quality -ParanoiaLevel $ParanoiaLevel -Retries $Retries
+    }
+    if ($continueArgs) {
+        Write-Host "`n--- CONTINUE ---" -ForegroundColor Cyan
+        Write-Host "To pick up from step ${failedStepNumber} later:" -ForegroundColor White
+        Write-Host "  $(Format-ContinueRipAudioCommand -ScriptPath $continueScript -ArgList $continueArgs)" -ForegroundColor Gray
+        Write-Log "Continue command: $(Format-ContinueRipAudioCommand -ScriptPath $continueScript -ArgList $continueArgs)"
+        Write-Host "`n  [C] Continue now with continue-rip-audio.ps1" -ForegroundColor Yellow
+        Write-Host "  Enter = stop here" -ForegroundColor Yellow
+        $answer = Read-Host "Choice"
+        if ($answer -and $answer.Trim() -match '^[Cc]$') {
+            Write-Log "User chose [C]: starting continue-rip-audio.ps1"
+            Write-Host ""
+            & $continueScript @continueArgs
+            $continueExit = $LASTEXITCODE
+            Enable-ConsoleClose
+            if ($null -eq $continueExit) { $continueExit = 0 }
+            exit $continueExit
+        }
+    }
+
     Write-Host "`n========================================" -ForegroundColor $bannerColor
     Write-Host "Please complete the remaining steps manually" -ForegroundColor $bannerColor
     Write-Host "========================================`n" -ForegroundColor $bannerColor
@@ -2313,6 +2486,7 @@ if (!(Test-Path -LiteralPath $finalOutputDir)) {
             # Parse track numbers from existing filenames and validate integrity
             $validTracks = @()
             $invalidTracks = @()
+            $emptyTrackFiles = 0
             foreach ($af in $existingAudioFiles) {
                 $trackNum = $null
                 $fileDiscNum = $null
@@ -2335,13 +2509,15 @@ if (!(Test-Path -LiteralPath $finalOutputDir)) {
                 }
 
                 if ($trackNum) {
-                    if (Test-TrackIntegrity -FilePath $af.FullName) {
+                    if ($af.Length -gt 0 -and (Test-TrackIntegrity -FilePath $af.FullName)) {
                         $validTracks += $trackNum
                     } else {
                         $invalidTracks += $trackNum
+                        if ($af.Length -eq 0) { $emptyTrackFiles++ }
                     }
                 }
             }
+            $invalidNote = Get-InvalidTrackNote -EmptyCount $emptyTrackFiles -BrokenCount ($invalidTracks.Count - $emptyTrackFiles)
 
             $validTracks = $validTracks | Sort-Object -Unique
             $allDiscTracks = 1..$totalTrackCount
@@ -2351,7 +2527,8 @@ if (!(Test-Path -LiteralPath $finalOutputDir)) {
                 # All tracks already ripped and valid
                 Write-Host "`nAll $totalTrackCount tracks already ripped and valid." -ForegroundColor Green
                 if ($invalidTracks.Count -gt 0) {
-                    Write-Host "  ($($invalidTracks.Count) invalid file(s) will be overwritten)" -ForegroundColor Yellow
+                    $invalidNote | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
+                    Write-Host "  (they will be replaced if you re-rip)" -ForegroundColor Yellow
                 }
 
                 if ($script:IsProcessingQueue) {
@@ -2390,9 +2567,10 @@ if (!(Test-Path -LiteralPath $finalOutputDir)) {
                 }
             } elseif ($validTracks.Count -eq 0) {
                 # No valid tracks -- fall back to simple menu (nothing to resume from)
-                Write-Host "`nNo valid tracks found (0/$totalTrackCount)." -ForegroundColor Yellow
+                Write-Host "`nNo usable tracks found (0/$totalTrackCount), so the whole disc has to be ripped." -ForegroundColor Yellow
+                $invalidNote | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
                 if ($invalidTracks.Count -gt 0) {
-                    Write-Host "  $($invalidTracks.Count) file(s) found but failed integrity check." -ForegroundColor Yellow
+                    Write-Host "  Option 1 deletes them first; nothing in them can be recovered." -ForegroundColor Yellow
                 }
 
                 if ($script:IsProcessingQueue) {
@@ -2451,6 +2629,7 @@ if (!(Test-Path -LiteralPath $finalOutputDir)) {
                 if ($invalidTracks.Count -gt 0) {
                     $invalidList = ($invalidTracks | ForEach-Object { $_.ToString() }) -join ", "
                     Write-Host "Invalid (will re-rip): $($invalidTracks.Count) tracks ($invalidList)" -ForegroundColor Yellow
+                    $invalidNote | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
                     # Add invalid tracks to missing list for re-rip
                     $missingTracks = @($missingTracks + $invalidTracks | Sort-Object -Unique)
                     $missingList = ($missingTracks | ForEach-Object { $_.ToString() }) -join ", "
@@ -2815,7 +2994,15 @@ function Start-CyanripWithErrorDetection {
         }
     }
     $psi.Arguments = $quotedArgs -join ' '
-    $psi.WorkingDirectory = $WorkDir
+    # With staging on (see Get-RipStagingRoot), cyanrip writes under the local staging
+    # root and $WorkDir is where finished tracks are saved to.
+    $stagingRoot = $script:RipStagingRoot
+    if ($stagingRoot) {
+        if (-not (Test-Path -LiteralPath $stagingRoot)) { New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null }
+        $psi.WorkingDirectory = $stagingRoot
+    } else {
+        $psi.WorkingDirectory = $WorkDir
+    }
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
@@ -2907,6 +3094,20 @@ function Start-CyanripWithErrorDetection {
             if ($line -match 'Track\s+(\d+)\s+ripped and encoded successfully') {
                 $lastCompletedTrack = [int]$Matches[1]
                 $consecutiveCdioErrors = 0
+                if ($stagingRoot) {
+                    try {
+                        $saved = @(Move-StagedTrack -StagingRoot $stagingRoot -FinalRoot $WorkDir -TrackNum $lastCompletedTrack -DiscNum $DiscNum)
+                        if ($saved.Count -gt 0) {
+                            Write-Host "  Saved track $lastCompletedTrack to the output drive" -ForegroundColor DarkGreen
+                            Write-Log "Track ${lastCompletedTrack}: saved to output ($($saved -join ', '))"
+                        } else {
+                            Write-Log "Track ${lastCompletedTrack}: not saved yet (not found or failed the check in staging); retried at the end"
+                        }
+                    } catch {
+                        Write-Host "  Could not save track $lastCompletedTrack yet: $_ (will retry at the end)" -ForegroundColor Yellow
+                        Write-Log "Track ${lastCompletedTrack}: save failed: $_"
+                    }
+                }
             }
 
             if ($line -match 'cdio error|Unknown, unrecoverable error reading data') {
@@ -2942,6 +3143,33 @@ function Start-CyanripWithErrorDetection {
                 break
             }
             Start-Sleep -Milliseconds 50
+        }
+    }
+
+    if ($stagingRoot) {
+        if ($killedDueToErrors) { try { $proc.WaitForExit(10000) | Out-Null } catch {} }
+        # Tracks that passed the check but were not saved during the run, then the cue,
+        # log and cover. A half-written track (watchdog kill, crash) is dropped so it never
+        # sits in the output looking like a track.
+        foreach ($f in @(Get-ChildItem -LiteralPath $stagingRoot -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in $script:AudioExtensions })) {
+            if (-not (Test-Path -LiteralPath $f.FullName)) { continue }  # already saved with its track
+            $n = Get-AudioFileTrackNumber -Name $f.Name -DiscNum $DiscNum
+            $ok = Test-TrackIntegrity -FilePath $f.FullName
+            if ($null -ne $n -and $ok) {
+                try { [void](Move-StagedTrack -StagingRoot $stagingRoot -FinalRoot $WorkDir -TrackNum $n -DiscNum $DiscNum) }
+                catch { Write-Host "  Could not save $($f.Name): $_" -ForegroundColor Red; Write-Log "Save failed for $($f.Name): $_" }
+            } elseif (-not $ok) {
+                Write-Log "Dropped unfinished file from staging: $($f.Name)"
+                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+            }
+        }
+        try {
+            $moved = Move-AllStagedFiles -StagingRoot $stagingRoot -FinalRoot $WorkDir
+            if ($moved -gt 0) { Write-Log "Moved $moved remaining file(s) from staging to $WorkDir" }
+        } catch {
+            Write-Host "  Could not move files from the staging folder ${stagingRoot}: $_" -ForegroundColor Red
+            Write-Log "Staging sweep failed: $_"
         }
     }
 
@@ -3039,6 +3267,17 @@ if ($preRipAudio.Count -gt 0) {
         $script:PreRipBackupDir = $null
     }
 }
+
+# Local staging: cyanrip writes here and each finished track is saved to $parentDir as
+# it completes. Whatever a stopped earlier run left here is unfinished, so start empty.
+$script:RipStagingRoot = Get-RipStagingRoot -FinalOutputDir $finalOutputDir
+if (Test-Path -LiteralPath $script:RipStagingRoot) {
+    Remove-Item -LiteralPath $script:RipStagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Log "Cleared leftover staging folder $script:RipStagingRoot"
+}
+New-Item -ItemType Directory -Path $script:RipStagingRoot -Force | Out-Null
+Write-Host "Staging folder: $script:RipStagingRoot (each track is saved to the output drive as it finishes)" -ForegroundColor Gray
+Write-Log "Staging folder: $script:RipStagingRoot"
 
 Push-Location -LiteralPath $parentDir
 try {
