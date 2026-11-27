@@ -453,6 +453,120 @@ function Get-ReleaseDiscTitles {
     }
 }
 
+# Length of an audio file in whole seconds (metaflac for FLAC, else ffprobe), or $null.
+function Get-AudioFileSeconds {
+    param([string]$Path)
+    try {
+        if ($Path -like '*.flac' -and (Get-Command metaflac -ErrorAction SilentlyContinue)) {
+            $samples = [double](& metaflac --show-total-samples $Path 2>$null)
+            $rate = [double](& metaflac --show-sample-rate $Path 2>$null)
+            if ($rate -gt 0) { return [int][math]::Round($samples / $rate) }
+        }
+        if (Get-Command ffprobe -ErrorAction SilentlyContinue) {
+            $d = & ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 $Path 2>$null
+            if ($d) { return [int][math]::Round([double]$d) }
+        }
+    } catch { }
+    return $null
+}
+
+# Titles for "<Album> Disc N" when the disc ID is not on MusicBrainz but another disc of
+# the same set is. MusicBrainz often has the whole set with only Disc 1's disc ID attached
+# (Pure Guitar Moods, 2026-11-27: Discs 2-4 gave 404, and a name search then tagged Disc 2
+# with a different album of the same name). A sibling folder's .discid names the release;
+# medium N of it is used only when its track count and EVERY track length (within
+# $ToleranceSeconds) match the ripped files.
+# Returns @{ Artist; Album; Tracks; ReleaseId; DiscNumber; Source } or $null.
+# -Request and -GetSeconds are seams for tests.
+function Get-SiblingDiscTitles {
+    param(
+        [string]$OutputDir,
+        [int]$DiscNumber,
+        [object[]]$Files,
+        [int]$ToleranceSeconds = 2,
+        [scriptblock]$Request = { param($u) Invoke-MusicBrainzRequest -Uri $u },
+        [scriptblock]$GetSeconds = { param($p) Get-AudioFileSeconds -Path $p }
+    )
+    $leaf = Split-Path -Leaf $OutputDir
+    if (-not $DiscNumber -and $leaf -match '\bDisc\s*(\d+)\s*$') { $DiscNumber = [int]$Matches[1] }
+    if (-not $DiscNumber -or -not $Files -or $Files.Count -eq 0) { return $null }
+    $base = $leaf -replace '\s*\bDisc\s*\d+\s*$', ''
+    if (-not $base) { return $null }
+    $parent = Split-Path -Parent $OutputDir
+    $pattern = '^' + [regex]::Escape($base) + '\s*\bDisc\s*\d+\s*$'
+
+    $releaseIds = @()
+    foreach ($dir in @(Get-ChildItem -LiteralPath $parent -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $pattern -and $_.Name -ne $leaf })) {
+        $idFile = Join-Path $dir.FullName '.discid'
+        if (-not (Test-Path -LiteralPath $idFile)) { continue }
+        foreach ($line in @(Get-Content -LiteralPath $idFile -ErrorAction SilentlyContinue)) {
+            if ($line -match '^RELEASEID=([0-9a-fA-F-]{36})\s*$' -and $releaseIds -notcontains $Matches[1]) { $releaseIds += $Matches[1] }
+        }
+    }
+    if ($releaseIds.Count -eq 0) { return $null }
+
+    $sorted = @($Files | Sort-Object { if ($_.BaseName -match '^(\d+)') { [int]$Matches[1] } else { 999 } }, Name)
+    $seconds = @($sorted | ForEach-Object { & $GetSeconds $_.FullName })
+    if (@($seconds | Where-Object { $null -eq $_ }).Count -gt 0) {
+        Write-Log "Sibling disc lookup: could not read every track length; not used"
+        return $null
+    }
+
+    foreach ($rid in $releaseIds) {
+        try {
+            $release = & $Request "https://musicbrainz.org/ws/2/release/$($rid)?inc=artist-credits+media+recordings&fmt=json"
+        } catch {
+            Write-Log "Sibling disc lookup: release $rid failed: $($_.Exception.Message)"
+            continue
+        }
+        $medium = @($release.media) | Where-Object { $_ -and [int]$_.position -eq $DiscNumber } | Select-Object -First 1
+        if (-not $medium) { Write-Log "Sibling disc lookup: release $rid has no disc $DiscNumber"; continue }
+        $tracks = @($medium.tracks)
+        if ($tracks.Count -ne $sorted.Count) {
+            Write-Log "Sibling disc lookup: release $rid disc $DiscNumber has $($tracks.Count) tracks, ripped $($sorted.Count)"
+            continue
+        }
+        $mismatch = $false
+        for ($i = 0; $i -lt $tracks.Count; $i++) {
+            $len = $tracks[$i].length
+            if (-not $len -or [math]::Abs(([double]$len / 1000) - $seconds[$i]) -gt $ToleranceSeconds) { $mismatch = $true; break }
+        }
+        if ($mismatch) { Write-Log "Sibling disc lookup: release $rid disc $DiscNumber track lengths differ"; continue }
+        $credit = (@($release.'artist-credit') | ForEach-Object { "$($_.name)$($_.joinphrase)" }) -join ''
+        return @{
+            Artist     = ConvertFrom-CyanripArtist $credit
+            Album      = "$($release.title)"
+            Tracks     = @($tracks | ForEach-Object { "$($_.title)" })
+            ReleaseId  = $rid
+            DiscNumber = $DiscNumber
+            Source     = 'MusicBrainz (sibling disc)'
+        }
+    }
+    return $null
+}
+
+# MusicBrainz "attach this disc ID to a release" link, built from a cyanrip rip log
+# (DiscID line plus each track's Start/End LSN). The TOC is checked by recomputing the
+# disc ID from it; $null when the log is incomplete or the IDs differ.
+function Get-MusicBrainzAttachUrl {
+    param([string[]]$LogLines)
+    $idLine = $LogLines | Select-String '^DiscID:\s+(\S+)' | Select-Object -First 1
+    if (-not $idLine) { return $null }
+    $id = $idLine.Matches[0].Groups[1].Value
+    $starts = @($LogLines | Select-String '^\s+Start LSN:\s+(\d+)' | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+    $ends = @($LogLines | Select-String '^\s+End LSN:\s+(\d+)' | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
+    if ($starts.Count -eq 0 -or $starts.Count -ne $ends.Count -or $starts.Count -gt 99) { return $null }
+    $n = $starts.Count
+    $offsets = @($starts | ForEach-Object { $_ + 150 })
+    $leadOut = $ends[-1] + 1 + 150
+    $hex = "{0:X2}{1:X2}{2:X8}" -f 1, $n, $leadOut
+    for ($i = 1; $i -le 99; $i++) { $hex += "{0:X8}" -f $(if ($i -le $n) { $offsets[$i - 1] } else { 0 }) }
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    $calc = [Convert]::ToBase64String($sha.ComputeHash([System.Text.Encoding]::ASCII.GetBytes($hex))).Replace('+', '.').Replace('/', '_').Replace('=', '-')
+    if ($calc -cne $id) { return $null }
+    return "https://musicbrainz.org/cdtoc/attach?id=$id&tracks=$n&toc=" + ((@(1, $n, $leadOut) + $offsets) -join '+')
+}
+
 # Details (artist, media, discs, tracks) for every release cyanrip listed, for the
 # release picker. ONE disc ID request returns all of them (checked 2026-11-24: The
 # Essential Neil Diamond disc 1, 8 releases, same order, every medium with its discs and
@@ -3384,6 +3498,31 @@ if ($rippedTracks.Count -gt 0 -and $skipMusicBrainz -and $hasGenericNames -and -
         Write-Log "Post-rip title lookup found nothing usable"
     }
 }
+# Disc N of a set whose other disc was identified: take medium N of that release when
+# every track length matches (see Get-SiblingDiscTitles).
+if ($rippedTracks.Count -gt 0 -and $skipMusicBrainz -and $hasGenericNames -and -not $script:CddbResult) {
+    $sibling = Get-SiblingDiscTitles -OutputDir $finalOutputDir -DiscNumber $DiscNum -Files $rippedTracks
+    if ($sibling) {
+        $script:CddbResult = $sibling
+        $script:TitleSource = "MusicBrainz"
+        $script:MetadataSource = $sibling.Source
+        Write-Host "`nThis is disc $($sibling.DiscNumber) of $($sibling.Artist) - $($sibling.Album) (found from another disc of the set; all $($sibling.Tracks.Count) track lengths match)" -ForegroundColor Green
+        Write-Log "Sibling disc match: release $($sibling.ReleaseId) disc $($sibling.DiscNumber), $($sibling.Tracks.Count) tracks, lengths match"
+        $idFile = Join-Path $finalOutputDir '.discid'
+        if ((Test-Path -LiteralPath $idFile) -and -not (Select-String -LiteralPath $idFile -Pattern '^RELEASEID=' -Quiet)) {
+            Add-Content -LiteralPath $idFile -Value "RELEASEID=$($sibling.ReleaseId)"
+        }
+        # Offer the link that adds this disc ID to the release, so the next rip matches.
+        $ripLog = Get-ChildItem -LiteralPath $finalOutputDir -Filter *.log -File -ErrorAction SilentlyContinue |
+            Where-Object { (Get-Content -LiteralPath $_.FullName -TotalCount 1) -match '^cyanrip ' } | Select-Object -First 1
+        $attachUrl = if ($ripLog) { Get-MusicBrainzAttachUrl -LogLines (Get-Content -LiteralPath $ripLog.FullName) }
+        if ($attachUrl) {
+            Write-Host "  MusicBrainz does not know this disc ID yet. To add it to the release (needs a MusicBrainz login):" -ForegroundColor Gray
+            Write-Host "  $attachUrl" -ForegroundColor Cyan
+            Write-Log "MusicBrainz attach link: $attachUrl"
+        }
+    }
+}
 
 if ($rippedTracks.Count -gt 0 -and ($skipMusicBrainz -or $hasGenericNames)) {
     if ($script:CddbResult -and $script:CddbResult.Tracks.Count -gt 0) {
@@ -3538,7 +3677,13 @@ if ($rippedTracks.Count -gt 0 -and $detectedFormat -eq "flac") {
                 & metaflac --remove-tag=ARTIST --remove-tag=ALBUM --remove-tag=ALBUMARTIST --remove-tag=TITLE --remove-tag=TRACKNUMBER --remove-tag=TRACKTOTAL $track.FullName 2>$null
 
                 # Set new tags
-                & metaflac --set-tag="ARTIST=$tagArtist" --set-tag="ALBUM=$tagAlbum" --set-tag="ALBUMARTIST=$tagArtist" --set-tag="TITLE=$trackTitle" --set-tag="TRACKNUMBER=$trackNum" --set-tag="TRACKTOTAL=$totalTracks" $track.FullName
+                $discTags = @()
+                if ($script:CddbResult -and $script:CddbResult.DiscNumber) {
+                    # Sibling-disc match: same album tag and a disc number, so players group the set.
+                    & metaflac --remove-tag=DISCNUMBER --remove-tag=RELEASE_ID $track.FullName 2>$null
+                    $discTags = @("--set-tag=DISCNUMBER=$($script:CddbResult.DiscNumber)", "--set-tag=RELEASE_ID=$($script:CddbResult.ReleaseId)")
+                }
+                & metaflac --set-tag="ARTIST=$tagArtist" --set-tag="ALBUM=$tagAlbum" --set-tag="ALBUMARTIST=$tagArtist" --set-tag="TITLE=$trackTitle" --set-tag="TRACKNUMBER=$trackNum" --set-tag="TRACKTOTAL=$totalTracks" @discTags $track.FullName
 
                 # metaflac is an external exe: a non-zero exit does not throw, so the
                 # catch below never sees it. Check $LASTEXITCODE or we report success
