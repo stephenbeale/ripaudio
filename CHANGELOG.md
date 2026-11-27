@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## 2026-11-27 - A Drive Is Busy the Moment a Rip Picks It
+
+### Fixed
+- **A rip started straight after another one could pick the same drive.** A drive only showed as busy once cyanrip was running, which is after the prompts, metadata lookup and countdown, so the user had to wait for one rip to start before starting the next. rip-audio.ps1 now claims the drive as soon as it is picked: `%LOCALAPPDATA%\RipTools\drive-claims\<letter>.claim` (process id, process start time, time, album once known). Other windows list it as `(BUSY - ripaudio in another window since 08:12: <album or starting>)` and refuse it like a running rip. The claim is removed in a top-level finally block (exit, errors, Ctrl+C); a claim whose process has gone, or whose id now belongs to another process, is stale and deleted. ripdisc's music-library offer reads the same files (ripdisc PR). `-Queue` does not claim.
+- tests/Test-DriveClaims.ps1 17/17 (Windows PowerShell and pwsh).
+
 ## 2026-11-27 - End Screen: Matching Icons, Even Spacing, Coffee at Both Ends
 
 ### Changed

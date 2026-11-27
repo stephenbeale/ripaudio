@@ -1405,6 +1405,79 @@ foreach ($proc in (Get-Process -Name "cyanrip" -ErrorAction SilentlyContinue)) {
     }
 }
 
+# ========== DRIVE CLAIMS ==========
+# cyanrip only starts after the prompts, metadata lookup and countdown, so a rip that has
+# just picked a drive did not show as busy, and a second rip started straight after would
+# pick the same drive (user, 2026-11-27: "often I have to wait for the next one to start").
+# The drive is now claimed the moment it is picked: one small file per drive letter holding
+# the owner's process id and start time. The claim is removed in a finally block (runs on
+# exit, errors and Ctrl+C); a claim whose process is gone, or is a different process
+# reusing the id, is stale and ignored. ripdisc reads the same files.
+$script:DriveClaimDir = Join-Path $env:LOCALAPPDATA 'RipTools\drive-claims'
+
+function Get-ProcessStartStamp {
+    param([int]$ProcessId)
+    try { return (Get-Process -Id $ProcessId -ErrorAction Stop).StartTime.ToString('o') } catch { return $null }
+}
+
+# Hashtable "F:" -> @{ Pid; Album; Claimed; Tool } of live claims held by OTHER processes.
+# Stale claims are deleted. -GetStamp is a seam for tests.
+function Get-DriveClaims {
+    param(
+        [string]$Dir = $script:DriveClaimDir,
+        [int]$Self = $PID,
+        [scriptblock]$GetStamp = { param($id) Get-ProcessStartStamp -ProcessId $id }
+    )
+    $claims = @{}
+    if (-not (Test-Path -LiteralPath $Dir)) { return $claims }
+    foreach ($f in @(Get-ChildItem -LiteralPath $Dir -Filter '*.claim' -File -ErrorAction SilentlyContinue)) {
+        $c = @{}
+        foreach ($line in @(Get-Content -LiteralPath $f.FullName -ErrorAction SilentlyContinue)) {
+            if ($line -match '^(\w+)=(.*)$') { $c[$Matches[1]] = $Matches[2] }
+        }
+        $ownerId = 0
+        if (-not [int]::TryParse("$($c.Pid)", [ref]$ownerId)) { continue }
+        if ($ownerId -eq $Self) { continue }
+        $stamp = & $GetStamp $ownerId
+        if (-not $stamp -or $stamp -ne $c.ProcessStart) {
+            Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+            continue
+        }
+        $claims["$($f.BaseName.ToUpper()):"] = @{ Pid = $ownerId; Album = $c.Album; Claimed = $c.Claimed; Tool = $c.Tool }
+    }
+    return $claims
+}
+
+function Set-DriveClaim {
+    param([string]$DriveLetter, [string]$Album = '', [string]$Dir = $script:DriveClaimDir)
+    try {
+        if (-not (Test-Path -LiteralPath $Dir)) { New-Item -ItemType Directory -Path $Dir -Force | Out-Null }
+        $path = Join-Path $Dir ("{0}.claim" -f $DriveLetter.TrimEnd(':').ToUpper())
+        Set-Content -LiteralPath $path -Encoding UTF8 -Value @(
+            "Pid=$PID", "ProcessStart=$(Get-ProcessStartStamp -ProcessId $PID)",
+            "Claimed=$(Get-Date -Format 'HH:mm')", "Tool=ripaudio", "Album=$Album")
+    } catch {
+        # Best effort: without the claim the drive is still protected once cyanrip starts.
+    }
+}
+
+# Removes the claim only if this process owns it.
+function Remove-DriveClaim {
+    param([string]$DriveLetter, [string]$Dir = $script:DriveClaimDir)
+    if (-not $DriveLetter) { return }
+    $path = Join-Path $Dir ("{0}.claim" -f $DriveLetter.TrimEnd(':').ToUpper())
+    try {
+        if ((Test-Path -LiteralPath $path) -and (Select-String -LiteralPath $path -Pattern "^Pid=$PID$" -Quiet)) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
+$script:DriveClaims = Get-DriveClaims
+foreach ($claimed in $script:DriveClaims.Keys) {
+    if ($busyDriveLetters -notcontains $claimed) { $busyDriveLetters += $claimed }
+}
+
 # Disc label (volume label) for a drive, if a disc is present and Windows can read one -
 # shown in the listing the same way ripdisc shows the disc name in brackets per drive.
 # Audio CDs (CDDA) have no filesystem at all, so Windows always reports the generic
@@ -1473,7 +1546,11 @@ function Write-DriveListLine {
         if ($quickIdentity) { $discLabel = $quickIdentity }
     }
     $labelText = if ($discLabel) { " [$discLabel]" } else { "" }
-    $busyText = if ($isBusy) { " (BUSY - rip in progress)" } else { "" }
+    $claim = $script:DriveClaims[$DriveInfo.Drive]
+    $busyText = if ($claim) {
+        $what = if ($claim.Album) { $claim.Album } else { "starting" }
+        " (BUSY - $($claim.Tool) in another window since $($claim.Claimed): $what)"
+    } elseif ($isBusy) { " (BUSY - rip in progress)" } else { "" }
     $marker = if ($Selected) { " <--" } else { "" }
     $color = if ($isBusy) { "DarkRed" } else { "White" }
     Write-Host "  $($DriveInfo.Drive) - $($DriveInfo.Name)$labelText$busyText$marker" -ForegroundColor $color
@@ -1487,7 +1564,7 @@ if (-not $Drive) {
     } elseif ($opticalDrives.Count -eq 1) {
         $onlyDrive = $opticalDrives[0]
         if ($busyDriveLetters -contains $onlyDrive.Drive) {
-            Write-Host "ERROR: $($onlyDrive.Drive) ($($onlyDrive.Name)) is busy - another cyanrip rip is already using it." -ForegroundColor Red
+            Write-Host "ERROR: $($onlyDrive.Drive) ($($onlyDrive.Name)) is busy - another rip is already using it (or has just claimed it)." -ForegroundColor Red
             Write-Host "Wait for that rip to finish, or free up the drive before retrying." -ForegroundColor Yellow
             exit 1
         }
@@ -1506,7 +1583,7 @@ if (-not $Drive) {
             if ($input -match '^\d+$' -and [int]$input -ge 1 -and [int]$input -le $opticalDrives.Count) {
                 $candidate = $opticalDrives[[int]$input - 1]
                 if ($busyDriveLetters -contains $candidate.Drive) {
-                    Write-Host "$($candidate.Drive) is busy - another cyanrip rip is already using it. Choose a different drive." -ForegroundColor Red
+                    Write-Host "$($candidate.Drive) is busy - another rip is already using it (or has just claimed it). Choose a different drive." -ForegroundColor Red
                     continue
                 }
                 $Drive = $candidate.Drive
@@ -1526,7 +1603,7 @@ if (-not $Drive) {
     $matchedDrive = $opticalDrives | Where-Object { $_.Drive -eq $explicitDriveLetter } | Select-Object -First 1
 
     if ($matchedDrive -and ($busyDriveLetters -contains $explicitDriveLetter)) {
-        Write-Host "ERROR: $explicitDriveLetter ($($matchedDrive.Name)) is busy - another cyanrip rip is already using it." -ForegroundColor Red
+        Write-Host "ERROR: $explicitDriveLetter ($($matchedDrive.Name)) is busy - another rip is already using it (or has just claimed it)." -ForegroundColor Red
         Write-Host "Optical drives right now:" -ForegroundColor Yellow
         foreach ($d in $opticalDrives) { Write-DriveListLine -DriveInfo $d -Selected ($d.Drive -eq $explicitDriveLetter) }
         Write-Host "Wait for that rip to finish, or re-run with a different -Drive." -ForegroundColor Yellow
@@ -1551,7 +1628,7 @@ if (-not $Drive) {
         # for some external/USB drives), so there's no drive model/label to show - but busy
         # detection doesn't depend on that list at all (it reads running cyanrip process
         # command lines directly), so it can and does still hard-block here.
-        Write-Host "ERROR: $explicitDriveLetter is busy - another cyanrip rip is already using it." -ForegroundColor Red
+        Write-Host "ERROR: $explicitDriveLetter is busy - another rip is already using it (or has just claimed it)." -ForegroundColor Red
         Write-Host "Wait for that rip to finish, or re-run with a different -Drive." -ForegroundColor Yellow
         exit 1
     } else {
@@ -1563,6 +1640,16 @@ if (-not $Drive) {
 
 # Normalize -Drive (add colon if missing)
 $driveLetter = if ($Drive -match ':$') { $Drive } else { "${Drive}:" }
+
+# Claim the drive now, before any prompt, so a rip started in another window straight
+# after this one sees it as busy. Released in the finally block at the end of the script.
+# -Queue only records metadata and never touches the drive.
+$script:ClaimedDrive = $null
+if (-not $Queue) {
+    Set-DriveClaim -DriveLetter $driveLetter
+    $script:ClaimedDrive = $driveLetter
+}
+try { # released in the matching finally at the end of the script
 
 # Audio CDs always report the volume label "Audio CD"; any other label means a DVD or
 # data disc, i.e. probably the wrong drive (-Drive E with the CD in G:). Without this
@@ -1959,6 +2046,7 @@ if ($pathLength -ge $MAX_PATH) {
 # Show which drive will be used and confirm before proceeding
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "Ready to rip: $album" -ForegroundColor White
+if ($script:ClaimedDrive) { Set-DriveClaim -DriveLetter $script:ClaimedDrive -Album $(if ($artist) { "$artist - $album" } else { $album }) }
 if ($artist) {
     Write-Host "Artist: $artist" -ForegroundColor White
 }
@@ -4481,4 +4569,9 @@ if ($script:IsProcessingQueue) {
     }
 
     Enable-ConsoleClose
+}
+
+} finally {
+    # Release the drive claim made after drive selection (runs on exit, errors and Ctrl+C).
+    Remove-DriveClaim -DriveLetter $script:ClaimedDrive
 }
