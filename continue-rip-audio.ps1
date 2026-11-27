@@ -245,6 +245,90 @@ function Test-TrackIntegrity {
     return (Get-Item -LiteralPath $FilePath).Length -gt 10240
 }
 
+# ========== LOCAL STAGING (ported from rip-audio.ps1 - keep in sync) ==========
+# cyanrip writes to a local staging folder; each finished track is copied to the output,
+# flushed to the drive, then removed from staging, so a shutdown mid-rip loses at most the
+# track being ripped (2026-11-27: PC turned off, every FLAC on the USB drive was 0 bytes).
+$script:AudioExtensions = @(".flac", ".mp3", ".opus", ".m4a", ".wav", ".aac")
+
+function Get-RipStagingRoot {
+    param([string]$FinalOutputDir, [string]$BaseDir = (Join-Path $env:LOCALAPPDATA 'RipTools\ripaudio-staging'))
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    try {
+        $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($FinalOutputDir.TrimEnd('\').ToLowerInvariant()))
+    } finally { $md5.Dispose() }
+    $key = (($bytes | Select-Object -First 6 | ForEach-Object { $_.ToString('x2') }) -join '')
+    return (Join-Path $BaseDir $key)
+}
+
+function Get-AudioFileTrackNumber {
+    param([string]$Name, [int]$DiscNum = 0)
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    if ($base -match '^(\d+)\.(\d+)\s*-') {
+        if ($DiscNum -gt 0 -and [int]$Matches[1] -ne $DiscNum) { return $null }
+        return [int]$Matches[2]
+    }
+    if ($base -match '^(\d+)\s*-') {
+        if ($DiscNum -gt 0) { return $null }
+        return [int]$Matches[1]
+    }
+    return $null
+}
+
+function Save-FileDurably {
+    param([string]$Source, [string]$Destination)
+    $destDir = Split-Path -Parent $Destination
+    if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+    $partial = "$Destination.partial"
+    Copy-Item -LiteralPath $Source -Destination $partial -Force
+    $fs = [System.IO.File]::Open($partial, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+    try { $fs.Flush($true) } finally { $fs.Dispose() }
+    if ((Get-Item -LiteralPath $partial).Length -ne (Get-Item -LiteralPath $Source).Length) {
+        Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+        throw "copy of $(Split-Path -Leaf $Source) is incomplete"
+    }
+    if (Test-Path -LiteralPath $Destination) { Remove-Item -LiteralPath $Destination -Force }
+    Move-Item -LiteralPath $partial -Destination $Destination
+    Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+}
+
+function Move-StagedTrack {
+    param([string]$StagingRoot, [string]$FinalRoot, [int]$TrackNum, [int]$DiscNum = 0)
+    $saved = @()
+    if (-not (Test-Path -LiteralPath $StagingRoot)) { return $saved }
+    $staged = @(Get-ChildItem -LiteralPath $StagingRoot -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in $script:AudioExtensions -and (Get-AudioFileTrackNumber -Name $_.Name -DiscNum $DiscNum) -eq $TrackNum })
+    foreach ($f in $staged) {
+        if (-not (Test-TrackIntegrity -FilePath $f.FullName)) { continue }
+        $rel = $f.FullName.Substring($StagingRoot.TrimEnd('\').Length).TrimStart('\')
+        $dest = Join-Path $FinalRoot $rel
+        $destDir = Split-Path -Parent $dest
+        if (Test-Path -LiteralPath $destDir) {
+            Get-ChildItem -LiteralPath $destDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -eq $f.Extension -and $_.Name -ne $f.Name -and
+                    (Get-AudioFileTrackNumber -Name $_.Name -DiscNum $DiscNum) -eq $TrackNum -and
+                    ($_.Length -eq 0 -or -not (Test-TrackIntegrity -FilePath $_.FullName)) } |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+        }
+        Save-FileDurably -Source $f.FullName -Destination $dest
+        $saved += $rel
+    }
+    return $saved
+}
+
+function Move-AllStagedFiles {
+    param([string]$StagingRoot, [string]$FinalRoot)
+    if (-not (Test-Path -LiteralPath $StagingRoot)) { return 0 }
+    $count = 0
+    foreach ($f in @(Get-ChildItem -LiteralPath $StagingRoot -Recurse -File -ErrorAction SilentlyContinue)) {
+        $rel = $f.FullName.Substring($StagingRoot.TrimEnd('\').Length).TrimStart('\')
+        Save-FileDurably -Source $f.FullName -Destination (Join-Path $FinalRoot $rel)
+        $count++
+    }
+    Remove-Item -LiteralPath $StagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    return $count
+}
+
 function Get-DiscTrackCount {
     param([string]$OutputDir, [string]$DriveLetter, [switch]$Fresh)
     # Synced with rip-audio.ps1's -Fresh switch (PR #145): skips the cue-file shortcut
@@ -858,7 +942,13 @@ if ($StartFromStepNumber -le 1) {
                 else { $quotedArgs += $a }
             }
             $psi.Arguments = $quotedArgs -join ' '
-            $psi.WorkingDirectory = $WorkDir
+            $stagingRoot = $script:RipStagingRoot
+            if ($stagingRoot) {
+                if (-not (Test-Path -LiteralPath $stagingRoot)) { New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null }
+                $psi.WorkingDirectory = $stagingRoot
+            } else {
+                $psi.WorkingDirectory = $WorkDir
+            }
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
             $psi.UseShellExecute = $false
@@ -919,6 +1009,18 @@ if ($StartFromStepNumber -le 1) {
                     if ($line -match 'Track\s+(\d+)\s+ripped and encoded successfully') {
                         $lastCompletedTrack = [int]$Matches[1]
                         $consecutiveCdioErrors = 0
+                        if ($stagingRoot) {
+                            try {
+                                $saved = @(Move-StagedTrack -StagingRoot $stagingRoot -FinalRoot $WorkDir -TrackNum $lastCompletedTrack)
+                                if ($saved.Count -gt 0) {
+                                    Write-Host "  Saved track $lastCompletedTrack to the output drive" -ForegroundColor DarkGreen
+                                    Write-Log "Track ${lastCompletedTrack}: saved to output ($($saved -join ', '))"
+                                }
+                            } catch {
+                                Write-Host "  Could not save track $lastCompletedTrack yet: $_ (will retry at the end)" -ForegroundColor Yellow
+                                Write-Log "Track ${lastCompletedTrack}: save failed: $_"
+                            }
+                        }
                     }
                     if ($line -match 'cdio error|Unknown, unrecoverable error reading data') {
                         $consecutiveCdioErrors++
@@ -947,8 +1049,43 @@ if ($StartFromStepNumber -le 1) {
                 }
             }
 
+            # Same end-of-run sweep as rip-audio.ps1's copy: save checked tracks not yet
+            # saved, drop half-written ones, move the cue/log/cover, remove staging.
+            if ($stagingRoot) {
+                if ($killedDueToErrors) { try { $proc.WaitForExit(10000) | Out-Null } catch {} }
+                foreach ($f in @(Get-ChildItem -LiteralPath $stagingRoot -Recurse -File -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Extension -in $script:AudioExtensions })) {
+                    if (-not (Test-Path -LiteralPath $f.FullName)) { continue }
+                    $n = Get-AudioFileTrackNumber -Name $f.Name
+                    $ok = Test-TrackIntegrity -FilePath $f.FullName
+                    if ($null -ne $n -and $ok) {
+                        try { [void](Move-StagedTrack -StagingRoot $stagingRoot -FinalRoot $WorkDir -TrackNum $n) }
+                        catch { Write-Host "  Could not save $($f.Name): $_" -ForegroundColor Red; Write-Log "Save failed for $($f.Name): $_" }
+                    } elseif (-not $ok) {
+                        Write-Log "Dropped unfinished file from staging: $($f.Name)"
+                        Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
+                    }
+                }
+                try {
+                    $moved = Move-AllStagedFiles -StagingRoot $stagingRoot -FinalRoot $WorkDir
+                    if ($moved -gt 0) { Write-Log "Moved $moved remaining file(s) from staging to $WorkDir" }
+                } catch {
+                    Write-Host "  Could not move files from the staging folder ${stagingRoot}: $_" -ForegroundColor Red
+                    Write-Log "Staging sweep failed: $_"
+                }
+            }
+
             return @{ ExitCode = $proc.ExitCode; Output = $outputLines.ToArray(); Killed = $killedDueToErrors; LastCompletedTrack = $lastCompletedTrack }
         }
+
+        $script:RipStagingRoot = Get-RipStagingRoot -FinalOutputDir $finalOutputDir
+        if (Test-Path -LiteralPath $script:RipStagingRoot) {
+            Remove-Item -LiteralPath $script:RipStagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Log "Cleared leftover staging folder $script:RipStagingRoot"
+        }
+        New-Item -ItemType Directory -Path $script:RipStagingRoot -Force | Out-Null
+        Write-Host "Staging folder: $script:RipStagingRoot (each track is saved to the output drive as it finishes)" -ForegroundColor Gray
+        Write-Log "Staging folder: $script:RipStagingRoot"
 
         Push-Location -LiteralPath $parentDir
         try {
