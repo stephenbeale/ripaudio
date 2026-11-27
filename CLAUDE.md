@@ -81,6 +81,26 @@ MusicBrainz lookup is automatic - cyanrip will query MusicBrainz for disc metada
 
 ## Session Notes
 
+### 2026-11-27 (evening) - Local staging, empty-file message, [C] continue offer (branch `fix/stage-tracks-locally`, DRAFT PR; master = ab6cbbe)
+
+Trigger: the morning's The Chieftains rip lost every track (all 0-byte FLACs after the PC was turned off at ~08:54). First diagnosed as the Windows write cache; the evening run showed otherwise.
+
+**Built (rip-audio.ps1, continue-rip-audio.ps1; tests/Test-Staging.ps1 38/38; all 8 test files pass):**
+1. Local staging: cyanrip writes to `%LOCALAPPDATA%\RipTools\ripaudio-staging\<md5 key per output folder>`. On "Track N ripped and encoded successfully" the track is checked (flac --test), copied to the output as `.partial`, flushed (`FileStream.Flush($true)`), renamed, then removed from staging. An end-of-run sweep moves the rest and drops half-written tracks. Helpers `Get-RipStagingRoot`, `Get-AudioFileTrackNumber`, `Save-FileDurably`, `Move-StagedTrack`, `Move-AllStagedFiles` (copied identically into continue-rip-audio.ps1; a test checks the copies match).
+2. Resume message reports empty (0-byte) files separately from damaged ones (`Get-InvalidTrackNote`).
+3. On failure `Stop-WithError` prints a continue-rip-audio.ps1 command and offers [C] Continue now (`Get-ContinueRipAudioArgs`, `Format-ContinueRipAudioCommand`). User chose "on failure only", not at start for partial folders.
+
+**KEY FINDING: cyanrip writes no audio until the whole disc is finished.** Real run of The Chieftains - The Long Black Veil (D: to G:\Music\The Chieftains\The Long Black Veil, 19:26-19:54): all 13 FLACs were 0 bytes in staging until 19:54:10, then all were written at once (true length 0 even with the file opened directly). So the per-track saving never fires during a single cyanrip run (log shows "Track N: not saved yet" for 1-12). The morning loss was this, NOT the write cache. The album ripped fine tonight; all 13 tracks plus cue/log are on G:. **The staging is therefore not yet effective;** the PR is a DRAFT. The [C] offer and the empty-file message work independently.
+
+**Discarded:** a wording change to ripaudio's end screen ("Rip DVDs, Blu-rays and CDs"): ripdisc is promoted in ripaudio's box, so CDs makes no sense. Worktree and branch removed.
+
+### 2026-11-27 (evening) - NEXT SESSION items
+
+1. Build one cyanrip run per track (`-l N`) so each run exits and writes its file. Startup was ~6 s per track (cyanrip start 19:26:31, first file 19:26:37), about 1.5 min extra on 13 tracks. FIRST check whether a single-track run writes a .cue with only that track (`Get-DiscTrackCount` reads the cue's TRACK count) and whether each run overwrites cyanrip's .log. Option: opt-in `-PerTrack` first.
+2. Test on a real CD, then decide whether to merge the draft PR (staging + empty-file message + [C] continue offer).
+3. G: is the WD Elements USB disk (it was also F: in earlier notes).
+4. Pure Guitar Moods notes below and ripdisc's NEXT SESSION lists are unchanged.
+
 ### 2026-11-27 - Pure Guitar Moods: [unknown] artist, Various folder, sibling-disc lookup (PRs #173-#178; master = 7b16ab2)
 
 All MERGED (#173-#175 earlier, #177 end screen and #178 drive claims later the same day). **None run on a real rip yet** (Discs 3 and 4 were already ripping on older code).
