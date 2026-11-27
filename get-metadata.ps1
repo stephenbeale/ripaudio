@@ -91,7 +91,7 @@ function Write-Log {
     if ($script:LogFile) {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         $entry = "[$timestamp] $Message"
-        Add-Content -Path $script:LogFile -Value $entry
+        Add-Content -LiteralPath $script:LogFile -Value $entry
     }
 }
 
@@ -141,11 +141,11 @@ function Get-AlbumInfo {
     }
 
     # Check for existing metadata files
-    $cueFiles = Get-ChildItem -Path $AlbumPath -Filter "*.cue" -ErrorAction SilentlyContinue
+    $cueFiles = Get-ChildItem -LiteralPath $AlbumPath -Filter "*.cue" -ErrorAction SilentlyContinue
     if ($cueFiles) {
         $info.HasCue = $true
         # Try to extract DiscID from cue file
-        $cueContent = Get-Content -Path $cueFiles[0].FullName -Raw -ErrorAction SilentlyContinue
+        $cueContent = Get-Content -LiteralPath $cueFiles[0].FullName -Raw -ErrorAction SilentlyContinue
         if ($cueContent -match 'REM MUSICBRAINZ_ID "([^"]+)"') {
             $info.DiscId = $Matches[1]
         }
@@ -154,13 +154,13 @@ function Get-AlbumInfo {
         }
     }
 
-    $logFiles = Get-ChildItem -Path $AlbumPath -Filter "*.log" -ErrorAction SilentlyContinue
+    $logFiles = Get-ChildItem -LiteralPath $AlbumPath -Filter "*.log" -ErrorAction SilentlyContinue
     if ($logFiles) {
         $info.HasLog = $true
     }
 
     # Check for cover art
-    $artFiles = Get-ChildItem -Path $AlbumPath -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+    $artFiles = Get-ChildItem -LiteralPath $AlbumPath -File -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -in @("Front", "Cover", "Folder") }
     if ($artFiles) {
         $info.HasArt = $true
     }
@@ -168,7 +168,7 @@ function Get-AlbumInfo {
     # Find audio files
     $audioExtensions = @("*.flac", "*.mp3", "*.opus", "*.m4a", "*.wav")
     foreach ($ext in $audioExtensions) {
-        $files = Get-ChildItem -Path $AlbumPath -Filter $ext -ErrorAction SilentlyContinue
+        $files = Get-ChildItem -LiteralPath $AlbumPath -Filter $ext -ErrorAction SilentlyContinue
         if ($files -and $files.Count -gt 0) {
             $info.AudioFiles = $files
             $info.Format = $ext.TrimStart("*.")
@@ -291,11 +291,11 @@ function Get-CoverArt {
                 $outputFile = Join-Path $OutputPath "Front.$extension"
 
                 Invoke-WebRequest -Uri $imageUrl -OutFile $outputFile -Headers $headers -TimeoutSec 30
-                if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                     Write-Host "  Downloaded: Front.$extension (from Cover Art Archive)" -ForegroundColor Green
                     return $outputFile
                 }
-                Remove-Item $outputFile -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue
             }
         } catch {
             Write-Host "  Cover Art Archive: not available" -ForegroundColor Yellow
@@ -319,11 +319,11 @@ function Get-CoverArt {
                     $outputFile = Join-Path $OutputPath "Front.jpg"
                     Invoke-WebRequest -Uri $artworkUrl -OutFile $outputFile -TimeoutSec 30
 
-                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                         Write-Host "  Downloaded: Front.jpg (from iTunes)" -ForegroundColor Green
                         return $outputFile
                     }
-                    Remove-Item $outputFile -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue
                 }
             }
         } catch {
@@ -350,11 +350,11 @@ function Get-CoverArt {
                     $outputFile = Join-Path $OutputPath "Front.jpg"
                     Invoke-WebRequest -Uri $coverUrl -OutFile $outputFile -TimeoutSec 30
 
-                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                         Write-Host "  Downloaded: Front.jpg (from Deezer)" -ForegroundColor Green
                         return $outputFile
                     }
-                    Remove-Item $outputFile -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue
                 }
             }
         } catch {
@@ -430,7 +430,7 @@ function Write-CueFile {
     }
 
     $cueFile = Join-Path $OutputPath "$AlbumName.cue"
-    $cueContent | Set-Content -Path $cueFile -Encoding UTF8
+    $cueContent | Set-Content -LiteralPath $cueFile -Encoding UTF8
     return $cueFile
 }
 
@@ -511,7 +511,7 @@ if (-not $Path -and -not $Scan) {
 
 # Setup logging
 $logDir = "C:\Music\logs"
-if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+if (!(Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $script:LogFile = Join-Path $logDir "get-metadata_${logTimestamp}.log"
 
@@ -532,7 +532,7 @@ $albumsToProcess = @()
 
 if ($Path) {
     # Process single album
-    if (-not (Test-Path $Path)) {
+    if (-not (Test-Path -LiteralPath $Path)) {
         Stop-WithError -Step "STEP 1/3: Find albums" -Message "Path not found: $Path"
     }
 
@@ -550,7 +550,7 @@ if ($Path) {
     # Scan for albums
     Write-Host "  Scanning: $MusicRoot" -ForegroundColor Gray
 
-    if (-not (Test-Path $MusicRoot)) {
+    if (-not (Test-Path -LiteralPath $MusicRoot)) {
         Stop-WithError -Step "STEP 1/3: Find albums" -Message "Music root not found: $MusicRoot"
     }
 
@@ -558,7 +558,7 @@ if ($Path) {
     $audioExtensions = @("*.flac", "*.mp3", "*.opus", "*.m4a", "*.wav")
     $allAudioFiles = @()
     foreach ($ext in $audioExtensions) {
-        $files = Get-ChildItem -Path $MusicRoot -Filter $ext -Recurse -ErrorAction SilentlyContinue
+        $files = Get-ChildItem -LiteralPath $MusicRoot -Filter $ext -Recurse -ErrorAction SilentlyContinue
         $allAudioFiles += $files
     }
 

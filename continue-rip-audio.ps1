@@ -242,7 +242,7 @@ function Test-TrackIntegrity {
             return $LASTEXITCODE -eq 0
         }
     }
-    return (Get-Item $FilePath).Length -gt 10240
+    return (Get-Item -LiteralPath $FilePath).Length -gt 10240
 }
 
 function Get-DiscTrackCount {
@@ -251,9 +251,9 @@ function Get-DiscTrackCount {
     # and queries the disc live. A cue file written during an attempt that later crashed
     # or dropped connection can carry a track count corrupted by that same failure, so
     # callers recovering from one (e.g. -FromTrack below) should not trust it.
-    $cueFile = if (-not $Fresh) { Get-ChildItem -Path $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    $cueFile = if (-not $Fresh) { Get-ChildItem -LiteralPath $OutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if ($cueFile) {
-        $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
+        $cueContent = Get-Content -LiteralPath $cueFile.FullName -Raw -ErrorAction SilentlyContinue
         if ($cueContent) {
             $trackMatches = [regex]::Matches($cueContent, 'TRACK (\d+) AUDIO')
             if ($trackMatches.Count -gt 0) {
@@ -289,7 +289,7 @@ function Test-DriveReady {
     try {
         $drive = Get-PSDrive -Name $driveDisplay.TrimEnd(':') -ErrorAction Stop
         if ($drive) {
-            if (Test-Path $driveLetter -ErrorAction SilentlyContinue) {
+            if (Test-Path -LiteralPath $driveLetter -ErrorAction SilentlyContinue) {
                 return @{ Ready = $true; Drive = $driveDisplay; Message = "Drive is ready" }
             } else {
                 return @{ Ready = $false; Drive = $driveDisplay; Message = "Destination drive $driveDisplay is not ready - please ensure the drive is connected and mounted" }
@@ -305,7 +305,7 @@ function Write-Log {
     param([string]$Message)
     if ($script:LogFile) {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        Add-Content -Path $script:LogFile -Value "[$timestamp] $Message"
+        Add-Content -LiteralPath $script:LogFile -Value "[$timestamp] $Message"
     }
 }
 
@@ -455,7 +455,7 @@ if ($safeArtist) {
 
 # ========== LOGGING SETUP ==========
 $logDir = "C:\Music\logs"
-if (!(Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+if (!(Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $logTimestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $safeAlbumForLog = $Album -replace '[\\/:*?"<>|]', '_'
 $safeArtistForLog = if ($Artist) { $Artist -replace '[\\/:*?"<>|]', '_' } else { "" }
@@ -490,7 +490,7 @@ function Stop-WithError {
 
     Show-StepsSummary -ShowRemaining
 
-    if (Test-Path $finalOutputDir) {
+    if (Test-Path -LiteralPath $finalOutputDir) {
         Write-Host "`n--- OPENING DIRECTORY ---" -ForegroundColor Cyan
         Write-Host "Opening: $finalOutputDir" -ForegroundColor Yellow
         Start-Process explorer.exe -ArgumentList "`"$($finalOutputDir.TrimEnd('\'))`""
@@ -531,12 +531,12 @@ function Get-ExistingAudioFiles {
     foreach ($fmt in $formatList) {
         $ext = $formatExtMap[$fmt]
         if ($ext) {
-            $found = @(Get-ChildItem -Path $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue)
+            $found = @(Get-ChildItem -LiteralPath $finalOutputDir -Filter $ext -ErrorAction SilentlyContinue)
             if ($found.Count -gt 0) { $files += $found }
         }
     }
     if ($files.Count -eq 0) {
-        $files = @(Get-ChildItem -Path $finalOutputDir -Include "*.flac","*.mp3","*.opus","*.m4a","*.wav","*.aac" -Recurse -ErrorAction SilentlyContinue)
+        $files = @(Get-ChildItem -LiteralPath $finalOutputDir -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in @(".flac",".mp3",".opus",".m4a",".wav",".aac") })
     }
     return $files
 }
@@ -545,7 +545,7 @@ function Test-StepPrerequisites {
     param([int]$StepNumber)
 
     if ($StepNumber -eq 1) {
-        if (-not (Test-Path $finalOutputDir)) {
+        if (-not (Test-Path -LiteralPath $finalOutputDir)) {
             Write-Host "Output folder does not exist yet: $finalOutputDir" -ForegroundColor Yellow
             Write-Host "Will be created; treating this as ripping from scratch." -ForegroundColor Yellow
             return $true
@@ -556,7 +556,7 @@ function Test-StepPrerequisites {
 
     if ($StepNumber -eq 2 -or $StepNumber -eq 3) {
         $hints = @()
-        if (!(Test-Path $finalOutputDir)) {
+        if (!(Test-Path -LiteralPath $finalOutputDir)) {
             return (Write-PrerequisiteFailure -StepNumber $StepNumber -Message "The output folder does not exist: $finalOutputDir" -Hints @("Did you mean step 1 (rip)?"))
         }
         $existing = Get-ExistingAudioFiles
@@ -571,7 +571,7 @@ function Test-StepPrerequisites {
     }
 
     if ($StepNumber -eq 4) {
-        if (!(Test-Path $finalOutputDir)) {
+        if (!(Test-Path -LiteralPath $finalOutputDir)) {
             return (Write-PrerequisiteFailure -StepNumber $StepNumber -Message "The output folder does not exist: $finalOutputDir")
         }
         Write-Host "OK - output folder exists: $finalOutputDir" -ForegroundColor Green
@@ -659,7 +659,7 @@ if ($StartFromStepNumber -le 1) {
 
     # Destination drive readiness (re-checked here since time may have passed since
     # the earlier prompt, and this is the step that actually writes files).
-    if (!(Test-Path $finalOutputDir)) { New-Item -ItemType Directory -Path $finalOutputDir -Force | Out-Null }
+    if (!(Test-Path -LiteralPath $finalOutputDir)) { New-Item -ItemType Directory -Path $finalOutputDir -Force | Out-Null }
     $driveCheck = Test-DriveReady -Path $finalOutputDir
     if (-not $driveCheck.Ready) {
         Stop-WithError -Step "STEP 1/4: cyanrip" -Message $driveCheck.Message
@@ -915,7 +915,7 @@ if ($StartFromStepNumber -le 1) {
             return @{ ExitCode = $proc.ExitCode; Output = $outputLines.ToArray(); Killed = $killedDueToErrors; LastCompletedTrack = $lastCompletedTrack }
         }
 
-        Push-Location $parentDir
+        Push-Location -LiteralPath $parentDir
         try {
             $result = Start-CyanripWithErrorDetection -CyanripArgs $cyanripArgs -WorkDir $parentDir
         } finally {
@@ -979,16 +979,16 @@ if ($StartFromStepNumber -le 3) {
     Write-Timestamp "Step 3 started"
 
     $script:CoverArtDownloaded = $false
-    $existingArt = Get-ChildItem -Path $finalOutputDir -Include "Front.*","Cover.*","Folder.*" -ErrorAction SilentlyContinue
+    $existingArt = Get-ChildItem -LiteralPath $finalOutputDir -File -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -in @("Front", "Cover", "Folder") }
     if ($existingArt -and $existingArt.Count -gt 0) {
         Write-Host "  Cover art already exists: $($existingArt[0].Name)" -ForegroundColor Green
         $script:CoverArtDownloaded = $true
         $script:CoverArtSource = "existing"
     } else {
         $releaseId = $null
-        $cueFile = Get-ChildItem -Path $finalOutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
+        $cueFile = Get-ChildItem -LiteralPath $finalOutputDir -Filter "*.cue" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($cueFile) {
-            $cueContent = Get-Content -Path $cueFile.FullName -Raw -ErrorAction SilentlyContinue
+            $cueContent = Get-Content -LiteralPath $cueFile.FullName -Raw -ErrorAction SilentlyContinue
             if ($cueContent -match 'REM RELEASE_ID "([^"]+)"') { $releaseId = $Matches[1] }
         }
         # A rip without MusicBrainz (-N) writes no RELEASE_ID into the cue; .discid keeps the
@@ -1036,10 +1036,10 @@ if ($StartFromStepNumber -le 3) {
                         $extension = if ($frontCover.image -match '\.(\w+)$') { $Matches[1] } else { "jpg" }
                         $outputFile = Join-Path $finalOutputDir "Front.$extension"
                         Invoke-WebRequest -Uri $frontCover.image -OutFile $outputFile -Headers $mbSearchHeaders -TimeoutSec 30
-                        if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                        if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                             Write-Host "  Downloaded: Front.$extension (MusicBrainz/CAA search)" -ForegroundColor Green
                             $artDownloaded = $true; $script:CoverArtDownloaded = $true; $script:CoverArtSource = "MusicBrainz/CAA"
-                        } else { Remove-Item $outputFile -ErrorAction SilentlyContinue }
+                        } else { Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue }
                     }
                 }
             } catch { Write-Host "  MusicBrainz/CAA search: not available" -ForegroundColor Yellow }
@@ -1057,10 +1057,10 @@ if ($StartFromStepNumber -le 3) {
                     $artworkUrl = $itunesHit.artworkUrl100 -replace '100x100bb', '600x600bb'
                     $outputFile = Join-Path $finalOutputDir "Front.jpg"
                     Invoke-WebRequest -Uri $artworkUrl -OutFile $outputFile -TimeoutSec 30
-                    if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                    if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                         Write-Host "  Downloaded: Front.jpg (iTunes)" -ForegroundColor Green
                         $artDownloaded = $true; $script:CoverArtDownloaded = $true; $script:CoverArtSource = "iTunes"
-                    } else { Remove-Item $outputFile -ErrorAction SilentlyContinue }
+                    } else { Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue }
                 }
             } catch { Write-Host "  iTunes Search: not available" -ForegroundColor Yellow }
         }
@@ -1080,10 +1080,10 @@ if ($StartFromStepNumber -le 3) {
                     if ($coverUrl) {
                         $outputFile = Join-Path $finalOutputDir "Front.jpg"
                         Invoke-WebRequest -Uri $coverUrl -OutFile $outputFile -TimeoutSec 30
-                        if ((Test-Path $outputFile) -and (Get-Item $outputFile).Length -gt 1000) {
+                        if ((Test-Path -LiteralPath $outputFile) -and (Get-Item -LiteralPath $outputFile).Length -gt 1000) {
                             Write-Host "  Downloaded: Front.jpg (Deezer)" -ForegroundColor Green
                             $artDownloaded = $true; $script:CoverArtDownloaded = $true; $script:CoverArtSource = "Deezer"
-                        } else { Remove-Item $outputFile -ErrorAction SilentlyContinue }
+                        } else { Remove-Item -LiteralPath $outputFile -ErrorAction SilentlyContinue }
                     }
                 }
             } catch { Write-Host "  Deezer: not available" -ForegroundColor Yellow }
@@ -1093,10 +1093,10 @@ if ($StartFromStepNumber -le 3) {
     }
 
     $script:CoverArtEmbedded = 0
-    $artFile = Get-ChildItem -Path $finalOutputDir -File -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') } | Select-Object -First 1
+    $artFile = Get-ChildItem -LiteralPath $finalOutputDir -File -ErrorAction SilentlyContinue | Where-Object { $_.BaseName -in @('Front', 'Cover', 'Folder') } | Select-Object -First 1
     if ($artFile -and (Get-Command metaflac -ErrorAction SilentlyContinue)) {
         Write-Host "  Embedding cover art into FLAC files..." -ForegroundColor Gray
-        $flacFiles = Get-ChildItem -Path $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue
+        $flacFiles = Get-ChildItem -LiteralPath $finalOutputDir -Filter "*.flac" -ErrorAction SilentlyContinue
         foreach ($flac in $flacFiles) {
             try {
                 $tempArt = Join-Path $env:TEMP "ripaudio_embed_$([System.IO.Path]::GetRandomFileName())"
