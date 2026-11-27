@@ -20,11 +20,11 @@ function Import-Functions([string]$Path, [string[]]$Names) {
 }
 $root = Join-Path $PSScriptRoot '..'
 Import-Functions (Join-Path $root 'rip-audio.ps1') @('ConvertFrom-CyanripArtist')
-$script:CompilationArtist = 'Various Artists'
+$script:CompilationArtist = 'Various'
 
 Write-Host "`nConvertFrom-CyanripArtist" -ForegroundColor Cyan
-Assert-Equal 'cyanrip "[unknown]" is a compilation' 'Various Artists' (ConvertFrom-CyanripArtist '[unknown]')
-Assert-Equal '"unknown" without brackets too' 'Various Artists' (ConvertFrom-CyanripArtist ' Unknown ')
+Assert-Equal 'cyanrip "[unknown]" is a compilation' 'Various' (ConvertFrom-CyanripArtist '[unknown]')
+Assert-Equal '"unknown" without brackets too' 'Various' (ConvertFrom-CyanripArtist ' Unknown ')
 Assert-Equal 'a real artist is kept, trimmed' 'Mark Knopfler' (ConvertFrom-CyanripArtist ' Mark Knopfler ')
 Assert-Equal 'a band with "unknown" in the name is kept' 'Origin Unknown' (ConvertFrom-CyanripArtist 'Origin Unknown')
 Assert-Equal 'empty is no artist' $true ($null -eq (ConvertFrom-CyanripArtist ''))

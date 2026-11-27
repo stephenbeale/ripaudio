@@ -69,9 +69,9 @@ $script:CompletedSteps = @()
 $script:CurrentStep = $null
 
 # cyanrip prints "Album artist: [unknown]" when the MusicBrainz release has no album
-# artist (compilations such as Pure Guitar Moods). File those under the same folder
-# MusicBrainz compilations already use, not a literal "[unknown]" folder.
-$script:CompilationArtist = "Various Artists"
+# artist (compilations such as Pure Guitar Moods). File those under "Various" (the user's
+# chosen compilation folder), not a literal "[unknown]" folder.
+$script:CompilationArtist = "Various"
 function ConvertFrom-CyanripArtist {
     param([string]$Name)
     $n = "$Name".Trim()
