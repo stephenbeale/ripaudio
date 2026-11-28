@@ -4,6 +4,8 @@
 
 PowerShell script for automated audio CD ripping using cyanrip.
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support%20RipAudio-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/stephenbeale)
+
 ## Overview
 
 This repository contains a PowerShell script for ripping audio CDs to various lossless and lossy formats using cyanrip, with automatic MusicBrainz metadata lookup.
@@ -689,6 +691,12 @@ With `-ReportOnly`: only steps 1-2 run, a CSV is written, no prompts or processi
 ## Contributing
 
 Contributions are welcome! Please follow the existing code style and patterns.
+
+## Support
+
+RipAudio is free and open source. If it has saved you hours of ripping and tagging, a coffee helps keep it going, and is much appreciated but never expected.
+
+<a href="https://buymeacoffee.com/stephenbeale"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=stephenbeale&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy me a coffee" height="48"></a>
 
 ## License
 
